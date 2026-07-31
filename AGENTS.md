@@ -1,9 +1,10 @@
 # YARP
 
-- Keep the command rewrite allowlist narrow. Rewrite failures fail open to the original command; archive failures follow `docs/tool-call-archive-spec.md`.
+- Keep the command rewrite allowlist narrow. Rewrite failures fail open to the original command.
 - Preserve child exit codes and keep stdout and stderr on their original streams.
 - Do not add telemetry, analytics, or network access.
-- Keep persistent state limited to the local tool-call archive defined in `docs/tool-call-archive-spec.md` unless the user explicitly approves another store.
+- The YARP command and Pi extension must not store tool calls, results, command history, or raw output.
+- Keep `toolcall-extractor` offline and separate from the pruning runtime. It may read only explicitly supplied local session roots and must never alter agent state. Follow `docs/toolcall-extractor-implementation-plan.md`.
 - Use strict TypeScript without explicit `any`, unsafe casts, or unchecked external input.
 - Do not use unsafe Rust.
 - Add tests for every behavior change.
