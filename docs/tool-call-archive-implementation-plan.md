@@ -41,7 +41,7 @@ Add `yarp archive verify` and `yarp archive stats` before enabling automatic cap
 
 ### Ingest process
 
-Add `yarp archive ingest`, a long-lived stdin reader used by the Pi extension. Each operation is one JSON object preceded by an unsigned 8-byte big-endian length. Frames are capped at 256 MiB. The protocol is internal to the matching YARP binary and Pi package revision.
+Add `yarp archive ingest`, a long-lived stdin reader used by the Pi extension. Each operation is one JSON object preceded by an unsigned 8-byte big-endian length and carries `schemaVersion: 1`. Frames are capped at 256 MiB. The protocol is internal to the matching YARP binary and Pi package revision.
 
 The process acknowledges each committed operation with one JSON line. It rejects malformed frames, oversized frames, unknown operations, unsupported schema versions, and truncated input. It stops cleanly at EOF after flushing committed work.
 
@@ -53,7 +53,7 @@ Extend the Pi package with one in-memory call map keyed by `toolCallId`.
 
 At `tool_call`, capture the original input, run the existing YARP rewrite decision, capture the resulting input, and commit both snapshots before execution. Calls outside the rewrite allowlist still get archived.
 
-Use `tool_result` to capture the result before YARP's result handler changes it. Use `tool_execution_end` to capture the finalized result for every call and mark the row as finished. Pi emits this final event even when preflight rejects or blocks a call and skips `tool_result`. A shell command handled by `yarp run` uses its raw stdout and stderr snapshots as the pre-pruning record. Record `isError` from the event without classifying errors from their text.
+Use `tool_result` to capture the result before YARP changes it and finish executed calls while the result can still be replaced. If that capture fails, leave the row incomplete; non-shell results remain unchanged and wrapped shell calls restore the archived raw streams. Use `tool_execution_end` only to finish preflight failures that skip `tool_result`. Record `isError` from the event without classifying errors from their text.
 
 Exercise parallel tool mode in tests. Sibling calls can finish in a different order from their source order. Add duplicate prevention because both result hooks can observe one call.
 

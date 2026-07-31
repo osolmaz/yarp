@@ -33,9 +33,11 @@ CREATE TABLE tool_calls (
     model             TEXT,
     working_directory TEXT,
     started_at_ms     INTEGER NOT NULL,
+    requires_streams  INTEGER NOT NULL CHECK (requires_streams IN (0, 1)),
     finished_at_ms    INTEGER,
     status            TEXT NOT NULL CHECK (status IN ('started', 'finished')),
     is_error          INTEGER CHECK (is_error IN (0, 1)),
+    executed          INTEGER CHECK (executed IN (0, 1)),
     UNIQUE (session_id, source_call_id)
 );
 
@@ -69,7 +71,7 @@ SQLite may create `tool-calls.sqlite3-wal` and `tool-calls.sqlite3-shm` while th
 
 A session identifies one agent conversation. `agent` names the source application, starting with `pi`. `account` names the local account that owns the source data, such as `onur` or `bob`. `source_session_id` is the session identifier assigned by that agent.
 
-A tool call identifies one invocation. `source_call_id` is the identifier assigned by the source agent. The pair `(session_id, source_call_id)` must be unique. `provider` and `model` record the model that emitted the call when the source exposes those values.
+A tool call identifies one invocation. `source_call_id` is the identifier assigned by the source agent. The pair `(session_id, source_call_id)` must be unique. `provider` and `model` record the model that emitted the call when the source exposes those values. `requires_streams` records that YARP wrapped the shell command and must capture all four stream snapshots before the call can finish. `executed` distinguishes calls that reached a tool and therefore require a pre-YARP result from preflight failures that never ran.
 
 A snapshot points to immutable bytes in `payloads`. Its `subject` says what was captured. Its `stage` says whether capture happened before or after YARP processing.
 
@@ -100,9 +102,9 @@ YARP compresses a payload with Zstandard level 3 when the compressed body is at 
 
 At `tool_call`, YARP writes the session, the call with `status = 'started'`, and both input snapshots in one transaction. The transaction must commit before tool execution begins.
 
-The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before` when Pi exposes that event. The later `tool_execution_end` hook writes the finalized `result/after`, `is_error`, `finished_at_ms`, and `status = 'finished'` in one transaction. This final transaction verifies that any required shell stream snapshots already exist.
+The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before`, then writes the finalized `result/after`, `is_error`, `finished_at_ms`, and `status = 'finished'`. The final transaction verifies that `result/before` exists and that wrapped shell calls have all four stream snapshots.
 
-Pi can reject or block a call before tool execution without emitting `tool_result`. The `tool_execution_end` event still records its error result and finishes the call. The archive does not infer a rejection or cancellation category from result text.
+Pi can reject or block a call before tool execution without emitting `tool_result`. For those preflight failures, `tool_execution_end` records the error result and finishes the call without requiring `result/before`. The archive does not infer a rejection or cancellation category from result text.
 
 An interrupted process can leave a call in `started`. Readers must treat this as an incomplete call. A missing finish time does not describe a completed call with empty output.
 
@@ -134,7 +136,7 @@ YARP must never hide an archive failure.
 
 If the initial tool-call transaction cannot commit after one writer restart and bounded retry, YARP blocks the call. This preserves the guarantee that an executed call has an archived input.
 
-If the result transaction fails after the tool has executed, YARP returns the unpruned result and reports the archive failure clearly. The existing `started` record remains evidence of the incomplete capture.
+If a result transaction fails after the tool has executed, YARP leaves the call in `started` and reports the archive failure clearly. Non-shell tools keep the unchanged result already exposed by Pi. Wrapped shell tools restore the committed raw streams and return them instead of the pruned result.
 
 A process crash, full disk, invalid database, unsupported schema version, failed integrity check, or permission error is fatal to capture. YARP must not create a second database or fall back to per-call files.
 

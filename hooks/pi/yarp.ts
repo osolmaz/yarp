@@ -22,6 +22,13 @@ type CommandBinding = {
 
 type ArchiveSinkFactory = () => ArchiveSink
 
+type ResultPatch = {
+  content?: ToolResultEvent["content"]
+  details?: unknown
+  isError?: boolean
+  usage?: NonNullable<ToolResultEvent["usage"]>
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
 }
@@ -85,21 +92,21 @@ export async function installYarpExtension(
 
   let sink: ArchiveSink | null = null
   let session: ArchiveSession | null = null
-  const activeCallIds = new Set<string>()
+  const activeCalls = new Map<string, { requiresStreams: boolean }>()
 
   pi.on("session_start", async (_event, context) => {
     if (archiveDisabled()) return
     await sink?.close()
     sink = createSink()
     session = sessionIdentity(context)
-    activeCallIds.clear()
+    activeCalls.clear()
   })
 
   pi.on("session_shutdown", async () => {
     const current = sink
     sink = null
     session = null
-    activeCallIds.clear()
+    activeCalls.clear()
     await current?.close()
   })
 
@@ -133,14 +140,16 @@ export async function installYarpExtension(
     }
 
     if (archive !== null) {
+      const requiresStreams =
+        rewritten !== null && binding !== null && rewritten !== binding.command
       await archive.sink.beginCall(
         archive.session,
-        callIdentity(event, context),
+        callIdentity(event, context, requiresStreams),
         inputBefore,
         inputAfter,
         Date.now(),
       )
-      activeCallIds.add(event.toolCallId)
+      activeCalls.set(event.toolCallId, { requiresStreams })
     }
 
     if (rewritten !== null && binding !== null && rewritten !== binding.command) {
@@ -148,21 +157,42 @@ export async function installYarpExtension(
     }
   })
 
-  pi.on("tool_result", async (event) => {
-    if (sink === null || session === null || !activeCallIds.has(event.toolCallId)) return
-    await sink.resultBefore(session, event.toolCallId, resultSnapshot(event), Date.now())
+  pi.on("tool_result", async (event, context) => {
+    if (sink === null || session === null) return
+    const active = activeCalls.get(event.toolCallId)
+    if (active === undefined) return
+    const snapshot = resultSnapshot(event)
+    try {
+      await sink.resultBefore(session, event.toolCallId, snapshot, Date.now())
+      await sink.finishCall(
+        session,
+        event.toolCallId,
+        snapshot,
+        event.isError,
+        true,
+        Date.now(),
+      )
+      activeCalls.delete(event.toolCallId)
+    } catch (error) {
+      activeCalls.delete(event.toolCallId)
+      console.error(`[yarp] result archive failed: ${errorMessage(error)}`)
+      if (active.requiresStreams) {
+        return restoreRawResult(pi, session, event, context.signal)
+      }
+    }
   })
 
   pi.on("tool_execution_end", async (event) => {
-    if (sink === null || session === null || !activeCallIds.has(event.toolCallId)) return
+    if (sink === null || session === null || !activeCalls.has(event.toolCallId)) return
     await sink.finishCall(
       session,
       event.toolCallId,
       executionEndSnapshot(event),
       event.isError,
+      false,
       Date.now(),
     )
-    activeCallIds.delete(event.toolCallId)
+    activeCalls.delete(event.toolCallId)
   })
 }
 
@@ -192,12 +222,17 @@ function sessionIdentity(context: ExtensionContext): ArchiveSession {
   }
 }
 
-function callIdentity(event: ToolCallEvent, context: ExtensionContext): ArchiveCall {
+function callIdentity(
+  event: ToolCallEvent,
+  context: ExtensionContext,
+  requiresStreams: boolean,
+): ArchiveCall {
   const call: ArchiveCall = {
     sourceCallId: event.toolCallId,
     toolName: event.toolName,
     workingDirectory: context.cwd,
     startedAtMs: Date.now(),
+    requiresStreams,
   }
   if (context.model !== undefined) {
     call.provider = context.model.provider
@@ -207,27 +242,70 @@ function callIdentity(event: ToolCallEvent, context: ExtensionContext): ArchiveC
 }
 
 function resultSnapshot(event: ToolResultEvent): Record<string, unknown> {
-  return {
-    content: event.content,
-    details: event.details ?? null,
-    isError: event.isError,
-    usage: event.usage ?? null,
-  }
+  return normalizeResult(
+    {
+      content: event.content,
+      details: event.details,
+      usage: event.usage,
+    },
+    event.isError,
+  )
 }
 
 function executionEndSnapshot(event: ToolExecutionEndEvent): Record<string, unknown> {
   if (!isRecord(event.result)) return { result: event.result, isError: event.isError }
-  return {
-    content: event.result.content ?? null,
-    details: event.result.details ?? null,
-    isError: event.isError,
-    usage: event.result.usage ?? null,
-    terminate: event.result.terminate ?? null,
+  return normalizeResult(event.result, event.isError)
+}
+
+function normalizeResult(
+  result: Record<string, unknown>,
+  isError: boolean,
+): Record<string, unknown> {
+  const normalized: Record<string, unknown> = { ...result, isError }
+  if (normalized.details === undefined) normalized.details = null
+  if (normalized.usage === undefined) normalized.usage = null
+  return normalized
+}
+
+async function restoreRawResult(
+  pi: ExtensionAPI,
+  session: ArchiveSession,
+  event: ToolResultEvent,
+  signal?: AbortSignal,
+): Promise<ResultPatch | undefined> {
+  const args = [
+    "archive",
+    "restore",
+    "--archive-agent",
+    session.agent,
+    "--archive-account",
+    session.account,
+    "--archive-session",
+    session.sourceSessionId,
+    "--archive-call",
+    event.toolCallId,
+  ]
+  const options = signal === undefined ? undefined : { signal }
+  const result = await pi.exec("yarp", args, options)
+  if (result.killed || result.code !== 0) {
+    console.error(`[yarp] raw result restore failed: ${result.stderr.trim() || `exit ${result.code}`}`)
+    return undefined
   }
+  const restored: ResultPatch = {
+    content: [{ type: "text", text: `${result.stdout}${result.stderr}` }],
+    isError: event.isError,
+  }
+  if (event.details !== undefined) restored.details = event.details
+  if (event.usage !== undefined) restored.usage = event.usage
+  return restored
 }
 
 function archiveDisabled(): boolean {
   return process.env["YARP_ARCHIVE_DISABLED"] === "1"
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function localAccount(): string {
