@@ -51,7 +51,7 @@ export default async function yarpExtension(pi: ExtensionAPI): Promise<void> {
 
   pi.on("tool_call", async (event, context) => {
     try {
-      if (process.env.YARP_DISABLED === "1") return
+      if (process.env["YARP_DISABLED"] === "1") return
 
       const binding = commandBinding(event.toolName, event.input)
       if (binding === null || binding.command.startsWith("yarp ")) return

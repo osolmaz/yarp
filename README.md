@@ -18,7 +18,7 @@ Then install the Pi package:
 pi install git:github.com/osolmaz/yarp
 ```
 
-The repository is private, so both commands use your existing GitHub access.
+Both commands install from the public GitHub repository.
 
 ## Use
 
