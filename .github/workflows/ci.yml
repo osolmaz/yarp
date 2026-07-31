@@ -51,8 +51,8 @@ jobs:
         run: npm audit
       - name: Pi extension type check
         run: npm run typecheck:pi
-      - name: Pi extension tests
-        run: npm run test:pi
+      - name: Pi extension tests and coverage
+        run: npm run coverage:pi
 
       - name: Slophammer DRY check
         run: slophammer-rs dry .

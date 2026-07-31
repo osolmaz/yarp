@@ -2,14 +2,16 @@
   "name": "yarp-cli",
   "version": "0.1.0",
   "private": true,
-  "description": "Prune command output before it reaches Pi's context",
+  "description": "Prune Pi command output and archive tool calls locally",
   "type": "module",
   "scripts": {
     "typecheck:pi": "tsc --noEmit",
-    "test:pi": "tsx --test hooks/pi/yarp.test.ts"
+    "test:pi": "tsx --test hooks/pi/*.test.ts",
+    "coverage:pi": "c8 --all --include='hooks/pi/*.ts' --exclude='hooks/pi/*.test.ts' --check-coverage --lines=80 --functions=80 --branches=70 --statements=80 npm run test:pi"
   },
   "devDependencies": {
     "@types/node": "22.19.7",
+    "c8": "12.0.0",
     "tsx": "4.23.1",
     "typescript": "5.9.3"
   },

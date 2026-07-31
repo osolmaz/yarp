@@ -1,7 +1,9 @@
 # Pi extension
 
-This extension checks Pi's `bash` and `exec_command` calls before execution. It asks the local `yarp` binary whether the command can be wrapped safely. Unsupported commands and rewrite errors run unchanged.
+This extension archives every Pi tool call through Pi's public tool lifecycle events. It stores tool inputs and results before and after YARP processing without adding entries to Pi sessions or using Pi internals.
 
-The extension uses Pi's public `tool_call` hook. It does not change Pi sessions, other persistent data, or Pi internals.
+For supported `bash` and `exec_command` calls, the extension asks the local `yarp` binary whether the command can be wrapped safely. Unsupported commands and rewrite errors run unchanged. Wrapped commands add their exact stdout and stderr to the same archive before and after pruning.
 
-Set `YARP_DISABLED=1` to disable rewriting without removing the extension.
+The extension starts a session-scoped `yarp archive ingest` process and closes it during `session_shutdown`. It does not install a system or user service.
+
+Set `YARP_DISABLED=1` to disable rewriting while keeping capture active. Set `YARP_ARCHIVE_DISABLED=1` to disable archive capture.
