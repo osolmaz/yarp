@@ -211,6 +211,7 @@ export async function installYarpExtension(
         return restoreRawStreams(pi, session, event.toolCallId, event.isError)
       }
     }
+    return undefined
   })
 
   pi.on("tool_execution_end", async (event) => {
@@ -260,7 +261,7 @@ export async function installYarpExtension(
 
   pi.on("message_end", (event) => {
     if (event.message.role !== "toolResult") return
-    const toolCallId = event.message.toolCallId
+    const toolCallId = event.message["toolCallId"]
     if (typeof toolCallId !== "string") return
     const restored = restoredFinalResults.get(toolCallId)
     if (restored === undefined) return
@@ -323,7 +324,7 @@ function callIdentity(
 
 function sourceFullOutputPath(event: ToolResultEvent): string | undefined {
   if (event.toolName !== "bash" || !isRecord(event.details)) return undefined
-  const path = event.details.fullOutputPath
+  const path = event.details["fullOutputPath"]
   return typeof path === "string" && path !== "" ? path : undefined
 }
 
@@ -348,8 +349,8 @@ function normalizeResult(
   isError: boolean,
 ): Record<string, unknown> {
   const normalized: Record<string, unknown> = { ...result, isError }
-  if (normalized.details === undefined) normalized.details = null
-  if (normalized.usage === undefined) normalized.usage = null
+  if (normalized["details"] === undefined) normalized["details"] = null
+  if (normalized["usage"] === undefined) normalized["usage"] = null
   return normalized
 }
 
