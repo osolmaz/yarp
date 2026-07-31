@@ -97,7 +97,19 @@ target/release/toolcall-extractor verify
 target/release/toolcall-extractor benchmark-yarp
 ```
 
+For a different Unix user, run only the reader under that identity and keep the DuckDB writer under your own account:
+
+```sh
+sudo -u other-user target/release/toolcall-extractor stream \
+  --unix-user other-user claude --projects /home/other-user/.claude/projects |
+  target/release/toolcall-extractor ingest --unix-user other-user --agent claude
+```
+
+This sends framed normalized records through the pipe and creates no intermediate export. An unchanged replay keeps the same calls and results. A changed source replaces the records owned by that source item.
+
 The default database is `~/.local/share/toolcall-extractor/toolcalls.duckdb`. Tool inputs and outputs can contain secrets, so its directory and files are private. The extractor reads agent state without modifying it, has no network code, and stops before its files reach 10,000,000,000 bytes. See [the implementation plan](docs/toolcall-extractor-implementation-plan.md) for supported formats and privacy boundaries.
+
+A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. YARP removed 61,814,796 characters from the stored outputs. This is 52.3739% of eligible output and 3.18351% overall. The generated database and transcripts are not included in the repository.
 
 ## Limits
 
