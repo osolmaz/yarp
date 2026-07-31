@@ -18,7 +18,7 @@ all = "deny"
 pedantic = "deny"
 
 [dependencies]
-rusqlite = { version = "0.40.1", features = ["bundled", "blob"] }
+rusqlite = { version = "=0.39.0", features = ["bundled", "blob"] }
 serde = { version = "1", features = ["derive"] }
 serde_jcs = "0.2"
 serde_json = "1"
