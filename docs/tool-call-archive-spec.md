@@ -157,7 +157,7 @@ The command exits nonzero for corruption, unsupported versions, bad permissions,
 
 ## Retention
 
-Version 1 does not delete calls automatically. YARP reports database size through `yarp archive stats` and warns before a configured size threshold. An explicit prune command may delete finished calls in age order, remove payloads that no remaining snapshot references, and run incremental vacuuming.
+Version 1 does not delete calls automatically. YARP reports database size through `yarp archive stats`. An explicit prune command may delete finished calls in age order, remove payloads that no remaining snapshot references, and run incremental vacuuming.
 
 YARP must not delete incomplete calls or the existing `~/.local/share/yarp/tee` directory. The old tee files are outside this format.
 

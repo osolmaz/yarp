@@ -96,7 +96,7 @@ fn archive_stats() -> i32 {
 }
 
 fn archive_verify() -> i32 {
-    match archive::Archive::open().and_then(|archive| archive.verify()) {
+    match archive::Archive::open_read_only().and_then(|archive| archive.verify()) {
         Ok(report) => {
             println!("incomplete_calls: {}", report.incomplete_calls);
             if report.errors.is_empty() {

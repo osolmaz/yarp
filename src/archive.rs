@@ -1550,7 +1550,9 @@ mod tests {
             )
             .expect("finish");
         assert_eq!(archive.prune_before(50).expect("prune"), 1);
-        assert_eq!(archive.stats().expect("stats").calls, 0);
+        let stats = archive.stats().expect("stats");
+        assert_eq!(stats.calls, 0);
+        assert_eq!(stats.logical_payload_bytes, 0);
     }
 
     #[test]
@@ -1588,6 +1590,51 @@ mod tests {
             .query_row("SELECT compression FROM payloads", [], |row| row.get(0))
             .expect("compression");
         assert_eq!(compression, "zstd");
+    }
+
+    #[test]
+    fn keeps_small_payloads_uncompressed() {
+        let (_directory, mut archive) = archive();
+        archive
+            .begin_call(
+                &session(),
+                &call(),
+                &serde_json::json!({"value": "short"}),
+                &serde_json::json!({"value": "short"}),
+                20,
+            )
+            .expect("begin");
+        let compression: String = archive
+            .connection
+            .query_row("SELECT compression FROM payloads", [], |row| row.get(0))
+            .expect("compression");
+        assert_eq!(compression, "none");
+    }
+
+    #[test]
+    fn synthetic_archive_stays_below_storage_budget() {
+        let (_directory, mut archive) = archive();
+        let value = serde_json::json!({"output": "archive fixture ".repeat(64 * 1024)});
+        archive
+            .begin_call(&session(), &call(), &value, &value, 20)
+            .expect("begin");
+        archive
+            .result_before(&session(), "call-1", &value, 30)
+            .expect("result before");
+        archive
+            .finish_call(&session(), "call-1", &value, false, true, 40)
+            .expect("finish");
+        let referenced_bytes: i64 = archive
+            .connection
+            .query_row(
+                "SELECT sum(p.uncompressed_byte_length)
+                 FROM snapshots s JOIN payloads p ON p.sha256 = s.payload_sha256",
+                [],
+                |row| row.get(0),
+            )
+            .expect("logical snapshot bytes");
+        let stats = archive.stats().expect("stats");
+        assert!(stats.database_bytes < u64::try_from(referenced_bytes * 3 / 10).expect("budget"));
     }
 
     #[test]

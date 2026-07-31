@@ -383,6 +383,105 @@ test("pruning opt-out still archives every call", async () => {
   }
 })
 
+test("archives every built-in and custom tool name", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  await start(pi, sink)
+  const tools = [
+    "bash",
+    "exec_command",
+    "read",
+    "edit",
+    "write",
+    "grep",
+    "find",
+    "ls",
+    "custom_tool",
+  ]
+  for (const [index, toolName] of tools.entries()) {
+    const input = toolName === "bash"
+      ? { command: "echo unsupported" }
+      : toolName === "exec_command"
+        ? { cmd: "echo unsupported" }
+        : { value: index }
+    await call(pi, `call-tool-${index}`, toolName, input)
+  }
+  assert.deepEqual(sink.begins.map((entry) => entry.call.toolName), tools)
+})
+
+test("correlates parallel results by call id", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  await start(pi, sink)
+  await Promise.all([
+    call(pi, "parallel-a", "read", { path: "a" }),
+    call(pi, "parallel-b", "read", { path: "b" }),
+  ])
+  await Promise.all([
+    pi.registry.emit(
+      "tool_result",
+      {
+        type: "tool_result",
+        toolCallId: "parallel-b",
+        toolName: "read",
+        input: { path: "b" },
+        content: [{ type: "text", text: "b" }],
+        details: undefined,
+        isError: false,
+      },
+      context,
+    ),
+    pi.registry.emit(
+      "tool_result",
+      {
+        type: "tool_result",
+        toolCallId: "parallel-a",
+        toolName: "read",
+        input: { path: "a" },
+        content: [{ type: "text", text: "a" }],
+        details: undefined,
+        isError: true,
+      },
+      context,
+    ),
+  ])
+  assert.equal(sink.finishedResults.length, 2)
+  const errors = sink.finishedResults.map((value) => {
+    if (typeof value !== "object" || value === null || !("isError" in value)) {
+      throw new Error("missing isError")
+    }
+    assert.equal(typeof value.isError, "boolean")
+    return value.isError
+  })
+  assert.deepEqual(errors.sort(), [false, true])
+})
+
+test("reload closes the old writer and uses a new one", async () => {
+  const pi = new MockPi()
+  const first = new MemorySink()
+  const second = new MemorySink()
+  const sinks = [first, second]
+  await installYarpExtension(pi, () => {
+    const sink = sinks.shift()
+    if (sink === undefined) throw new Error("unexpected sink request")
+    return sink
+  })
+  await pi.registry.emit(
+    "session_start",
+    { type: "session_start", reason: "startup" },
+    context,
+  )
+  await pi.registry.emit(
+    "session_start",
+    { type: "session_start", reason: "reload" },
+    context,
+  )
+  await call(pi, "after-reload", "read", { path: "README.md" })
+  assert.equal(first.closed, true)
+  assert.equal(first.begins.length, 0)
+  assert.equal(second.begins.length, 1)
+})
+
 test("session shutdown closes the archive writer", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
