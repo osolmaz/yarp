@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 use walkdir::WalkDir;
 
 use super::common::{JsonLine, first_json_value, process_jsonl};
-use super::{register_root, source_item};
+use super::{register_root, reject_source_item, source_item};
 use crate::error::{Error, Result};
 use crate::keys;
 use crate::model::{
@@ -28,9 +28,28 @@ pub fn extract(unix_user: &str, sessions: &Path, sink: &mut impl Sink) -> Result
         let relative = private_fs::relative_path(sessions, entry.path())?;
         let source = source_item(&root, relative);
         let Some(first) = first_json_value(entry.path())? else {
+            reject_source_item(
+                entry.path(),
+                source,
+                "unsupported_pi_source",
+                "Pi source does not start with one complete JSON record",
+                sink,
+            )?;
             continue;
         };
-        let context = PiContext::from_header(unix_user, &first)?;
+        let context = match PiContext::from_header(unix_user, &first) {
+            Ok(context) => context,
+            Err(error) => {
+                reject_source_item(
+                    entry.path(),
+                    source,
+                    "unsupported_pi_source",
+                    &error.to_string(),
+                    sink,
+                )?;
+                continue;
+            }
+        };
         let mut calls = HashMap::new();
         let did_process = process_jsonl(
             entry.path(),
@@ -54,6 +73,14 @@ pub fn extract(unix_user: &str, sessions: &Path, sink: &mut impl Sink) -> Result
     }
     Ok(processed)
 }
+
+#[derive(Clone)]
+struct PiCallCandidate {
+    call_key: String,
+    entry_id: String,
+}
+
+type PiCalls = HashMap<String, Vec<PiCallCandidate>>;
 
 struct PiContext {
     unix_user: String,
@@ -105,7 +132,7 @@ fn process_record(
     source_item_key: &str,
     line: &JsonLine,
     value: &Value,
-    calls: &mut HashMap<String, String>,
+    calls: &mut PiCalls,
     sink: &mut dyn Sink,
 ) -> Result<()> {
     if value.get("type").and_then(Value::as_str) == Some("session") {
@@ -135,7 +162,7 @@ fn process_assistant(
     line: &JsonLine,
     entry: &Value,
     message: &Map<String, Value>,
-    calls: &mut HashMap<String, String>,
+    calls: &mut PiCalls,
     sink: &mut dyn Sink,
 ) -> Result<()> {
     let Some(content) = message.get("content").and_then(Value::as_array) else {
@@ -210,7 +237,13 @@ fn process_assistant(
             content_index: u32::try_from(index).ok(),
             record_sha256: line.record_sha256.clone(),
         })?;
-        calls.insert(native_call_id.to_owned(), call_key);
+        calls
+            .entry(native_call_id.to_owned())
+            .or_default()
+            .push(PiCallCandidate {
+                call_key,
+                entry_id: entry_id.to_owned(),
+            });
     }
     Ok(())
 }
@@ -221,14 +254,28 @@ fn process_result(
     line: &JsonLine,
     entry: &Value,
     message: &Map<String, Value>,
-    calls: &mut HashMap<String, String>,
+    calls: &mut PiCalls,
     sink: &mut dyn Sink,
 ) -> Result<()> {
     let Some(native_call_id) = message.get("toolCallId").and_then(Value::as_str) else {
         return Ok(());
     };
-    let call_key = if let Some(key) = calls.get(native_call_id) {
-        Some(key.clone())
+    let call_key = if let Some(candidates) = calls.get(native_call_id) {
+        let parent_id = entry.get("parentId").and_then(Value::as_str);
+        let matching_parent: Vec<&PiCallCandidate> = parent_id.map_or_else(Vec::new, |parent| {
+            candidates
+                .iter()
+                .filter(|candidate| candidate.entry_id == parent)
+                .collect()
+        });
+        if matching_parent.len() == 1 {
+            Some(matching_parent[0].call_key.clone())
+        } else if candidates.len() == 1 {
+            Some(candidates[0].call_key.clone())
+        } else {
+            sink.issue(&ambiguous_issue(source_item_key, line, native_call_id))?;
+            return Ok(());
+        }
     } else {
         sink.resolve_call(&context.session.session_key, native_call_id)?
     };
@@ -362,6 +409,26 @@ fn observation_key(source_item_key: &str, line: &JsonLine, index: usize, target:
         &u64::try_from(index).unwrap_or(u64::MAX).to_be_bytes(),
         target.as_bytes(),
     ])
+}
+
+fn ambiguous_issue(source_item_key: &str, line: &JsonLine, call_id: &str) -> IssueRecord {
+    IssueRecord {
+        issue_key: keys::key(&[
+            b"ambiguous_result",
+            source_item_key.as_bytes(),
+            &line.byte_offset.to_be_bytes(),
+            call_id.as_bytes(),
+        ]),
+        source_item_key: Some(source_item_key.to_owned()),
+        severity: Severity::Warning,
+        code: "ambiguous_call_id".to_owned(),
+        line_number: Some(line.number),
+        byte_offset: Some(line.byte_offset),
+        sqlite_blob_id: None,
+        record_sha256: Some(line.record_sha256.clone()),
+        message: "Pi tool result matches more than one branch-local call".to_owned(),
+        occurrence_count: 1,
+    }
 }
 
 fn orphan_issue(source_item_key: &str, line: &JsonLine, call_id: &str) -> IssueRecord {

@@ -8,7 +8,10 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 use crate::keys;
-use crate::model::{ADAPTER_VERSION, SourceRootRecord};
+use crate::model::{
+    ADAPTER_VERSION, IssueRecord, Severity, SourceItemRecord, SourceRootRecord, SourceStatus,
+};
+use crate::private_fs;
 use crate::sink::Sink;
 
 fn source_root(
@@ -52,8 +55,8 @@ fn register_root(
     Ok(record)
 }
 
-fn source_item(root: &SourceRootRecord, relative_path: String) -> crate::model::SourceItemRecord {
-    crate::model::SourceItemRecord {
+fn source_item(root: &SourceRootRecord, relative_path: String) -> SourceItemRecord {
+    SourceItemRecord {
         source_item_key: keys::key(&[
             b"source_item",
             root.source_root_key.as_bytes(),
@@ -68,6 +71,40 @@ fn source_item(root: &SourceRootRecord, relative_path: String) -> crate::model::
         snapshot_mtime_ns: 0,
         imported_byte_count: None,
         prefix_sha256: None,
-        status: crate::model::SourceStatus::Deferred,
+        status: SourceStatus::Deferred,
     }
+}
+
+fn reject_source_item(
+    path: &Path,
+    mut item: SourceItemRecord,
+    code: &str,
+    message: &str,
+    sink: &mut impl Sink,
+) -> Result<()> {
+    let identity = private_fs::identity(path)?;
+    item.device_id = Some(identity.device_id);
+    item.inode = Some(identity.inode);
+    item.size_bytes = identity.size_bytes;
+    item.snapshot_mtime_ns = identity.mtime_ns;
+    item.status = SourceStatus::Rejected;
+    sink.begin_source()?;
+    sink.source_item(&item)?;
+    sink.issue(&IssueRecord {
+        issue_key: keys::key(&[
+            b"rejected_source",
+            item.source_item_key.as_bytes(),
+            code.as_bytes(),
+        ]),
+        source_item_key: Some(item.source_item_key),
+        severity: Severity::Warning,
+        code: code.to_owned(),
+        line_number: Some(1),
+        byte_offset: Some(0),
+        sqlite_blob_id: None,
+        record_sha256: None,
+        message: keys::bounded_message(message),
+        occurrence_count: 1,
+    })?;
+    sink.commit_source()
 }

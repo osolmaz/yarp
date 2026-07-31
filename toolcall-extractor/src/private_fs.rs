@@ -24,8 +24,19 @@ pub fn prepare_database_path(path: &Path) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| Error::InvalidArguments("database path has no parent".to_owned()))?;
-    fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
-    set_mode(parent, 0o700)?;
+    if parent.exists() {
+        let metadata = fs::metadata(parent).map_err(|error| Error::io(parent, error))?;
+        let mode = metadata.permissions().mode() & 0o777;
+        if !metadata.is_dir() || mode != 0o700 {
+            return Err(Error::InvalidArguments(format!(
+                "database directory {} must already be private (mode 700)",
+                parent.display()
+            )));
+        }
+    } else {
+        fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
+        set_mode(parent, 0o700)?;
+    }
     if path.exists() {
         set_mode(path, 0o600)?;
     }
@@ -167,6 +178,19 @@ mod tests {
                 .mode()
                 & 0o777,
             0o700
+        );
+
+        let shared = temp.path().join("shared");
+        fs::create_dir(&shared).expect("shared");
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).expect("shared mode");
+        assert!(prepare_database_path(&shared.join("toolcalls.duckdb")).is_err());
+        assert_eq!(
+            fs::metadata(&shared)
+                .expect("shared metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
         );
     }
 

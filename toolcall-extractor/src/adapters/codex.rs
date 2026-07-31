@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use walkdir::WalkDir;
 
 use super::common::{JsonLine, first_json_value, process_jsonl};
-use super::{register_root, source_item};
+use super::{register_root, reject_source_item, source_item};
 use crate::error::{Error, Result};
 use crate::keys;
 use crate::model::{
@@ -38,9 +38,28 @@ pub fn extract(
         let relative = private_fs::relative_path(sessions, entry.path())?;
         let source = source_item(&root, relative);
         let Some(first) = first_json_value(entry.path())? else {
+            reject_source_item(
+                entry.path(),
+                source,
+                "unsupported_codex_source",
+                "Codex source does not start with one complete JSON record",
+                sink,
+            )?;
             continue;
         };
-        let context = CodexContext::from_header(unix_user, &first, &metadata)?;
+        let context = match CodexContext::from_header(unix_user, &first, &metadata) {
+            Ok(context) => context,
+            Err(error) => {
+                reject_source_item(
+                    entry.path(),
+                    source,
+                    "unsupported_codex_source",
+                    &error.to_string(),
+                    sink,
+                )?;
+                continue;
+            }
+        };
         let file_state = RefCell::new(FileState::default());
         let did_process = process_jsonl(
             entry.path(),
