@@ -305,9 +305,13 @@ impl Database {
                  ON c.call_key = r.call_key WHERE c.call_key IS NULL",
             )?,
             orphan_observations: scalar(
-                "SELECT count(*) FROM observations o LEFT JOIN source_items s
-                 ON s.source_item_key = o.source_item_key
-                 WHERE s.source_item_key IS NULL",
+                "SELECT count(*) FROM observations o
+                 LEFT JOIN source_items s ON s.source_item_key = o.source_item_key
+                 LEFT JOIN tool_calls c ON c.call_key = o.call_key
+                 LEFT JOIN tool_results r ON r.result_key = o.result_key
+                 WHERE s.source_item_key IS NULL
+                    OR (o.call_key IS NOT NULL AND c.call_key IS NULL)
+                    OR (o.result_key IS NOT NULL AND r.result_key IS NULL)",
             )?,
             calls_without_results: scalar(
                 "SELECT count(*) FROM tool_calls c
@@ -476,6 +480,50 @@ impl Sink for Database {
             self.connection.execute_batch("ROLLBACK;")?;
             self.in_transaction = false;
         }
+        Ok(())
+    }
+
+    fn reset_source(&mut self, source_item_key: &str) -> Result<()> {
+        self.execute_cached(
+            "CREATE OR REPLACE TEMP TABLE reset_result_keys AS
+             SELECT result_key FROM observations
+             WHERE source_item_key = ? AND result_key IS NOT NULL",
+            [source_item_key],
+        )?;
+        self.execute_cached(
+            "CREATE OR REPLACE TEMP TABLE reset_call_keys AS
+             SELECT call_key FROM observations
+             WHERE source_item_key = ? AND call_key IS NOT NULL
+             UNION
+             SELECT r.call_key FROM tool_results r
+             JOIN reset_result_keys k ON k.result_key = r.result_key",
+            [source_item_key],
+        )?;
+        self.execute_cached(
+            "DELETE FROM observations WHERE source_item_key = ?",
+            [source_item_key],
+        )?;
+        self.execute_cached(
+            "DELETE FROM import_issues WHERE source_item_key = ?",
+            [source_item_key],
+        )?;
+        self.connection.execute_batch(
+            "DELETE FROM tool_results r
+             WHERE r.result_key IN (SELECT result_key FROM reset_result_keys)
+               AND NOT EXISTS (
+                   SELECT 1 FROM observations o WHERE o.result_key = r.result_key
+               );
+             DELETE FROM tool_calls c
+             WHERE c.call_key IN (SELECT call_key FROM reset_call_keys)
+               AND NOT EXISTS (
+                   SELECT 1 FROM observations o WHERE o.call_key = c.call_key
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM tool_results r WHERE r.call_key = c.call_key
+               );
+             DROP TABLE reset_call_keys;
+             DROP TABLE reset_result_keys;",
+        )?;
         Ok(())
     }
 

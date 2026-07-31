@@ -172,6 +172,7 @@ impl Severity {
 pub enum StreamRecord {
     SourceRoot(SourceRootRecord),
     SourceItem(SourceItemRecord),
+    ResetSource(String),
     Session(SessionRecord),
     ToolCall(ToolCallRecord),
     ToolResult(ToolResultRecord),

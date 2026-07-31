@@ -69,6 +69,25 @@ fn pi_import_resumes_an_appended_result() {
     assert_eq!(second.tool_calls, 4);
     assert_eq!(second.tool_results, 3);
     assert_eq!(second.calls_without_results, 1);
+    drop(db);
+
+    fs::write(
+        &session,
+        concat!(
+            "{\"type\":\"session\",\"version\":3,\"id\":\"s1\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"cwd\":\"/tmp\"}\n",
+            "{\"type\":\"message\",\"id\":\"new-call\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"new\",\"name\":\"bash\",\"arguments\":{\"command\":\"cargo check\"}}]}}\n",
+            "{\"type\":\"message\",\"id\":\"new-result\",\"parentId\":\"new-call\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"new\",\"content\":\"checked\"}}\n"
+        ),
+    )
+    .expect("replace session");
+    let mut db = database(&path, "pi");
+    adapters::pi::extract("test", &sessions, &mut db).expect("replacement import");
+    db.finish(true).expect("finish replacement");
+    let replaced = Database::stats(&path).expect("replacement stats");
+    assert_eq!(replaced.tool_calls, 1);
+    assert_eq!(replaced.tool_results, 1);
+    assert_eq!(replaced.calls_without_results, 0);
+    assert_eq!(replaced.issues, 2);
 }
 
 #[test]

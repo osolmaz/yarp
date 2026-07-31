@@ -44,6 +44,9 @@ pub fn process_jsonl(
 
     let (start, prefix_issue) = resume_offset(path, sink, &source_item.source_item_key, before)?;
     sink.begin_source()?;
+    if prefix_issue.is_some() {
+        sink.reset_source(&source_item.source_item_key)?;
+    }
     source_item.device_id = Some(before.device_id);
     source_item.inode = Some(before.inode);
     source_item.size_bytes = before.size_bytes;
