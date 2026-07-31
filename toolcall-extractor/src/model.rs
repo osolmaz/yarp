@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const ADAPTER_VERSION: u32 = 2;
+pub const ADAPTER_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SourceRootRecord {

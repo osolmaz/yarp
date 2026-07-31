@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::keys;
 use crate::model::{
     IssueRecord, ObservationRecord, SessionRecord, SourceItemRecord, SourceRootRecord,
-    ToolCallRecord, ToolResultRecord,
+    SourceStatus, ToolCallRecord, ToolResultRecord,
 };
 use crate::private_fs;
 use crate::sink::{Checkpoint, Sink};
@@ -233,9 +233,108 @@ impl Database {
         self.staged_growth_upper_bound = 0;
     }
 
+    fn quarantine_orphan_results(&self) -> Result<()> {
+        // Keep ordinary orphans so a call appended later can resolve them. A result directly
+        // after a malformed record has bounded source evidence that its call was unrecoverable.
+        self.connection.execute_batch(
+            "BEGIN TRANSACTION;
+             CREATE OR REPLACE TEMP TABLE orphan_result_keys AS
+             SELECT DISTINCT r.result_key
+             FROM tool_results r
+             LEFT JOIN tool_calls c ON c.call_key = r.call_key
+             JOIN observations o ON o.result_key = r.result_key
+             JOIN import_issues i ON i.source_item_key = o.source_item_key
+                                 AND i.code = 'malformed_jsonl'
+                                 AND i.line_number + 1 = o.line_number
+             WHERE c.call_key IS NULL;",
+        )?;
+        let result = (|| -> Result<()> {
+            let mut statement = self.connection.prepare(
+                "SELECT k.result_key, o.source_item_key, o.line_number, o.byte_offset,
+                        o.sqlite_blob_id, o.record_sha256
+                 FROM orphan_result_keys k
+                 LEFT JOIN observations o ON o.result_key = k.result_key
+                 QUALIFY row_number() OVER (
+                     PARTITION BY k.result_key
+                     ORDER BY o.source_item_key, o.line_number, o.byte_offset
+                 ) = 1
+                 ORDER BY k.result_key",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<u64>>(2)?,
+                    row.get::<_, Option<u64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
+                ))
+            })?;
+            let mut issues = Vec::new();
+            for row in rows {
+                issues.push(row?);
+            }
+            drop(statement);
+
+            for (result_key, source_item_key, line_number, byte_offset, sqlite_blob_id, hash) in
+                issues
+            {
+                let issue_key = keys::key(&[
+                    b"issue",
+                    source_item_key.as_deref().unwrap_or_default().as_bytes(),
+                    b"result_without_call",
+                    result_key.as_bytes(),
+                ]);
+                self.execute_cached(
+                    "INSERT INTO import_issues
+                     (issue_key, run_key, source_item_key, severity, code, line_number,
+                      byte_offset, sqlite_blob_id, record_sha256, message, occurrence_count)
+                     VALUES (?, ?, ?, 'warning', 'result_without_call', ?, ?, ?, ?,
+                             'tool result follows a malformed record and has no defensible matching call', 1)
+                     ON CONFLICT (issue_key) DO UPDATE SET
+                       run_key = excluded.run_key,
+                       source_item_key = excluded.source_item_key,
+                       line_number = excluded.line_number,
+                       byte_offset = excluded.byte_offset,
+                       sqlite_blob_id = excluded.sqlite_blob_id,
+                       record_sha256 = excluded.record_sha256,
+                       message = excluded.message,
+                       occurrence_count = excluded.occurrence_count",
+                    params![
+                        issue_key,
+                        self.run_key,
+                        source_item_key,
+                        line_number,
+                        byte_offset,
+                        sqlite_blob_id,
+                        hash
+                    ],
+                )?;
+            }
+            self.connection.execute_batch(
+                "DELETE FROM observations
+                 WHERE result_key IN (SELECT result_key FROM orphan_result_keys);
+                 DELETE FROM tool_results
+                 WHERE result_key IN (SELECT result_key FROM orphan_result_keys);
+                 DROP TABLE orphan_result_keys;",
+            )?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.connection.execute_batch("COMMIT;").map_err(Into::into),
+            Err(error) => {
+                let _ = self.connection.execute_batch("ROLLBACK;");
+                Err(error)
+            }
+        }
+    }
+
     pub fn finish(&mut self, success: bool) -> Result<()> {
         if self.in_transaction {
             self.rollback_source()?;
+        }
+        if success {
+            self.quarantine_orphan_results()?;
         }
         let status = if success { "complete" } else { "failed" };
         self.execute_cached(
@@ -547,6 +646,21 @@ impl Sink for Database {
 
     fn source_item(&mut self, record: &SourceItemRecord) -> Result<()> {
         private_fs::enforce_size_limit(&self.path, estimate_source_item(record))?;
+        if matches!(record.status, SourceStatus::Deferred)
+            && record.imported_byte_count == Some(0)
+            && let Some(checkpoint) = self.checkpoint(&record.source_item_key)?
+        {
+            let unchanged = checkpoint.adapter_version == record.adapter_version
+                && checkpoint.device_id == record.device_id
+                && checkpoint.inode == record.inode
+                && checkpoint.size_bytes == record.size_bytes
+                && checkpoint.snapshot_mtime_ns == record.snapshot_mtime_ns
+                && checkpoint.imported_byte_count == Some(record.size_bytes)
+                && checkpoint.status == "complete";
+            if !unchanged {
+                self.reset_source(&record.source_item_key)?;
+            }
+        }
         self.execute_cached(
             "INSERT INTO source_items
              (source_item_key, source_root_key, relative_path, adapter_version,
