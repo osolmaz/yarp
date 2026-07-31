@@ -199,10 +199,11 @@ test("serializes concurrent requests", async () => {
   await Promise.all([
     client.beginCall(session, call, {}, {}, 2),
     client.resultBefore(session, "call-1", { content: "before" }, 3),
-    client.finishCall(session, "call-1", { content: "after" }, false, true, 4),
-    client.updateFinalResult(session, "call-1", { content: "final" }, false, 5),
+    client.stageResult(session, "call-1", { content: "staged" }, false, 4),
+    client.finishCall(session, "call-1", { content: "preflight" }, true, false, 5),
+    client.updateFinalResult(session, "call-1", { content: "final" }, false, 6),
   ])
-  assert.deepEqual(seen, [1, 2, 3, 4])
+  assert.deepEqual(seen, [1, 2, 3, 4, 5])
   await client.close()
 })
 

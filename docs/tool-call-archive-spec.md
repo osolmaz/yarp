@@ -79,7 +79,7 @@ A snapshot points to immutable bytes in `payloads`. Its `subject` says what was 
 | --- | --- | --- |
 | `input` | Tool arguments received by YARP. | Arguments after YARP rewrites them. |
 | `result` | Tool result received before YARP changes it. | Tool result returned to Pi. |
-| `source_output` | Exact complete output read from a source tool's `fullOutputPath`. | Not used. |
+| `source_output` | Exact complete output read from Pi's built-in Bash tool `fullOutputPath`. | Not used. |
 | `stdout` | Exact child stdout before pruning. | Exact stdout emitted after pruning. |
 | `stderr` | Exact child stderr before pruning. | Exact stderr emitted after pruning. |
 
@@ -87,7 +87,7 @@ Every tool call must have `input/before` and `input/after` snapshots. Every fina
 
 When YARP makes no change, the before and after snapshots point to the same payload. The archive does not duplicate the bytes.
 
-The word `before` means before YARP processing. A source tool may already have applied its own limits before its `tool_result` event. When that event exposes `fullOutputPath`, YARP stores the file's exact bytes as `source_output/before` in the same transaction as `result/before`. Otherwise, `result/before` contains the exact result exposed by the source tool.
+The word `before` means before YARP processing. A source tool may already have applied its own limits before its `tool_result` event. When Pi's built-in Bash result exposes `fullOutputPath`, YARP stores the file's exact bytes as `source_output/before` in the same transaction as `result/before`. YARP ignores that field on other tools rather than treating their result metadata as a trusted local path. Otherwise, `result/before` contains the exact result exposed by the source tool.
 
 ## Payload encoding
 
@@ -103,7 +103,7 @@ YARP compresses a payload with Zstandard level 3 when the compressed body is at 
 
 YARP observes `tool_execution_start` to retain arguments in memory for calls rejected before `tool_call`. At `tool_call`, YARP writes the session, the call with `status = 'started'`, and both input snapshots in one transaction. The transaction must commit before tool execution begins. A call rejected before `tool_call` never executes, so YARP writes its unchanged input snapshots with its final preflight result at `tool_execution_end`.
 
-The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before`, then writes a provisional `result/after`, `is_error`, `finished_at_ms`, and `status = 'finished'` while it can still restore raw output on failure. After all result hooks run, `tool_execution_end` reconciles `result/after` and its final metadata in one transaction. Completion verifies that `result/before` exists and that executed wrapped shell calls have all four stream snapshots.
+The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before`, then stages a provisional `result/after` and `is_error` while it can still restore raw output on failure. The call remains `started`, so a crash or later reconciliation failure is visible as an incomplete call. After all result hooks run, `tool_execution_end` replaces the provisional result and atomically writes its final metadata with `status = 'finished'`. Completion verifies that `result/before` exists and that executed wrapped shell calls have all four stream snapshots.
 
 Pi can reject or block a call before tool execution without emitting `tool_result`, and validation can reject it before `tool_call`. For those preflight failures, `tool_execution_end` records the error result and finishes the call without requiring `result/before`. The archive does not infer a rejection or cancellation category from result text.
 

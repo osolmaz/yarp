@@ -119,6 +119,15 @@ enum IngestOperation {
         full_output_path: Option<PathBuf>,
         captured_at_ms: i64,
     },
+    StageResult {
+        request_id: u64,
+        schema_version: u32,
+        session: SessionIdentity,
+        source_call_id: String,
+        result: Value,
+        is_error: bool,
+        captured_at_ms: i64,
+    },
     FinishCall {
         request_id: u64,
         schema_version: u32,
@@ -145,6 +154,7 @@ impl IngestOperation {
         match self {
             Self::BeginCall { request_id, .. }
             | Self::ResultBefore { request_id, .. }
+            | Self::StageResult { request_id, .. }
             | Self::FinishCall { request_id, .. }
             | Self::UpdateFinalResult { request_id, .. } => *request_id,
         }
@@ -154,6 +164,7 @@ impl IngestOperation {
         match self {
             Self::BeginCall { schema_version, .. }
             | Self::ResultBefore { schema_version, .. }
+            | Self::StageResult { schema_version, .. }
             | Self::FinishCall { schema_version, .. }
             | Self::UpdateFinalResult { schema_version, .. } => *schema_version,
         }
@@ -395,6 +406,45 @@ impl Archive {
             .map_err(|error| format!("could not commit pre-YARP result: {error}"))
     }
 
+    /// Store the provisional post-YARP result while leaving the call incomplete.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the call is missing, required snapshots are missing, or the payload
+    /// cannot be committed.
+    pub fn stage_result(
+        &mut self,
+        session: &SessionIdentity,
+        source_call_id: &str,
+        result: &Value,
+        is_error: bool,
+        captured_at_ms: i64,
+    ) -> Result<(), String> {
+        let body = canonical_json(result)?;
+        let transaction = self.transaction()?;
+        let call_id = find_call(&transaction, session, source_call_id)?;
+        require_call_status(&transaction, call_id, source_call_id, "started")?;
+        validate_completion(&transaction, call_id, true)?;
+        insert_snapshot_bytes(
+            &transaction,
+            call_id,
+            "result",
+            "after",
+            "application/json",
+            captured_at_ms,
+            &body,
+        )?;
+        transaction
+            .execute(
+                "UPDATE tool_calls SET is_error = ?1, executed = 1 WHERE id = ?2",
+                params![i64::from(is_error), call_id],
+            )
+            .map_err(|error| format!("could not stage tool result: {error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("could not commit staged tool result: {error}"))
+    }
+
     /// Store the finalized result and mark the call finished.
     ///
     /// # Errors
@@ -440,11 +490,11 @@ impl Archive {
             .map_err(|error| format!("could not commit final tool result: {error}"))
     }
 
-    /// Reconcile a finished call with the result after every Pi result hook has run.
+    /// Finalize a staged call with the result after every Pi result hook has run.
     ///
     /// # Errors
     ///
-    /// Returns an error when the call is not finished or the replacement cannot be committed.
+    /// Returns an error when the call is not staged or the final result cannot be committed.
     pub fn update_final_result(
         &mut self,
         session: &SessionIdentity,
@@ -463,11 +513,33 @@ impl Archive {
                 |row| row.get(0),
             )
             .map_err(|error| format!("could not read final tool call status: {error}"))?;
-        if status != "finished" {
+        if status == "finished" {
+            let expected_sha = Sha256::digest(&body).to_vec();
+            let stored: (Vec<u8>, bool, i64, bool) = transaction
+                .query_row(
+                    "SELECT s.payload_sha256, c.is_error, c.finished_at_ms, c.executed
+                     FROM tool_calls c
+                     JOIN snapshots s ON s.tool_call_id = c.id
+                     WHERE c.id = ?1 AND s.subject = 'result' AND s.stage = 'after'",
+                    [call_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .map_err(|error| format!("could not check finalized tool result: {error}"))?;
+            if stored == (expected_sha, is_error, finished_at_ms, true) {
+                return transaction
+                    .commit()
+                    .map_err(|error| format!("could not commit repeated final result: {error}"));
+            }
             return Err(format!(
-                "tool call {source_call_id} is not finished and cannot reconcile its result"
+                "tool call {source_call_id} was already finalized with different content or metadata"
             ));
         }
+        if status != "started" {
+            return Err(format!(
+                "tool call {source_call_id} has status {status}, expected started"
+            ));
+        }
+        validate_completion(&transaction, call_id, true)?;
         let replaced_sha = replace_snapshot_bytes(
             &transaction,
             call_id,
@@ -479,10 +551,12 @@ impl Archive {
         )?;
         transaction
             .execute(
-                "UPDATE tool_calls SET finished_at_ms = ?1, is_error = ?2 WHERE id = ?3",
+                "UPDATE tool_calls
+                 SET finished_at_ms = ?1, status = 'finished', is_error = ?2, executed = 1
+                 WHERE id = ?3",
                 params![finished_at_ms, i64::from(is_error), call_id],
             )
-            .map_err(|error| format!("could not reconcile final tool call: {error}"))?;
+            .map_err(|error| format!("could not finalize staged tool call: {error}"))?;
         transaction
             .execute(
                 "DELETE FROM payloads
@@ -495,7 +569,7 @@ impl Archive {
             .map_err(|error| format!("could not remove replaced final payload: {error}"))?;
         transaction
             .commit()
-            .map_err(|error| format!("could not commit reconciled tool result: {error}"))
+            .map_err(|error| format!("could not commit final staged tool result: {error}"))
     }
 
     /// Store exact shell streams before and after pruning.
@@ -1058,6 +1132,14 @@ fn apply_operation(archive: &mut Archive, operation: IngestOperation) -> Result<
             full_output_path.as_deref(),
             captured_at_ms,
         ),
+        IngestOperation::StageResult {
+            session,
+            source_call_id,
+            result,
+            is_error,
+            captured_at_ms,
+            ..
+        } => archive.stage_result(&session, &source_call_id, &result, is_error, captured_at_ms),
         IngestOperation::FinishCall {
             session,
             source_call_id,
@@ -1241,6 +1323,27 @@ fn find_call(
             |row| row.get(0),
         )
         .map_err(|error| format!("could not find tool call {source_call_id}: {error}"))
+}
+
+fn require_call_status(
+    transaction: &Transaction<'_>,
+    call_id: i64,
+    source_call_id: &str,
+    expected: &str,
+) -> Result<(), String> {
+    let status: String = transaction
+        .query_row(
+            "SELECT status FROM tool_calls WHERE id = ?1",
+            [call_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("could not read tool call status: {error}"))?;
+    if status != expected {
+        return Err(format!(
+            "tool call {source_call_id} has status {status}, expected {expected}"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_completion(
@@ -1725,7 +1828,7 @@ mod tests {
     }
 
     #[test]
-    fn reconciles_the_final_result_after_other_hooks() {
+    fn finalizes_the_staged_result_after_other_hooks() {
         let (_directory, mut archive) = archive();
         archive
             .begin_call(
@@ -1746,15 +1849,15 @@ mod tests {
             )
             .expect("before");
         archive
-            .finish_call(
+            .stage_result(
                 &session(),
                 "call-1",
                 &serde_json::json!({"content": "provisional"}),
                 false,
-                true,
                 40,
             )
-            .expect("finish");
+            .expect("stage");
+        assert_eq!(archive.stats().expect("staged stats").incomplete_calls, 1);
         archive
             .update_final_result(
                 &session(),
@@ -1764,6 +1867,15 @@ mod tests {
                 50,
             )
             .expect("update final");
+        archive
+            .update_final_result(
+                &session(),
+                "call-1",
+                &serde_json::json!({"content": "final"}),
+                true,
+                50,
+            )
+            .expect("repeat committed final update");
 
         let call_id: i64 = archive
             .connection
@@ -1785,6 +1897,66 @@ mod tests {
             .expect("final metadata");
         assert_eq!(metadata, (1, 50));
         assert!(archive.verify().expect("verify").errors.is_empty());
+    }
+
+    #[test]
+    fn failed_finalization_keeps_the_staged_call_incomplete() {
+        let (_directory, mut archive) = archive();
+        archive
+            .begin_call(
+                &session(),
+                &call(),
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                20,
+            )
+            .expect("begin");
+        archive
+            .result_before(
+                &session(),
+                "call-1",
+                &serde_json::json!({"content": "before"}),
+                None,
+                30,
+            )
+            .expect("before");
+        archive
+            .stage_result(
+                &session(),
+                "call-1",
+                &serde_json::json!({"content": "provisional"}),
+                false,
+                40,
+            )
+            .expect("stage");
+        archive
+            .connection
+            .execute_batch(
+                "CREATE TEMP TRIGGER reject_finish
+                 BEFORE UPDATE OF status ON tool_calls
+                 WHEN NEW.status = 'finished'
+                 BEGIN SELECT RAISE(ABORT, 'simulated final write failure'); END;",
+            )
+            .expect("failure trigger");
+
+        let error = archive
+            .update_final_result(
+                &session(),
+                "call-1",
+                &serde_json::json!({"content": "final"}),
+                false,
+                50,
+            )
+            .expect_err("finalization failure");
+        assert!(error.contains("simulated final write failure"));
+        assert_eq!(archive.stats().expect("stats").incomplete_calls, 1);
+        let stored: (String, Option<i64>) = archive
+            .connection
+            .query_row("SELECT status, finished_at_ms FROM tool_calls", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .expect("stored state");
+        assert_eq!(stored, ("started".to_owned(), None));
     }
 
     #[test]
@@ -2382,15 +2554,14 @@ mod tests {
                 "capturedAtMs": 30
             }),
             serde_json::json!({
-                "operation": "finish_call",
+                "operation": "stage_result",
                 "requestId": 3,
                 "schemaVersion": 1,
                 "session": session(),
                 "sourceCallId": "call-1",
                 "result": {"content": "after"},
                 "isError": false,
-                "requirePreResult": true,
-                "finishedAtMs": 40
+                "capturedAtMs": 40
             }),
             serde_json::json!({
                 "operation": "update_final_result",

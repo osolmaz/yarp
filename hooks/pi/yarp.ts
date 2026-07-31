@@ -99,7 +99,7 @@ export async function installYarpExtension(
 
   let sink: ArchiveSink | null = null
   let session: ArchiveSession | null = null
-  const activeCalls = new Map<string, { requiresStreams: boolean; finished: boolean }>()
+  const activeCalls = new Map<string, { requiresStreams: boolean; staged: boolean }>()
   const pendingCalls = new Map<string, PendingCall>()
 
   pi.on("session_start", async (_event, context) => {
@@ -172,7 +172,7 @@ export async function installYarpExtension(
         capturedAtMs,
       )
       pendingCalls.delete(event.toolCallId)
-      activeCalls.set(event.toolCallId, { requiresStreams, finished: false })
+      activeCalls.set(event.toolCallId, { requiresStreams, staged: false })
     }
 
     if (rewritten !== null && binding !== null && rewritten !== binding.command) {
@@ -193,15 +193,14 @@ export async function installYarpExtension(
         Date.now(),
         sourceFullOutputPath(event),
       )
-      await sink.finishCall(
+      await sink.stageResult(
         session,
         event.toolCallId,
         snapshot,
         event.isError,
-        true,
         Date.now(),
       )
-      active.finished = true
+      active.staged = true
     } catch (error) {
       activeCalls.delete(event.toolCallId)
       console.error(`[yarp] result archive failed: ${errorMessage(error)}`)
@@ -217,7 +216,7 @@ export async function installYarpExtension(
     const pending = pendingCalls.get(event.toolCallId)
     if (active === undefined && pending === undefined) return
     try {
-      if (active?.finished === true) {
+      if (active?.staged === true) {
         await sink.updateFinalResult(
           session,
           event.toolCallId,
@@ -300,7 +299,7 @@ function callIdentity(
 }
 
 function sourceFullOutputPath(event: ToolResultEvent): string | undefined {
-  if (!isRecord(event.details)) return undefined
+  if (event.toolName !== "bash" || !isRecord(event.details)) return undefined
   const path = event.details.fullOutputPath
   return typeof path === "string" && path !== "" ? path : undefined
 }
