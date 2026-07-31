@@ -371,12 +371,15 @@ function parseAck(line: string): Ack | null {
     return null
   }
   if (!isRecord(value)) return null
-  if (typeof value.requestId !== "number" || !Number.isSafeInteger(value.requestId)) return null
-  if (typeof value.ok !== "boolean") return null
-  if (value.error !== undefined && typeof value.error !== "string") return null
-  return value.error === undefined
-    ? { requestId: value.requestId, ok: value.ok }
-    : { requestId: value.requestId, ok: value.ok, error: value.error }
+  const requestId = value["requestId"]
+  const ok = value["ok"]
+  const error = value["error"]
+  if (typeof requestId !== "number" || !Number.isSafeInteger(requestId)) return null
+  if (typeof ok !== "boolean") return null
+  if (error !== undefined && typeof error !== "string") return null
+  return error === undefined
+    ? { requestId, ok }
+    : { requestId, ok, error }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
