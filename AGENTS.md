@@ -1,8 +1,9 @@
 # YARP
 
-- Keep the command rewrite allowlist narrow and fail open to the original command.
+- Keep the command rewrite allowlist narrow. Rewrite failures fail open to the original command; archive failures follow `docs/tool-call-archive-spec.md`.
 - Preserve child exit codes and keep stdout and stderr on their original streams.
-- Do not add telemetry, analytics, command history, network access, or persistent state.
+- Do not add telemetry, analytics, or network access.
+- Keep persistent state limited to the local tool-call archive defined in `docs/tool-call-archive-spec.md` unless the user explicitly approves another store.
 - Use strict TypeScript without explicit `any`, unsafe casts, or unchecked external input.
 - Do not use unsafe Rust.
 - Add tests for every behavior change.
