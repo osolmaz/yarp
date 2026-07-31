@@ -826,7 +826,11 @@ impl Archive {
             ),
             (
                 "SELECT count(*) FROM tool_calls
-                 WHERE (status = 'started' AND (finished_at_ms IS NOT NULL OR is_error IS NOT NULL OR executed IS NOT NULL))
+                 WHERE (status = 'started' AND (
+                           finished_at_ms IS NOT NULL
+                           OR (is_error IS NULL) != (executed IS NULL)
+                           OR executed = 0
+                       ))
                     OR (status = 'finished' AND (finished_at_ms IS NULL OR is_error IS NULL OR executed IS NULL))",
                 "tool call(s) with inconsistent lifecycle state",
             ),
@@ -1857,7 +1861,9 @@ mod tests {
                 40,
             )
             .expect("stage");
-        assert_eq!(archive.stats().expect("staged stats").incomplete_calls, 1);
+        let staged_report = archive.verify().expect("verify staged call");
+        assert_eq!(staged_report.incomplete_calls, 1);
+        assert!(staged_report.errors.is_empty());
         archive
             .update_final_result(
                 &session(),

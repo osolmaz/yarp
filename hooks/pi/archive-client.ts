@@ -287,6 +287,9 @@ export class ArchiveClient implements ArchiveSink {
     this.stderr = ""
     child.stdout.setEncoding("utf8")
     child.stderr.setEncoding("utf8")
+    child.stdin.on("error", (error: Error) => {
+      if (this.child === child) this.rejectPending(error)
+    })
     child.stdout.on("data", (chunk: string) => {
       if (this.child === child) this.receiveAcks(chunk)
     })
