@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use walkdir::WalkDir;
 
 use super::common::{JsonLine, process_jsonl};
-use super::{register_root, source_item};
+use super::{register_root, reject_source_item, source_item};
 use crate::error::{Error, Result};
 use crate::keys;
 use crate::model::{
@@ -107,6 +107,7 @@ fn extract_databases(
         // Always open a fresh read-only transaction so WAL changes and transcript signatures
         // cannot be skipped by a main-file checkpoint.
         sink.begin_source()?;
+        sink.reset_source(&item.source_item_key)?;
         item.device_id = Some(identity.device_id);
         item.inode = Some(identity.inode);
         item.size_bytes = identity.size_bytes;
@@ -142,7 +143,13 @@ fn extract_databases(
             }
             Err(error) => {
                 sink.rollback_source()?;
-                return Err(error);
+                reject_source_item(
+                    entry.path(),
+                    item,
+                    "unsupported_cursor_source",
+                    &error.to_string(),
+                    sink,
+                )?;
             }
         }
     }
