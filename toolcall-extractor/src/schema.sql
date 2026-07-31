@@ -85,8 +85,8 @@ CREATE TABLE IF NOT EXISTS tool_results (
 CREATE TABLE IF NOT EXISTS observations (
     observation_key VARCHAR PRIMARY KEY,
     source_item_key VARCHAR NOT NULL,
-    call_key VARCHAR REFERENCES tool_calls(call_key),
-    result_key VARCHAR REFERENCES tool_results(result_key),
+    call_key VARCHAR,
+    result_key VARCHAR,
     record_kind VARCHAR NOT NULL CHECK (
         record_kind IN ('canonical', 'projection', 'validation')
     ),

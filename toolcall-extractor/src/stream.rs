@@ -25,6 +25,10 @@ impl<W: Write> JsonlSink<W> {
 }
 
 impl<W: Write> Sink for JsonlSink<W> {
+    fn reset_source(&mut self, source_item_key: &str) -> Result<()> {
+        self.write(StreamRecord::ResetSource(source_item_key.to_owned()))
+    }
+
     fn source_root(&mut self, record: &SourceRootRecord) -> Result<()> {
         self.write(StreamRecord::SourceRoot(record.clone()))
     }
@@ -63,6 +67,7 @@ pub fn ingest(reader: impl BufRead, sink: &mut impl Sink) -> Result<u64> {
         match record {
             StreamRecord::SourceRoot(value) => sink.source_root(&value)?,
             StreamRecord::SourceItem(value) => sink.source_item(&value)?,
+            StreamRecord::ResetSource(value) => sink.reset_source(&value)?,
             StreamRecord::Session(value) => sink.session(&value)?,
             StreamRecord::ToolCall(value) => sink.tool_call(&value)?,
             StreamRecord::ToolResult(value) => sink.tool_result(&value)?,

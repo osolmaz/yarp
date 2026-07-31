@@ -37,6 +37,10 @@ pub trait Sink {
         Ok(())
     }
 
+    fn reset_source(&mut self, _source_item_key: &str) -> Result<()> {
+        Ok(())
+    }
+
     fn source_root(&mut self, record: &SourceRootRecord) -> Result<()>;
     fn source_item(&mut self, record: &SourceItemRecord) -> Result<()>;
     fn session(&mut self, record: &SessionRecord) -> Result<()>;
