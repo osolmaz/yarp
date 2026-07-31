@@ -55,11 +55,13 @@ class MockPi implements ExtensionAPI {
   failRewrite = false
   failRestore = false
   rewriteArgs: string[] | null = null
+  restoreOptions: ExecOptions | undefined
 
-  async exec(command: string, args: string[], _options?: ExecOptions): Promise<ExecResult> {
+  async exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult> {
     assert.equal(command, "yarp")
     if (args[0] === "--version") return result(0, "yarp 0.1.0\n")
     if (args[0] === "archive" && args[1] === "restore") {
+      this.restoreOptions = options
       if (this.failRestore) throw new Error("restore spawn failed")
       return this.restore
     }
@@ -347,6 +349,7 @@ test("restores raw shell output when result finalization fails", async () => {
     isError: false,
   })
   assert.equal(sink.finishedResults.length, 0)
+  assert.equal(pi.restoreOptions, undefined)
 })
 
 test("contains raw restore transport failures", async () => {

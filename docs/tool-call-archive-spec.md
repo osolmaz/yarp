@@ -71,7 +71,7 @@ SQLite may create `tool-calls.sqlite3-wal` and `tool-calls.sqlite3-shm` while th
 
 A session identifies one agent conversation. `agent` names the source application, starting with `pi`. `account` names the local account that owns the source data, such as `onur` or `bob`. `source_session_id` is the session identifier assigned by that agent.
 
-A tool call identifies one invocation. `source_call_id` is the identifier assigned by the source agent. The pair `(session_id, source_call_id)` must be unique. `provider` and `model` record the model that emitted the call when the source exposes those values. `requires_streams` records that YARP wrapped the shell command and must capture all four stream snapshots before the call can finish. `executed` distinguishes calls that reached a tool and therefore require a pre-YARP result from preflight failures that never ran.
+A tool call identifies one invocation. `source_call_id` is the identifier assigned by the source agent. The pair `(session_id, source_call_id)` must be unique. `provider` and `model` record the model that emitted the call when the source exposes those values. `requires_streams` records that YARP wrapped the shell command and must capture all four stream snapshots if the call executes. `executed` distinguishes calls that reached a tool and therefore require a pre-YARP result from preflight failures that never ran.
 
 A snapshot points to immutable bytes in `payloads`. Its `subject` says what was captured. Its `stage` says whether capture happened before or after YARP processing.
 
@@ -102,7 +102,7 @@ YARP compresses a payload with Zstandard level 3 when the compressed body is at 
 
 At `tool_call`, YARP writes the session, the call with `status = 'started'`, and both input snapshots in one transaction. The transaction must commit before tool execution begins.
 
-The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before`, then writes the finalized `result/after`, `is_error`, `finished_at_ms`, and `status = 'finished'`. The final transaction verifies that `result/before` exists and that wrapped shell calls have all four stream snapshots.
+The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before`, then writes the finalized `result/after`, `is_error`, `finished_at_ms`, and `status = 'finished'`. The final transaction verifies that `result/before` exists and that executed wrapped shell calls have all four stream snapshots.
 
 Pi can reject or block a call before tool execution without emitting `tool_result`. For those preflight failures, `tool_execution_end` records the error result and finishes the call without requiring `result/before`. The archive does not infer a rejection or cancellation category from result text.
 

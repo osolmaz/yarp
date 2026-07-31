@@ -694,7 +694,7 @@ impl Archive {
             ),
             (
                 "SELECT count(*) FROM tool_calls c
-                 WHERE c.status = 'finished' AND c.requires_streams = 1
+                 WHERE c.status = 'finished' AND c.requires_streams = 1 AND c.executed = 1
                    AND 4 != (
                        SELECT count(*) FROM snapshots s
                        WHERE s.tool_call_id = c.id
@@ -1099,7 +1099,7 @@ fn validate_completion(
             |row| row.get(0),
         )
         .map_err(|error| format!("could not read tool call requirements: {error}"))?;
-    if requires_streams {
+    if requires_streams && require_pre_result {
         let streams: i64 = transaction
             .query_row(
                 "SELECT count(*) FROM snapshots
@@ -1115,7 +1115,8 @@ fn validate_completion(
                 "shell tool call is missing stream snapshots: found {streams} of 4"
             ));
         }
-    } else if require_pre_result {
+    }
+    if require_pre_result {
         let has_result: bool = transaction
             .query_row(
                 "SELECT EXISTS(
@@ -1893,6 +1894,73 @@ mod tests {
             .expect_err("missing pre-result");
         assert!(error.contains("missing its pre-YARP result"));
         assert_eq!(archive.stats().expect("stats").incomplete_calls, 1);
+    }
+
+    #[test]
+    fn finishes_preflight_rejected_shell_calls_without_streams() {
+        let (_directory, mut archive) = archive();
+        let mut shell_call = call();
+        shell_call.requires_streams = true;
+        archive
+            .begin_call(
+                &session(),
+                &shell_call,
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                20,
+            )
+            .expect("begin");
+        archive
+            .finish_call(
+                &session(),
+                "call-1",
+                &serde_json::json!({"error": "blocked"}),
+                true,
+                false,
+                40,
+            )
+            .expect("finish preflight rejection");
+        assert!(archive.verify().expect("verify").errors.is_empty());
+    }
+
+    #[test]
+    fn requires_a_pre_result_for_executed_shell_calls() {
+        let (_directory, mut archive) = archive();
+        let mut shell_call = call();
+        shell_call.requires_streams = true;
+        archive
+            .begin_call(
+                &session(),
+                &shell_call,
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                20,
+            )
+            .expect("begin");
+        archive
+            .capture_streams(
+                &ArchiveKey {
+                    session: session(),
+                    source_call_id: "call-1".to_owned(),
+                },
+                30,
+                &mut Cursor::new(b"stdout"),
+                &mut Cursor::new(b"stderr"),
+                b"stdout",
+                b"stderr",
+            )
+            .expect("streams");
+        let error = archive
+            .finish_call(
+                &session(),
+                "call-1",
+                &serde_json::json!({}),
+                false,
+                true,
+                40,
+            )
+            .expect_err("missing pre-result");
+        assert!(error.contains("missing its pre-YARP result"));
     }
 
     #[test]
