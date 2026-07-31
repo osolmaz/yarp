@@ -16,6 +16,8 @@ use crate::sink::{Checkpoint, Sink};
 
 const SCHEMA_VERSION: i64 = 1;
 const BUFFER_ROWS: usize = 1_024;
+const OPEN_GROWTH_RESERVE: u64 = 1_048_576;
+const ROW_GROWTH_RESERVE: u64 = 1_024;
 
 pub struct Database {
     connection: Connection,
@@ -27,6 +29,7 @@ pub struct Database {
     tool_results: Vec<ToolResultRecord>,
     observations: Vec<ObservationRecord>,
     issues: Vec<IssueRecord>,
+    staged_growth_upper_bound: u64,
     _lock: File,
 }
 
@@ -86,6 +89,7 @@ impl Database {
     pub fn open(path: &Path, unix_user: &str, agent: &str) -> Result<Self> {
         private_fs::prepare_database_path(path)?;
         let lock = private_fs::acquire_database_lock(path)?;
+        private_fs::enforce_size_limit(path, OPEN_GROWTH_RESERVE)?;
         let connection = Connection::open(path)?;
         private_fs::protect_database(path)?;
         connection.execute_batch(
@@ -125,6 +129,7 @@ impl Database {
             tool_results: Vec::new(),
             observations: Vec::new(),
             issues: Vec::new(),
+            staged_growth_upper_bound: 0,
             _lock: lock,
         })
     }
@@ -150,6 +155,12 @@ impl Database {
     }
 
     fn flush_buffers(&mut self) -> Result<()> {
+        let growth = estimate_sessions(&self.sessions)
+            .saturating_add(estimate_calls(&self.tool_calls))
+            .saturating_add(estimate_results(&self.tool_results))
+            .saturating_add(estimate_observations(&self.observations))
+            .saturating_add(estimate_issues(&self.issues));
+        private_fs::enforce_size_limit(&self.path, growth)?;
         append_sessions(&self.connection, std::mem::take(&mut self.sessions))?;
         append_calls(&self.connection, std::mem::take(&mut self.tool_calls))?;
         append_results(&self.connection, std::mem::take(&mut self.tool_results))?;
@@ -158,7 +169,9 @@ impl Database {
             &self.connection,
             &self.run_key,
             std::mem::take(&mut self.issues),
-        )
+        )?;
+        self.staged_growth_upper_bound = self.staged_growth_upper_bound.saturating_add(growth);
+        Ok(())
     }
 
     fn merge_staging(&self) -> Result<()> {
@@ -217,6 +230,7 @@ impl Database {
         self.tool_results.clear();
         self.observations.clear();
         self.issues.clear();
+        self.staged_growth_upper_bound = 0;
     }
 
     pub fn finish(&mut self, success: bool) -> Result<()> {
@@ -443,6 +457,7 @@ impl Sink for Database {
             return Ok(());
         }
         self.flush_buffers()?;
+        private_fs::enforce_size_limit(&self.path, self.staged_growth_upper_bound)?;
         self.merge_staging()?;
         if private_fs::enforce_size_limit(&self.path, 0).is_err() {
             self.connection.execute_batch("ROLLBACK;")?;
@@ -451,6 +466,7 @@ impl Sink for Database {
         }
         self.connection.execute_batch("COMMIT;")?;
         self.in_transaction = false;
+        self.staged_growth_upper_bound = 0;
         Ok(())
     }
 
@@ -464,6 +480,7 @@ impl Sink for Database {
     }
 
     fn source_root(&mut self, record: &SourceRootRecord) -> Result<()> {
+        private_fs::enforce_size_limit(&self.path, estimate_source_root(record))?;
         self.execute_cached(
             "INSERT INTO source_roots
              (source_root_key, unix_user, agent, source_kind, root_path)
@@ -481,6 +498,7 @@ impl Sink for Database {
     }
 
     fn source_item(&mut self, record: &SourceItemRecord) -> Result<()> {
+        private_fs::enforce_size_limit(&self.path, estimate_source_item(record))?;
         self.execute_cached(
             "INSERT INTO source_items
              (source_item_key, source_root_key, relative_path, adapter_version,
@@ -520,7 +538,10 @@ impl Sink for Database {
     fn session(&mut self, record: &SessionRecord) -> Result<()> {
         self.sessions.push(record.clone());
         if self.sessions.len() >= BUFFER_ROWS {
+            let growth = estimate_sessions(&self.sessions);
+            private_fs::enforce_size_limit(&self.path, growth)?;
             append_sessions(&self.connection, std::mem::take(&mut self.sessions))?;
+            self.staged_growth_upper_bound = self.staged_growth_upper_bound.saturating_add(growth);
         }
         Ok(())
     }
@@ -528,7 +549,10 @@ impl Sink for Database {
     fn tool_call(&mut self, record: &ToolCallRecord) -> Result<()> {
         self.tool_calls.push(record.clone());
         if self.tool_calls.len() >= BUFFER_ROWS {
+            let growth = estimate_calls(&self.tool_calls);
+            private_fs::enforce_size_limit(&self.path, growth)?;
             append_calls(&self.connection, std::mem::take(&mut self.tool_calls))?;
+            self.staged_growth_upper_bound = self.staged_growth_upper_bound.saturating_add(growth);
         }
         Ok(())
     }
@@ -536,7 +560,10 @@ impl Sink for Database {
     fn tool_result(&mut self, record: &ToolResultRecord) -> Result<()> {
         self.tool_results.push(record.clone());
         if self.tool_results.len() >= BUFFER_ROWS {
+            let growth = estimate_results(&self.tool_results);
+            private_fs::enforce_size_limit(&self.path, growth)?;
             append_results(&self.connection, std::mem::take(&mut self.tool_results))?;
+            self.staged_growth_upper_bound = self.staged_growth_upper_bound.saturating_add(growth);
         }
         Ok(())
     }
@@ -544,7 +571,10 @@ impl Sink for Database {
     fn observation(&mut self, record: &ObservationRecord) -> Result<()> {
         self.observations.push(record.clone());
         if self.observations.len() >= BUFFER_ROWS {
+            let growth = estimate_observations(&self.observations);
+            private_fs::enforce_size_limit(&self.path, growth)?;
             append_observations(&self.connection, std::mem::take(&mut self.observations))?;
+            self.staged_growth_upper_bound = self.staged_growth_upper_bound.saturating_add(growth);
         }
         Ok(())
     }
@@ -552,14 +582,132 @@ impl Sink for Database {
     fn issue(&mut self, record: &IssueRecord) -> Result<()> {
         self.issues.push(record.clone());
         if self.issues.len() >= BUFFER_ROWS {
+            let growth = estimate_issues(&self.issues);
+            private_fs::enforce_size_limit(&self.path, growth)?;
             append_issues(
                 &self.connection,
                 &self.run_key,
                 std::mem::take(&mut self.issues),
             )?;
+            self.staged_growth_upper_bound = self.staged_growth_upper_bound.saturating_add(growth);
         }
         Ok(())
     }
+}
+
+fn estimated_growth(payload_bytes: u64, rows: usize) -> u64 {
+    payload_bytes.saturating_mul(2).saturating_add(
+        u64::try_from(rows)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(ROW_GROWTH_RESERVE),
+    )
+}
+
+fn text_bytes(value: &str) -> u64 {
+    u64::try_from(value.len()).unwrap_or(u64::MAX)
+}
+
+fn optional_text_bytes(value: Option<&String>) -> u64 {
+    value.map_or(0, |text| text_bytes(text))
+}
+
+fn estimate_source_root(record: &SourceRootRecord) -> u64 {
+    estimated_growth(
+        text_bytes(&record.source_root_key)
+            .saturating_add(text_bytes(&record.unix_user))
+            .saturating_add(text_bytes(&record.agent))
+            .saturating_add(text_bytes(&record.source_kind))
+            .saturating_add(text_bytes(&record.root_path)),
+        1,
+    )
+}
+
+fn estimate_source_item(record: &SourceItemRecord) -> u64 {
+    estimated_growth(
+        text_bytes(&record.source_item_key)
+            .saturating_add(text_bytes(&record.source_root_key))
+            .saturating_add(text_bytes(&record.relative_path))
+            .saturating_add(
+                record
+                    .prefix_sha256
+                    .as_ref()
+                    .map_or(0, |value| u64::try_from(value.len()).unwrap_or(u64::MAX)),
+            ),
+        1,
+    )
+}
+
+fn estimate_sessions(records: &[SessionRecord]) -> u64 {
+    let payload = records.iter().fold(0_u64, |total, record| {
+        total
+            .saturating_add(text_bytes(&record.session_key))
+            .saturating_add(text_bytes(&record.unix_user))
+            .saturating_add(text_bytes(&record.agent))
+            .saturating_add(text_bytes(&record.native_session_id))
+    });
+    estimated_growth(payload, records.len())
+}
+
+fn estimate_calls(records: &[ToolCallRecord]) -> u64 {
+    let payload = records.iter().fold(0_u64, |total, record| {
+        total
+            .saturating_add(text_bytes(&record.call_key))
+            .saturating_add(text_bytes(&record.session_key))
+            .saturating_add(optional_text_bytes(record.native_call_id.as_ref()))
+            .saturating_add(optional_text_bytes(record.native_worker_id.as_ref()))
+            .saturating_add(optional_text_bytes(record.provider.as_ref()))
+            .saturating_add(optional_text_bytes(record.model.as_ref()))
+            .saturating_add(optional_text_bytes(record.working_directory.as_ref()))
+            .saturating_add(text_bytes(&record.tool_name))
+            .saturating_add(text_bytes(&record.input_text))
+            .saturating_add(u64::try_from(record.input_sha256.len()).unwrap_or(u64::MAX))
+    });
+    estimated_growth(payload, records.len())
+}
+
+fn estimate_results(records: &[ToolResultRecord]) -> u64 {
+    let payload = records.iter().fold(0_u64, |total, record| {
+        total
+            .saturating_add(text_bytes(&record.result_key))
+            .saturating_add(text_bytes(&record.call_key))
+            .saturating_add(optional_text_bytes(record.output_text.as_ref()))
+            .saturating_add(optional_text_bytes(record.output_json.as_ref()))
+            .saturating_add(u64::try_from(record.result_sha256.len()).unwrap_or(u64::MAX))
+    });
+    estimated_growth(payload, records.len())
+}
+
+fn estimate_observations(records: &[ObservationRecord]) -> u64 {
+    let payload = records.iter().fold(0_u64, |total, record| {
+        total
+            .saturating_add(text_bytes(&record.observation_key))
+            .saturating_add(text_bytes(&record.source_item_key))
+            .saturating_add(optional_text_bytes(record.call_key.as_ref()))
+            .saturating_add(optional_text_bytes(record.result_key.as_ref()))
+            .saturating_add(text_bytes(&record.native_record_kind))
+            .saturating_add(optional_text_bytes(record.native_branch_id.as_ref()))
+            .saturating_add(optional_text_bytes(record.sqlite_blob_id.as_ref()))
+            .saturating_add(u64::try_from(record.record_sha256.len()).unwrap_or(u64::MAX))
+    });
+    estimated_growth(payload, records.len())
+}
+
+fn estimate_issues(records: &[IssueRecord]) -> u64 {
+    let payload = records.iter().fold(0_u64, |total, record| {
+        total
+            .saturating_add(text_bytes(&record.issue_key))
+            .saturating_add(optional_text_bytes(record.source_item_key.as_ref()))
+            .saturating_add(text_bytes(&record.code))
+            .saturating_add(optional_text_bytes(record.sqlite_blob_id.as_ref()))
+            .saturating_add(
+                record
+                    .record_sha256
+                    .as_ref()
+                    .map_or(0, |value| u64::try_from(value.len()).unwrap_or(u64::MAX)),
+            )
+            .saturating_add(text_bytes(&record.message))
+    });
+    estimated_growth(payload, records.len())
 }
 
 fn create_schema(connection: &Connection) -> Result<()> {
@@ -699,4 +847,27 @@ fn append_issues(connection: &Connection, run_key: &str, records: Vec<IssueRecor
     }
     appender.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    #[test]
+    fn rejects_database_open_before_crossing_the_size_limit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let directory = temp.path().join("data");
+        fs::create_dir(&directory).expect("data directory");
+        fs::File::create(directory.join("reserved"))
+            .expect("reserved file")
+            .set_len(private_fs::MAX_DATA_BYTES)
+            .expect("sparse size");
+        let path = directory.join("toolcalls.duckdb");
+        assert!(matches!(
+            Database::open(&path, "test", "pi"),
+            Err(Error::SizeLimit)
+        ));
+    }
 }

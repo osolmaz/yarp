@@ -245,6 +245,7 @@ fn command_line_extracts_streams_reports_and_benchmarks() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn cursor_reads_current_sqlite_blobs_and_validates_transcript() {
     let temp = tempfile::tempdir().expect("tempdir");
     let chats = temp.path().join("chats/session");
@@ -267,7 +268,8 @@ fn cursor_reads_current_sqlite_blobs_and_validates_transcript() {
     let connection = rusqlite::Connection::open(chats.join("store.db")).expect("sqlite");
     connection
         .execute_batch(
-            "CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB);
+            "PRAGMA journal_mode = WAL;
+             CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB);
              CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);",
         )
         .expect("schema");
@@ -312,7 +314,6 @@ fn cursor_reads_current_sqlite_blobs_and_validates_transcript() {
             rusqlite::params![keys::hex(&root_blob), root],
         )
         .expect("root blob");
-    drop(connection);
     fs::write(
         projects.join(format!("{session_id}.jsonl")),
         "{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"shell\",\"input\":{\"command\":\"cargo test\"}}]}}\n{\"type\":\"turn_ended\",\"status\":\"success\"}\n",
@@ -329,8 +330,54 @@ fn cursor_reads_current_sqlite_blobs_and_validates_transcript() {
     )
     .expect("extract");
     db.finish(true).expect("finish");
+    drop(db);
+
+    let second_call_blob = vec![0x44; 32];
+    let second_result_blob = vec![0x55; 32];
+    let second_call = serde_json::json!({
+        "role": "assistant",
+        "content": [{"type":"tool-call","toolCallId":"c2","toolName":"shell","args":{"command":"cargo check"}}]
+    });
+    let second_result = serde_json::json!({
+        "role": "tool",
+        "content": [{"type":"tool-result","toolCallId":"c2","toolName":"shell","result":"checked"}]
+    });
+    connection
+        .execute(
+            "INSERT INTO blobs VALUES (?, ?)",
+            rusqlite::params![
+                keys::hex(&second_call_blob),
+                serde_json::to_vec(&second_call).expect("second call")
+            ],
+        )
+        .expect("second call blob");
+    connection
+        .execute(
+            "INSERT INTO blobs VALUES (?, ?)",
+            rusqlite::params![
+                keys::hex(&second_result_blob),
+                serde_json::to_vec(&second_result).expect("second result")
+            ],
+        )
+        .expect("second result blob");
+    fs::write(
+        projects.join(format!("{session_id}.jsonl")),
+        "{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"shell\",\"input\":{\"command\":\"cargo test\"}}]}}\n{\"role\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"shell\",\"input\":{\"command\":\"cargo check\"}}]}}\n",
+    )
+    .expect("updated transcript");
+    let mut db = database(&path, "cursor");
+    adapters::cursor::extract(
+        "test",
+        chats.parent().expect("chat root"),
+        &acp,
+        temp.path().join("projects").as_path(),
+        &mut db,
+    )
+    .expect("re-extract WAL");
+    db.finish(true).expect("finish second");
+    drop(connection);
     let stats = Database::stats(&path).expect("stats");
-    assert_eq!(stats.tool_calls, 1);
-    assert_eq!(stats.tool_results, 1);
-    assert_eq!(stats.issues, 0);
+    assert_eq!(stats.tool_calls, 2);
+    assert_eq!(stats.tool_results, 2);
+    assert_eq!(stats.issues, 1);
 }
