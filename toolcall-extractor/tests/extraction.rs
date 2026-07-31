@@ -99,6 +99,7 @@ fn codex_imports_calls_and_outputs() {
         serde_json::json!({"timestamp":"invalid","type":"session_meta","payload":{"id":"s1"}}),
         serde_json::json!({"timestamp":"2026-01-01T00:00:01Z","type":"response_item","payload":{"type":"function_call","call_id":"c1","name":"exec_command","arguments":"{\"cmd\":\"cargo test\"}"}}),
         serde_json::json!({"timestamp":"2026-01-01T00:00:02Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"ok\n"}}),
+        serde_json::json!({"timestamp":"2026-01-01T00:00:03Z","type":"event_msg","payload":{"type":"exec_command_end","call_id":"c1","output":"","status":"completed","exit_code":0}}),
         serde_json::json!({"type":"response_item","payload":{"type":"custom_tool_call","call_id":"c2","name":"apply_patch","input":"patch"}}),
         serde_json::json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"c2","output":{"status":"ok"}}}),
         serde_json::json!({"type":"response_item","payload":{"type":"tool_search_call","id":"c3","arguments":{"query":"tool"}}}),
@@ -112,15 +113,30 @@ fn codex_imports_calls_and_outputs() {
         serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c8"}}),
         serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c9","output":"early"}}),
         serde_json::json!({"type":"response_item","payload":{"type":"function_call","call_id":"c9","name":"shell","arguments":"{}"}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"function_call","call_id":"c10","name":"exec_command","arguments":"{\"cmd\":\"printf canonical\"}"}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c10","output":"canonical"}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c10","output":"alternate"}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"function_call","call_id":"c11","name":"exec_command","arguments":"{\"cmd\":\"printf canonical\"}"}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c11","output":"canonical text"}}),
+        serde_json::json!({"type":"event_msg","payload":{"type":"exec_command_end","call_id":"c11","output":"projection text","status":"completed","exit_code":0}}),
         serde_json::json!({"type":"response_item","payload":{"type":"ignored"}}),
         serde_json::json!({"type":"event_msg","payload":{}}),
     ];
-    let rollout = records
+    let mut rollout = records
         .iter()
         .map(|record| serde_json::to_string(record).expect("record"))
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
+    rollout.push_str("{broken}\n");
+    rollout.push_str(
+        &serde_json::to_string(&serde_json::json!({
+            "type":"response_item",
+            "payload":{"type":"function_call_output","call_id":"missing","output":{"status":"orphan"}}
+        }))
+        .expect("orphan record"),
+    );
+    rollout.push('\n');
     fs::write(sessions.join("rollout.jsonl"), rollout).expect("rollout");
     let state_path = temp.path().join("state.sqlite");
     let state_connection = rusqlite::Connection::open(&state_path).expect("state");
@@ -139,9 +155,84 @@ fn codex_imports_calls_and_outputs() {
     adapters::codex::extract("test", &sessions, Some(&state_path), &mut db).expect("extract");
     db.finish(true).expect("finish");
     let stats = Database::stats(&path).expect("stats");
-    assert_eq!(stats.tool_calls, 9);
-    assert_eq!(stats.tool_results, 9);
+    assert_eq!(stats.tool_calls, 11);
+    assert_eq!(stats.tool_results, 12);
     assert_eq!(stats.calls_without_results, 0);
+    assert_eq!(stats.calls_with_conflicting_results, 1);
+    assert_eq!(stats.issues, 2);
+
+    let connection = Database::open_read_only(&path).expect("read-only database");
+    let (output_text, output_json, observation_count): (String, String, i64) = connection
+        .query_row(
+            "SELECT r.output_text, r.output_json,
+                    (SELECT count(*) FROM observations o WHERE o.result_key = r.result_key)
+             FROM tool_results r
+             JOIN tool_calls c ON c.call_key = r.call_key
+             WHERE c.native_call_id = 'c1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("merged result");
+    assert_eq!(output_text, "ok\n");
+    assert_eq!(output_json, r#"{"exit_code":0,"status":"completed"}"#);
+    assert_eq!(observation_count, 2);
+
+    let (output_text, output_json): (String, String) = connection
+        .query_row(
+            "SELECT r.output_text, r.output_json
+             FROM tool_results r
+             JOIN tool_calls c ON c.call_key = r.call_key
+             WHERE c.native_call_id = 'c11'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("projection result");
+    assert_eq!(output_text, "canonical text");
+    let structured: serde_json::Value =
+        serde_json::from_str(&output_json).expect("projection JSON");
+    assert_eq!(
+        structured["source_projections"][0]["output_text"],
+        "projection text"
+    );
+}
+
+#[test]
+fn codex_retains_a_result_until_an_appended_call_resolves_it() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let sessions = temp.path().join("sessions");
+    fs::create_dir(&sessions).expect("sessions");
+    let rollout = sessions.join("rollout.jsonl");
+    fs::write(
+        &rollout,
+        concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":\"early\"}}\n"
+        ),
+    )
+    .expect("initial rollout");
+    let path = temp.path().join("data/toolcalls.duckdb");
+    let mut db = database(&path, "codex");
+    adapters::codex::extract("test", &sessions, None, &mut db).expect("initial extract");
+    db.finish(true).expect("initial finish");
+    drop(db);
+    let unresolved = Database::verify(&path).expect("unresolved verification");
+    assert_eq!(unresolved.orphan_results, 1);
+    assert!(!unresolved.is_valid());
+
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&rollout)
+        .expect("open rollout")
+        .write_all(
+            b"{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"exec_command\",\"arguments\":\"{}\"}}\n",
+        )
+        .expect("append call");
+    let mut db = database(&path, "codex");
+    adapters::codex::extract("test", &sessions, None, &mut db).expect("resume extract");
+    db.finish(true).expect("resume finish");
+    let resolved = Database::verify(&path).expect("resolved verification");
+    assert_eq!(resolved.orphan_results, 0);
+    assert!(resolved.is_valid());
 }
 
 #[test]
@@ -179,6 +270,7 @@ fn claude_pairs_calls_across_transcript_files() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn command_line_extracts_streams_reports_and_benchmarks() {
     let temp = tempfile::tempdir().expect("tempdir");
     let sessions = temp.path().join("sessions");
@@ -270,6 +362,56 @@ fn command_line_extracts_streams_reports_and_benchmarks() {
             .expect("verify streamed")
             .success()
     );
+
+    fs::write(
+        sessions.join("session.jsonl"),
+        concat!(
+            "{\"type\":\"session\",\"version\":3,\"id\":\"s1\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"cwd\":\"/tmp\"}\n",
+            "{\"type\":\"message\",\"id\":\"m3\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"c2\",\"name\":\"bash\",\"arguments\":{\"command\":\"cargo check\"}}]}}\n",
+            "{\"type\":\"message\",\"id\":\"m4\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"c2\",\"content\":\"checked\",\"isError\":false}}\n"
+        ),
+    )
+    .expect("replace streamed session");
+    let replacement = extractor()
+        .args([
+            "stream",
+            "--unix-user",
+            "test",
+            "pi",
+            "--sessions",
+            sessions.to_str().expect("sessions"),
+        ])
+        .output()
+        .expect("replacement stream");
+    assert!(replacement.status.success());
+    let mut replacement_ingest = extractor()
+        .args([
+            "ingest",
+            "--database",
+            streamed_database.to_str().expect("database"),
+            "--unix-user",
+            "test",
+            "--agent",
+            "pi",
+        ])
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("spawn replacement ingest");
+    replacement_ingest
+        .stdin
+        .take()
+        .expect("replacement ingest stdin")
+        .write_all(&replacement.stdout)
+        .expect("write replacement stream");
+    assert!(
+        replacement_ingest
+            .wait()
+            .expect("replacement ingest status")
+            .success()
+    );
+    let stats = Database::stats(&streamed_database).expect("replacement stats");
+    assert_eq!(stats.tool_calls, 1);
+    assert_eq!(stats.tool_results, 1);
 }
 
 #[test]

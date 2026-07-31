@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use rusqlite::OpenFlags;
@@ -191,7 +191,7 @@ impl CodexContext {
 #[derive(Default)]
 struct FileState {
     calls: HashMap<String, String>,
-    pending_results: HashMap<String, PendingResult>,
+    pending_results: BTreeMap<String, Vec<PendingResult>>,
 }
 
 struct PendingResult {
@@ -205,6 +205,14 @@ struct PendingResult {
     output_json: Option<String>,
     native_record_kind: String,
     source_item_key: String,
+    record_kind: RecordKind,
+}
+
+struct ResultPayload {
+    returned_at_ms: Option<i64>,
+    is_error: Option<bool>,
+    output_text: Option<String>,
+    output_json: Option<String>,
 }
 
 fn process_record(
@@ -333,21 +341,26 @@ fn canonical_result(
     };
     let call_key = resolve_call(context, native_call_id, state, sink)?
         .unwrap_or_else(|| call_key(context, native_call_id));
-    state.pending_results.remove(native_call_id);
     let output = payload.get("output").or_else(|| payload.get("tools"));
     let (output_text, output_json) = output_parts(output)?;
-    write_result(
-        source_item_key,
-        line,
-        &call_key,
-        kind,
-        outer_timestamp(outer),
-        payload.get("is_error").and_then(Value::as_bool),
-        output_text,
-        output_json,
-        RecordKind::Canonical,
-        sink,
-    )
+    state
+        .pending_results
+        .entry(native_call_id.to_owned())
+        .or_default()
+        .push(PendingResult {
+            line_number: line.number,
+            byte_offset: line.byte_offset,
+            record_sha256: line.record_sha256.clone(),
+            call_key,
+            returned_at_ms: outer_timestamp(outer),
+            is_error: payload.get("is_error").and_then(Value::as_bool),
+            output_text,
+            output_json,
+            native_record_kind: kind.to_owned(),
+            source_item_key: source_item_key.to_owned(),
+            record_kind: RecordKind::Canonical,
+        });
+    Ok(())
 }
 
 fn projection_result(
@@ -401,9 +414,11 @@ fn projection_result(
         key
     };
     let (output_text, output_json) = projection_output(payload)?;
-    state.pending_results.insert(
-        native_call_id.to_owned(),
-        PendingResult {
+    state
+        .pending_results
+        .entry(native_call_id.to_owned())
+        .or_default()
+        .push(PendingResult {
             line_number: line.number,
             byte_offset: line.byte_offset,
             record_sha256: line.record_sha256.clone(),
@@ -414,8 +429,8 @@ fn projection_result(
             output_json,
             native_record_kind: kind.to_owned(),
             source_item_key: source_item_key.to_owned(),
-        },
-    );
+            record_kind: RecordKind::Projection,
+        });
     Ok(())
 }
 
@@ -424,75 +439,230 @@ fn flush_pending(
     state: &mut FileState,
     sink: &mut dyn Sink,
 ) -> Result<()> {
-    for pending in state.pending_results.drain().map(|(_, value)| value) {
-        let line = JsonLine {
-            number: pending.line_number,
-            byte_offset: pending.byte_offset,
-            bytes: Vec::new(),
-            record_sha256: pending.record_sha256,
-        };
-        write_result(
-            &pending.source_item_key,
-            &line,
-            &pending.call_key,
-            &pending.native_record_kind,
-            pending.returned_at_ms,
-            pending.is_error,
-            pending.output_text,
-            pending.output_json,
-            RecordKind::Projection,
-            sink,
-        )?;
+    for candidates in std::mem::take(&mut state.pending_results).into_values() {
+        if let Some(payload) = merge_result_payloads(&candidates)? {
+            write_result(&candidates, payload, sink)?;
+            continue;
+        }
+        for candidate in candidates {
+            let payload = ResultPayload {
+                returned_at_ms: candidate.returned_at_ms,
+                is_error: candidate.is_error,
+                output_text: candidate.output_text.clone(),
+                output_json: candidate.output_json.clone(),
+            };
+            write_result(std::slice::from_ref(&candidate), payload, sink)?;
+        }
     }
     Ok(())
 }
 
-fn write_result(
-    source_item_key: &str,
-    line: &JsonLine,
-    call_key: &str,
-    native_kind: &str,
-    returned_at_ms: Option<i64>,
-    is_error: Option<bool>,
-    output_text: Option<String>,
-    output_json: Option<String>,
-    record_kind: RecordKind,
-    sink: &mut dyn Sink,
-) -> Result<()> {
-    let safe_text = output_text.or_else(|| output_json.is_none().then(String::new));
-    let fingerprint = keys::canonical_json(&serde_json::json!({
-        "text": safe_text,
-        "json": output_json,
-        "is_error": is_error,
-    }))?;
-    let result_sha256 = keys::sha256(fingerprint.as_bytes());
-    let result_key = keys::key(&[b"result", call_key.as_bytes(), &result_sha256]);
-    sink.tool_result(&ToolResultRecord {
-        result_key: result_key.clone(),
-        call_key: call_key.to_owned(),
+fn merge_result_payloads(candidates: &[PendingResult]) -> Result<Option<ResultPayload>> {
+    let canonical = candidates
+        .iter()
+        .filter(|candidate| matches!(candidate.record_kind, RecordKind::Canonical))
+        .collect::<Vec<_>>();
+    if canonical.is_empty() {
+        let all = candidates.iter().collect::<Vec<_>>();
+        return merge_compatible_payloads(&all);
+    }
+    let Some(mut payload) = merge_compatible_payloads(&canonical)? else {
+        return Ok(None);
+    };
+    let projections = candidates
+        .iter()
+        .filter(|candidate| matches!(candidate.record_kind, RecordKind::Projection))
+        .collect::<Vec<_>>();
+    merge_projections(&mut payload, &projections)?;
+    Ok(Some(payload))
+}
+
+fn merge_compatible_payloads(candidates: &[&PendingResult]) -> Result<Option<ResultPayload>> {
+    let mut output_text: Option<String> = None;
+    let mut is_error: Option<bool> = None;
+    let mut output_json: Option<Value> = None;
+    let mut returned_at_ms: Option<i64> = None;
+
+    for candidate in candidates {
+        returned_at_ms = returned_at_ms.max(candidate.returned_at_ms);
+        if let Some(text) = &candidate.output_text {
+            if output_text.as_ref().is_some_and(|current| current != text) {
+                return Ok(None);
+            }
+            output_text = Some(text.clone());
+        }
+        if let Some(error) = candidate.is_error {
+            if is_error.is_some_and(|current| current != error) {
+                return Ok(None);
+            }
+            is_error = Some(error);
+        }
+        if let Some(encoded) = &candidate.output_json {
+            let incoming: Value = serde_json::from_str(encoded)?;
+            if !try_merge_json(&mut output_json, incoming) {
+                return Ok(None);
+            }
+        }
+    }
+
+    Ok(Some(ResultPayload {
         returned_at_ms,
         is_error,
+        output_text,
+        output_json: output_json.as_ref().map(keys::canonical_json).transpose()?,
+    }))
+}
+
+fn merge_projections(payload: &mut ResultPayload, projections: &[&PendingResult]) -> Result<()> {
+    let mut structured = payload
+        .output_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()?;
+    let mut extras = Vec::new();
+
+    for projection in projections {
+        payload.returned_at_ms = payload.returned_at_ms.max(projection.returned_at_ms);
+        let mut extra = Map::new();
+        extra.insert(
+            "native_record_kind".to_owned(),
+            Value::String(projection.native_record_kind.clone()),
+        );
+        if let Some(text) = &projection.output_text {
+            match &payload.output_text {
+                None => payload.output_text = Some(text.clone()),
+                Some(current) if current == text || text.is_empty() => {}
+                Some(_) => {
+                    extra.insert("output_text".to_owned(), Value::String(text.clone()));
+                }
+            }
+        }
+        if let Some(error) = projection.is_error {
+            match payload.is_error {
+                None => payload.is_error = Some(error),
+                Some(current) if current == error => {}
+                Some(_) => {
+                    extra.insert("is_error".to_owned(), Value::Bool(error));
+                }
+            }
+        }
+        if let Some(encoded) = &projection.output_json {
+            let incoming: Value = serde_json::from_str(encoded)?;
+            if !try_merge_json(&mut structured, incoming.clone()) {
+                extra.insert("structured_output".to_owned(), incoming);
+            }
+        }
+        if extra.len() > 1 {
+            extras.push(Value::Object(extra));
+        }
+    }
+
+    if !extras.is_empty() {
+        let projections = Value::Array(extras);
+        structured = Some(match structured.take() {
+            None => serde_json::json!({"source_projections": projections}),
+            Some(Value::Object(mut object)) if !object.contains_key("source_projections") => {
+                object.insert("source_projections".to_owned(), projections);
+                Value::Object(object)
+            }
+            Some(canonical) => serde_json::json!({
+                "canonical_structured_output": canonical,
+                "source_projections": projections,
+            }),
+        });
+    }
+    payload.output_json = structured.as_ref().map(keys::canonical_json).transpose()?;
+    Ok(())
+}
+
+fn try_merge_json(current: &mut Option<Value>, incoming: Value) -> bool {
+    let Some(existing) = current.as_mut() else {
+        *current = Some(incoming);
+        return true;
+    };
+    if *existing == incoming {
+        return true;
+    }
+    let (Value::Object(existing), Value::Object(incoming)) = (existing, incoming) else {
+        return false;
+    };
+    let mut merged = existing.clone();
+    for (key, value) in incoming {
+        if merged.get(&key).is_some_and(|current| current != &value) {
+            return false;
+        }
+        merged.insert(key, value);
+    }
+    *existing = merged;
+    true
+}
+
+fn write_result(
+    candidates: &[PendingResult],
+    payload: ResultPayload,
+    sink: &mut dyn Sink,
+) -> Result<()> {
+    let Some(first) = candidates.first() else {
+        return Ok(());
+    };
+    if candidates
+        .iter()
+        .any(|candidate| candidate.call_key != first.call_key)
+    {
+        return Err(Error::InvalidSource(
+            "Codex result candidates refer to different calls".to_owned(),
+        ));
+    }
+    let safe_text = payload
+        .output_text
+        .or_else(|| payload.output_json.is_none().then(String::new));
+    let fingerprint = keys::canonical_json(&serde_json::json!({
+        "text": safe_text.as_deref(),
+        "json": payload.output_json.as_deref(),
+        "is_error": payload.is_error,
+    }))?;
+    let result_sha256 = keys::sha256(fingerprint.as_bytes());
+    let result_key = keys::key(&[b"result", first.call_key.as_bytes(), &result_sha256]);
+    sink.tool_result(&ToolResultRecord {
+        result_key: result_key.clone(),
+        call_key: first.call_key.clone(),
+        returned_at_ms: payload.returned_at_ms,
+        is_error: payload.is_error,
         output_text: safe_text,
-        output_json,
+        output_json: payload.output_json,
         result_sha256,
     })?;
-    sink.observation(&ObservationRecord {
-        observation_key: observation_key(source_item_key, line, &result_key, "result"),
-        source_item_key: source_item_key.to_owned(),
-        call_key: None,
-        result_key: Some(result_key),
-        record_kind,
-        native_record_kind: native_kind.to_owned(),
-        sequence_number: i64::try_from(line.number).ok(),
-        native_branch_id: None,
-        is_current: None,
-        line_number: Some(line.number),
-        byte_offset: Some(line.byte_offset),
-        sqlite_rowid: None,
-        sqlite_blob_id: None,
-        content_index: None,
-        record_sha256: line.record_sha256.clone(),
-    })
+    for candidate in candidates {
+        let line = JsonLine {
+            number: candidate.line_number,
+            byte_offset: candidate.byte_offset,
+            bytes: Vec::new(),
+            record_sha256: candidate.record_sha256.clone(),
+        };
+        sink.observation(&ObservationRecord {
+            observation_key: observation_key(
+                &candidate.source_item_key,
+                &line,
+                &result_key,
+                "result",
+            ),
+            source_item_key: candidate.source_item_key.clone(),
+            call_key: None,
+            result_key: Some(result_key.clone()),
+            record_kind: candidate.record_kind,
+            native_record_kind: candidate.native_record_kind.clone(),
+            sequence_number: i64::try_from(candidate.line_number).ok(),
+            native_branch_id: None,
+            is_current: None,
+            line_number: Some(candidate.line_number),
+            byte_offset: Some(candidate.byte_offset),
+            sqlite_rowid: None,
+            sqlite_blob_id: None,
+            content_index: None,
+            record_sha256: candidate.record_sha256.clone(),
+        })?;
+    }
+    Ok(())
 }
 
 fn call_input(payload: &Map<String, Value>, kind: &str) -> Result<(InputFormat, String)> {
