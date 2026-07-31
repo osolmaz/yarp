@@ -6,19 +6,25 @@ The extractor will never run from the Pi extension or the `yarp` pruning command
 
 ## Implementation status
 
-As of July 31, 2026, the package, schema, CLI, stable JSONL reader, private writer, framed cross-user path, YARP benchmark, and all four adapters are implemented. Synthetic tests cover Pi resume after a partial line, Codex calls and outputs, Claude cross-file pairing, and Cursor SQLite/protobuf extraction with transcript validation. Earlier real-data validation found 6,991 Claude calls and 12,385 Cursor calls, but the final local dataset was intentionally limited to Pi and Codex after the user asked to stop there. Bob's framed import was tested with synthetic data but was not run on Bob's sources.
+As of July 31, 2026, the package, schema, CLI, stable JSONL reader, private writer, framed cross-user path, YARP benchmark, and all four adapters are implemented. Synthetic tests cover Pi resume and source replacement, Codex canonical and projection results, Claude cross-file pairing, Cursor SQLite/protobuf extraction with transcript validation, orphan quarantine, and changed-source reconciliation through framed ingestion.
 
-The verified Pi and Codex dataset contains:
+The complete local dataset contains:
 
-- 6,750 sessions, 312,691 calls, and 312,599 distinct results.
-- 226,810 Codex calls and 85,881 Pi calls.
-- 111 calls without results and 19 calls with conflicting result variants.
-- 177,173,118 input characters, 468,653,697 rendered output characters, and 1,319,376,708 structured-output characters.
-- 20 bounded import issues, no orphan calls, results, or observations, private permissions, and 2,847,420,416 bytes of extractor-owned storage.
+- 14,432 sessions, 718,008 calls, and 717,863 distinct results.
+- 333,136 calls from Onur across Pi, Codex, Claude Code, and Cursor, plus 384,872 calls from Bob across Pi, Codex, and Claude Code. Bob had no Cursor roots.
+- 605,904 Codex calls, 86,820 Pi calls, 12,899 Claude Code calls, and 12,385 Cursor calls.
+- 164 calls without results and 19 calls with conflicting result variants. All 19 conflicts are retained Codex `exec` results from Onur's sources.
+- 340,690,353 input characters, 1,941,717,513 rendered output characters, and 1,731,426,149 structured-output characters.
+- 25 bounded issues: 20 malformed JSONL records, three results without defensible calls, and two unsupported Cursor stores with missing roots.
+- No orphan calls, results, or observations. The database has private permissions and uses 7,009,480,704 bytes of extractor-owned storage.
 
-The final YARP benchmark evaluated 162,653 text results. Of 3,579 eligible shell results, 302 changed. YARP removed 5,014,309 characters, or 43.2589% of eligible output and 1.06994% of all evaluated rendered output. It removed 136,558 of 289,192 eligible lines in 1.342 seconds. This is a large reduction within eligible output, but only a 1.07% reduction across the whole evaluated corpus because most stored results are not commands YARP accepts.
+Codex emits canonical results and overlapping event projections in either order. The adapter now combines those records in a fixed way. Canonical rendered text remains text, distinct projection text and metadata remain structured output, and every source observation points to the combined result. Distinct canonical result variants remain separate. An unresolved result stays in the database so a call appended later can resolve it, and `verify` rejects it in the meantime. When an unresolved result immediately follows a malformed record, the importer quarantines it as a bounded issue because its call record cannot be recovered. Framed replays retain unchanged sources and replace stale source-owned records when an identity changes.
 
-Implementation and synthetic verification are complete. The remaining release work is repository checks, review, CI, and merge. Full final imports for Claude, Cursor, or Bob are outside the revised run scope.
+The complete YARP benchmark evaluated 565,682 rendered results, including 371,241 shell results. Of 33,830 eligible shell results, 3,481 changed. YARP removed 61,814,796 characters and 61,847,323 bytes. This equals 52.3739% of eligible output and 3.18351% of all evaluated rendered output. It removed 1,739,221 of 3,181,624 eligible lines, or 54.6646%, in 2.688 seconds at 43.95 MB/s.
+
+This is a deterministic census of the imported corpus, so sampling uncertainty does not apply to these totals, though results from other machines may differ. No worthwhile-effect threshold was registered before measurement. The observed reduction is clearly material within eligible output because it removes more than half of its characters and lines. The 3.18% corpus-wide reduction is useful but smaller because strict command allowlisting leaves most stored results unchanged. The benchmark supports the pruning design. It does not provide independent release authority.
+
+Implementation, real-data extraction, synthetic verification, and benchmarking are complete for every accessible source.
 
 ## Outcome
 
@@ -103,7 +109,7 @@ toolcall-extractor benchmark-yarp
 
 `stats` and `issues` print counts and source locations. They never print tool inputs or results. `verify` checks the database schema, key relationships, source checkpoints, result conflicts, and file permissions.
 
-Bob's data is a separate import phase. The implementation must not grant Onur access to Bob's session directories or run the whole writer as root. After explicit approval, a narrow reader can run as Bob and send normalized framed records directly to an Onur-owned writer over a pipe. That path must not create an intermediate export.
+Bob's data uses a separate import phase. The implementation does not grant Onur access to Bob's session directories or run the writer as root. A narrow reader runs as Bob and sends normalized framed records directly to an Onur-owned writer over a pipe. That path creates no intermediate export.
 
 ## Source rules
 
