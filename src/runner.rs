@@ -133,8 +133,7 @@ impl RawSpool {
 #[must_use]
 pub fn prune_bytes(input: &[u8]) -> Vec<u8> {
     capture(std::io::Cursor::new(input), None, io::sink())
-        .map(|captured| captured.bounded.render())
-        .unwrap_or_else(|_| input.to_vec())
+        .map_or_else(|_| input.to_vec(), |captured| captured.bounded.render())
 }
 
 /// Run one allowlisted command, prune its two output streams, and return its exit code.
