@@ -103,16 +103,9 @@ fn extract_databases(
         let relative = private_fs::relative_path(root_path, entry.path())?;
         let mut item = source_item(root, relative);
         let identity = private_fs::identity(entry.path())?;
-        if let Some(checkpoint) = sink.checkpoint(&item.source_item_key)?
-            && checkpoint.adapter_version == crate::model::ADAPTER_VERSION
-            && checkpoint.device_id == Some(identity.device_id)
-            && checkpoint.inode == Some(identity.inode)
-            && checkpoint.size_bytes == identity.size_bytes
-            && checkpoint.snapshot_mtime_ns == identity.mtime_ns
-            && checkpoint.status == "complete"
-        {
-            continue;
-        }
+        // Cursor may commit only to the SQLite WAL without changing store.db.
+        // Always open a fresh read-only transaction so WAL changes and transcript signatures
+        // cannot be skipped by a main-file checkpoint.
         sink.begin_source()?;
         item.device_id = Some(identity.device_id);
         item.inode = Some(identity.inode);
@@ -222,11 +215,10 @@ fn extract_database(
         let Some(content) = object.get("content").and_then(Value::as_array) else {
             continue;
         };
-        let order = current_order.get(&blob_id).copied();
-        let is_current = metadata
-            .latest_root_blob_id
+        let order = current_order
             .as_ref()
-            .map(|_| order.is_some());
+            .and_then(|positions| positions.get(&blob_id).copied());
+        let is_current = current_order.as_ref().map(|_| order.is_some());
         for (index, block) in content.iter().enumerate() {
             match block.get("type").and_then(Value::as_str) {
                 Some("tool-call") => {
@@ -424,9 +416,9 @@ fn current_blob_order(
     root_id: Option<&str>,
     source_item_key: &str,
     sink: &mut dyn Sink,
-) -> Result<HashMap<String, i64>> {
+) -> Result<Option<HashMap<String, i64>>> {
     let Some(root_id) = root_id else {
-        return Ok(HashMap::new());
+        return Ok(None);
     };
     let root_id = root_id.to_ascii_lowercase();
     let root: Option<Vec<u8>> = connection
@@ -449,18 +441,20 @@ fn current_blob_order(
             message: "latest Cursor root blob is missing".to_owned(),
             occurrence_count: 1,
         })?;
-        return Ok(HashMap::new());
+        return Ok(None);
     };
     let structure = ConversationStateStructure::decode(root.as_slice()).map_err(|error| {
         Error::InvalidSource(format!("unsupported Cursor conversation root: {error}"))
     })?;
-    Ok(structure
-        .message_blob_ids
-        .into_iter()
-        .filter(|value| value.len() == 32)
-        .enumerate()
-        .map(|(index, value)| (keys::hex(&value), i64::try_from(index).unwrap_or(i64::MAX)))
-        .collect())
+    Ok(Some(
+        structure
+            .message_blob_ids
+            .into_iter()
+            .filter(|value| value.len() == 32)
+            .enumerate()
+            .map(|(index, value)| (keys::hex(&value), i64::try_from(index).unwrap_or(i64::MAX)))
+            .collect(),
+    ))
 }
 
 fn strict_message(value: &Value) -> Option<&Map<String, Value>> {
