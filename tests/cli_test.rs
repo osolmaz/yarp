@@ -230,7 +230,7 @@ fn archive_failure_returns_the_unpruned_stream() {
 #[test]
 fn archive_commands_report_verify_and_prune() {
     let directory = TempDir::new().expect("temp directory");
-    let database = directory.path().join("tool-calls.sqlite3");
+    let database = directory.path().join("yarp/tool-calls.sqlite3");
     let mut archive = Archive::open_path(database.clone()).expect("archive");
     archive
         .begin_call(
@@ -274,7 +274,7 @@ fn archive_commands_report_verify_and_prune() {
 #[test]
 fn ingest_cli_commits_and_acknowledges_a_call() {
     let directory = TempDir::new().expect("temp directory");
-    let database = directory.path().join("tool-calls.sqlite3");
+    let database = directory.path().join("yarp/tool-calls.sqlite3");
     let mut child = Command::new(env!("CARGO_BIN_EXE_yarp"))
         .args(["archive", "ingest"])
         .env("YARP_ARCHIVE_PATH", &database)
@@ -312,7 +312,7 @@ fn ingest_cli_commits_and_acknowledges_a_call() {
 #[test]
 fn killed_ingest_process_leaves_an_integral_incomplete_call() {
     let directory = TempDir::new().expect("temp directory");
-    let database = directory.path().join("tool-calls.sqlite3");
+    let database = directory.path().join("yarp/tool-calls.sqlite3");
     let mut child = Command::new(env!("CARGO_BIN_EXE_yarp"))
         .args(["archive", "ingest"])
         .env("YARP_ARCHIVE_PATH", &database)

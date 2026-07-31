@@ -1057,13 +1057,18 @@ fn prepare_path(path: &Path) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("archive path {} has no parent", path.display()))?;
+    let parent_existed = parent.exists();
     fs::create_dir_all(parent).map_err(|error| {
         format!(
             "could not create archive directory {}: {error}",
             parent.display()
         )
     })?;
-    set_file_mode(parent, 0o700)?;
+    if !parent_existed || parent.file_name().is_some_and(|name| name == "yarp") {
+        set_file_mode(parent, 0o700)?;
+    } else {
+        require_private_directory(parent)?;
+    }
     let mut options = OpenOptions::new();
     options.create(true).read(true).write(true);
     #[cfg(unix)]
@@ -1075,6 +1080,28 @@ fn prepare_path(path: &Path) -> Result<(), String> {
         .open(path)
         .map_err(|error| format!("could not create archive {}: {error}", path.display()))?;
     set_file_mode(path, 0o600)
+}
+
+#[cfg(unix)]
+fn require_private_directory(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = fs::metadata(path)
+        .map_err(|error| format!("could not inspect {}: {error}", path.display()))?
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(format!(
+            "archive directory {} has mode {mode:o}; use a private directory or a directory named yarp",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn require_private_directory(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -1313,7 +1340,7 @@ mod tests {
     #[test]
     fn reopens_the_current_schema_without_migration() {
         let directory = TempDir::new().expect("temp directory");
-        let path = directory.path().join("tool-calls.sqlite3");
+        let path = directory.path().join("yarp/tool-calls.sqlite3");
         drop(Archive::open_path(path.clone()).expect("create"));
         let reopened = Archive::open_path(path).expect("reopen");
         assert_eq!(reopened.stats().expect("stats").calls, 0);
@@ -1322,7 +1349,8 @@ mod tests {
     #[test]
     fn rejects_newer_schema_versions() {
         let directory = TempDir::new().expect("temp directory");
-        let path = directory.path().join("tool-calls.sqlite3");
+        let path = directory.path().join("yarp/tool-calls.sqlite3");
+        fs::create_dir(path.parent().expect("parent")).expect("archive directory");
         let connection = Connection::open(&path).expect("sqlite");
         connection
             .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
@@ -1364,7 +1392,7 @@ mod tests {
     #[test]
     fn concurrent_writers_keep_every_call() {
         let directory = TempDir::new().expect("temp directory");
-        let path = directory.path().join("tool-calls.sqlite3");
+        let path = directory.path().join("yarp/tool-calls.sqlite3");
         drop(Archive::open_path(path.clone()).expect("create"));
         let threads: Vec<_> = (0..8)
             .map(|index| {
@@ -1450,7 +1478,7 @@ mod tests {
     fn repairs_archive_permissions_on_open() {
         use std::os::unix::fs::PermissionsExt as _;
         let directory = TempDir::new().expect("temp directory");
-        let data = directory.path().join("data");
+        let data = directory.path().join("yarp");
         let path = data.join("tool-calls.sqlite3");
         drop(Archive::open_path(path.clone()).expect("create"));
         fs::set_permissions(&data, fs::Permissions::from_mode(0o777)).expect("directory mode");
@@ -1459,11 +1487,27 @@ mod tests {
         assert!(archive.verify().expect("verify").errors.is_empty());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn refuses_to_modify_an_unrelated_public_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = TempDir::new().expect("temp directory");
+        let public = directory.path().join("public");
+        fs::create_dir(&public).expect("public directory");
+        fs::set_permissions(&public, fs::Permissions::from_mode(0o777)).expect("public mode");
+        let error = Archive::open_path(public.join("archive.sqlite3"))
+            .err()
+            .expect("insecure directory error");
+        assert!(error.contains("use a private directory"));
+        let mode = fs::metadata(public).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o777);
+    }
+
     #[test]
     fn ingest_protocol_acknowledges_committed_frames() {
         let directory = TempDir::new().expect("temp directory");
-        let archive =
-            Archive::open_path(directory.path().join("tool-calls.sqlite3")).expect("open archive");
+        let archive = Archive::open_path(directory.path().join("yarp/tool-calls.sqlite3"))
+            .expect("open archive");
         let operation = serde_json::json!({
             "operation": "begin_call",
             "requestId": 7,
