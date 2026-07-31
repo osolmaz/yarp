@@ -157,7 +157,7 @@ export async function installYarpExtension(
     }
   })
 
-  pi.on("tool_result", async (event, context) => {
+  pi.on("tool_result", async (event) => {
     if (sink === null || session === null) return
     const active = activeCalls.get(event.toolCallId)
     if (active === undefined) return
@@ -177,7 +177,7 @@ export async function installYarpExtension(
       activeCalls.delete(event.toolCallId)
       console.error(`[yarp] result archive failed: ${errorMessage(error)}`)
       if (active.requiresStreams) {
-        return restoreRawResult(pi, session, event, context.signal)
+        return restoreRawResult(pi, session, event)
       }
     }
   })
@@ -276,7 +276,6 @@ async function restoreRawResult(
   pi: ExtensionAPI,
   session: ArchiveSession,
   event: ToolResultEvent,
-  signal?: AbortSignal,
 ): Promise<ResultPatch | undefined> {
   const args = [
     "archive",
@@ -290,10 +289,9 @@ async function restoreRawResult(
     "--archive-call",
     event.toolCallId,
   ]
-  const options = signal === undefined ? undefined : { signal }
   let result: Awaited<ReturnType<ExtensionAPI["exec"]>>
   try {
-    result = await pi.exec("yarp", args, options)
+    result = await pi.exec("yarp", args)
   } catch (error) {
     console.error(`[yarp] raw result restore failed: ${errorMessage(error)}`)
     return undefined
