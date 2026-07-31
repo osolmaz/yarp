@@ -41,9 +41,9 @@ Add `yarp archive verify` and `yarp archive stats` before enabling automatic cap
 
 ### Ingest process
 
-Add `yarp archive ingest`, a long-lived stdin reader used by the Pi extension. Define a length-prefixed frame with a small JSON header and an optional binary body. The protocol is internal to the matching YARP binary and Pi package revision.
+Add `yarp archive ingest`, a long-lived stdin reader used by the Pi extension. Each operation is one JSON object preceded by an unsigned 8-byte big-endian length. Frames are capped at 256 MiB. The protocol is internal to the matching YARP binary and Pi package revision.
 
-The process will acknowledge each committed operation. It will reject malformed frames, oversized headers, unknown operations, unsupported schema versions, and payload length mismatches. It will stop cleanly at EOF after flushing committed work.
+The process acknowledges each committed operation with one JSON line. It rejects malformed frames, oversized frames, unknown operations, unsupported schema versions, and truncated input. It stops cleanly at EOF after flushing committed work.
 
 The extension will serialize requests through one queue. If the child exits, the extension restarts it once and retries the unacknowledged request. It must not retry a request that was acknowledged.
 

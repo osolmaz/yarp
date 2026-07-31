@@ -5,12 +5,43 @@ enum Quote {
     Double,
 }
 
+/// Metadata passed to an archived shell wrapper.
+#[derive(Clone, Copy, Debug)]
+pub struct ArchiveCommandRef<'a> {
+    pub agent: &'a str,
+    pub account: &'a str,
+    pub session_id: &'a str,
+    pub call_id: &'a str,
+}
+
 /// Return a wrapper command only for simple shell commands on the allowlist.
 #[must_use]
 pub fn rewrite(command: &str) -> Option<String> {
+    rewrite_with_archive(command, None)
+}
+
+/// Return an archived wrapper command for an allowlisted shell command.
+#[must_use]
+pub fn rewrite_with_archive(
+    command: &str,
+    archive: Option<ArchiveCommandRef<'_>>,
+) -> Option<String> {
     let command = command.trim();
     let words = parse_words(command)?;
-    is_allowed_words(&words).then(|| format!("yarp run -- {command}"))
+    is_allowed_words(&words).then(|| match archive {
+        Some(reference) => format!(
+            "yarp run --archive-agent {} --archive-account {} --archive-session {} --archive-call {} -- {command}",
+            shell_quote(reference.agent),
+            shell_quote(reference.account),
+            shell_quote(reference.session_id),
+            shell_quote(reference.call_id),
+        ),
+        None => format!("yarp run -- {command}"),
+    })
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// Check an already parsed argument list before running a child process.
@@ -127,6 +158,24 @@ mod tests {
         assert_eq!(
             rewrite("pytest -q").as_deref(),
             Some("yarp run -- pytest -q")
+        );
+    }
+
+    #[test]
+    fn adds_archive_identifiers_with_shell_quoting() {
+        let rewritten = rewrite_with_archive(
+            "git status --short",
+            Some(ArchiveCommandRef {
+                agent: "pi",
+                account: "o'nur",
+                session_id: "session-1",
+                call_id: "call-1",
+            }),
+        )
+        .expect("rewrite");
+        assert_eq!(
+            rewritten,
+            "yarp run --archive-agent 'pi' --archive-account 'o'\\''nur' --archive-session 'session-1' --archive-call 'call-1' -- git status --short"
         );
     }
 

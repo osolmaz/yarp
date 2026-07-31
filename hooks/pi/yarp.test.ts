@@ -4,41 +4,139 @@ import type {
   ExecOptions,
   ExecResult,
   ExtensionAPI,
-  ToolCallContext,
-  ToolCallEvent,
+  ExtensionContext,
+  ExtensionEventMap,
 } from "@earendil-works/pi-coding-agent"
-import yarpExtension, { commandBinding } from "./yarp.js"
+import type {
+  ArchiveCall,
+  ArchiveSession,
+  ArchiveSink,
+} from "./archive-client.js"
+import { commandBinding, installYarpExtension } from "./yarp.js"
 
-type Handler = (event: ToolCallEvent, context: ToolCallContext) => Promise<void> | void
+type EventName = keyof ExtensionEventMap
+type Handler<K extends EventName> = (
+  event: ExtensionEventMap[K],
+  context: ExtensionContext,
+) => Promise<void> | void
+
+class HandlerRegistry {
+  private readonly handlers: { [K in EventName]: Array<Handler<K>> } = {
+    session_start: [],
+    session_shutdown: [],
+    tool_call: [],
+    tool_result: [],
+    tool_execution_end: [],
+  }
+
+  add<K extends EventName>(event: K, handler: Handler<K>): void {
+    this.handlers[event].push(handler)
+  }
+
+  async emit<K extends EventName>(
+    event: K,
+    payload: ExtensionEventMap[K],
+    context: ExtensionContext,
+  ): Promise<void> {
+    for (const handler of this.handlers[event]) await handler(payload, context)
+  }
+}
 
 class MockPi implements ExtensionAPI {
-  handler: Handler | null = null
+  readonly registry = new HandlerRegistry()
   rewrite: ExecResult = result(3)
   failRewrite = false
+  rewriteArgs: string[] | null = null
 
   async exec(command: string, args: string[], _options?: ExecOptions): Promise<ExecResult> {
     assert.equal(command, "yarp")
     if (args[0] === "--version") return result(0, "yarp 0.1.0\n")
+    this.rewriteArgs = args
     if (this.failRewrite) throw new Error("rewrite failed")
     return this.rewrite
   }
 
-  on(event: "tool_call", handler: Handler): void {
-    assert.equal(event, "tool_call")
-    this.handler = handler
+  on<K extends EventName>(event: K, handler: Handler<K>): void {
+    this.registry.add(event, handler)
+  }
+}
+
+type BeginRecord = {
+  session: ArchiveSession
+  call: ArchiveCall
+  inputBefore: unknown
+  inputAfter: unknown
+}
+
+class MemorySink implements ArchiveSink {
+  readonly begins: BeginRecord[] = []
+  readonly beforeResults: unknown[] = []
+  readonly finishedResults: unknown[] = []
+  closed = false
+  failBegin = false
+
+  async beginCall(
+    session: ArchiveSession,
+    call: ArchiveCall,
+    inputBefore: unknown,
+    inputAfter: unknown,
+  ): Promise<void> {
+    if (this.failBegin) throw new Error("archive unavailable")
+    this.begins.push({ session, call, inputBefore, inputAfter })
   }
 
-  async call(toolName: string, input: unknown): Promise<void> {
-    assert.notEqual(this.handler, null)
-    await this.handler?.(
-      { toolName, input },
-      { signal: new AbortController().signal },
-    )
+  async resultBefore(
+    _session: ArchiveSession,
+    _sourceCallId: string,
+    resultValue: unknown,
+  ): Promise<void> {
+    this.beforeResults.push(resultValue)
   }
+
+  async finishCall(
+    _session: ArchiveSession,
+    _sourceCallId: string,
+    resultValue: unknown,
+  ): Promise<void> {
+    this.finishedResults.push(resultValue)
+  }
+
+  async close(): Promise<void> {
+    this.closed = true
+  }
+}
+
+const context: ExtensionContext = {
+  signal: new AbortController().signal,
+  cwd: "/repo",
+  sessionManager: { getSessionId: () => "session-1" },
+  model: { provider: "openai", id: "gpt" },
 }
 
 function result(code: number, stdout = ""): ExecResult {
   return { code, stdout, stderr: "", killed: false }
+}
+
+async function start(pi: MockPi, sink: MemorySink): Promise<void> {
+  await installYarpExtension(pi, () => sink)
+  await pi.registry.emit(
+    "session_start",
+    { type: "session_start", reason: "startup" },
+    context,
+  )
+}
+
+async function call(
+  pi: MockPi,
+  toolCallId: string,
+  toolName: string,
+  input: Record<string, unknown>,
+): Promise<void> {
+  await pi.registry.emit(
+    "tool_call",
+    { type: "tool_call", toolCallId, toolName, input },
+    context,
+  )
 }
 
 test("finds bash and exec_command inputs", () => {
@@ -55,48 +153,161 @@ test("finds bash and exec_command inputs", () => {
   assert.equal(commandBinding("bash", null), null)
 })
 
-test("rewrites supported commands for both shell tools", async () => {
+test("archives and rewrites supported shell calls", async () => {
   const pi = new MockPi()
-  pi.rewrite = result(0, "yarp run -- git status\n")
-  await yarpExtension(pi)
+  const sink = new MemorySink()
+  pi.rewrite = result(
+    0,
+    "yarp run --archive-agent 'pi' --archive-account 'onur' --archive-session 'session-1' --archive-call 'call-1' -- git status\n",
+  )
+  await start(pi, sink)
 
-  const bash = { command: "git status" }
-  await pi.call("bash", bash)
-  assert.equal(bash.command, "yarp run -- git status")
+  const input = { cmd: "git status" }
+  await call(pi, "call-1", "exec_command", input)
 
-  const exec = { cmd: "git status" }
-  await pi.call("exec_command", exec)
-  assert.equal(exec.cmd, "yarp run -- git status")
+  assert.match(input.cmd, /^yarp run --archive-agent/)
+  assert.equal(sink.begins.length, 1)
+  assert.deepEqual(sink.begins[0]?.inputBefore, { cmd: "git status" })
+  assert.deepEqual(sink.begins[0]?.inputAfter, { cmd: input.cmd })
+  assert.deepEqual(pi.rewriteArgs, [
+    "rewrite",
+    "--archive-agent",
+    "pi",
+    "--archive-account",
+    sink.begins[0]?.session.account,
+    "--archive-session",
+    "session-1",
+    "--archive-call",
+    "call-1",
+    "git status",
+  ])
 })
 
-test("leaves commands unchanged when rewriting is unsupported or fails", async () => {
+test("archives unchanged non-shell calls and both result stages", async () => {
   const pi = new MockPi()
-  await yarpExtension(pi)
+  const sink = new MemorySink()
+  await start(pi, sink)
 
-  const unsupported = { command: "cat .env" }
-  await pi.call("bash", unsupported)
-  assert.equal(unsupported.command, "cat .env")
+  await call(pi, "call-2", "read", { path: "README.md" })
+  await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "call-2",
+      toolName: "read",
+      input: { path: "README.md" },
+      content: [{ type: "text", text: "raw" }],
+      details: { lines: 1 },
+      isError: false,
+    },
+    context,
+  )
+  await pi.registry.emit(
+    "tool_execution_end",
+    {
+      type: "tool_execution_end",
+      toolCallId: "call-2",
+      toolName: "read",
+      result: { content: [{ type: "text", text: "final" }], details: { lines: 1 } },
+      isError: false,
+    },
+    context,
+  )
 
-  pi.failRewrite = true
-  const failed = { command: "git status" }
-  await pi.call("bash", failed)
-  assert.equal(failed.command, "git status")
-
-  const alreadyWrapped = { command: "yarp run -- git status" }
-  await pi.call("bash", alreadyWrapped)
-  assert.equal(alreadyWrapped.command, "yarp run -- git status")
+  assert.deepEqual(sink.begins[0]?.inputBefore, { path: "README.md" })
+  assert.deepEqual(sink.begins[0]?.inputAfter, { path: "README.md" })
+  assert.equal(sink.beforeResults.length, 1)
+  assert.equal(sink.finishedResults.length, 1)
 })
 
-test("respects the disable switch", async () => {
+test("finalizes preflight errors that skip tool_result", async () => {
   const pi = new MockPi()
+  const sink = new MemorySink()
+  await start(pi, sink)
+  await call(pi, "call-3", "missing", {})
+  await pi.registry.emit(
+    "tool_execution_end",
+    {
+      type: "tool_execution_end",
+      toolCallId: "call-3",
+      toolName: "missing",
+      result: { content: [{ type: "text", text: "Tool not found" }] },
+      isError: true,
+    },
+    context,
+  )
+  assert.equal(sink.beforeResults.length, 0)
+  assert.equal(sink.finishedResults.length, 1)
+})
+
+test("archive start failure blocks tool mutation", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  sink.failBegin = true
   pi.rewrite = result(0, "yarp run -- git status")
-  await yarpExtension(pi)
-  process.env.YARP_DISABLED = "1"
+  await start(pi, sink)
+  const input = { command: "git status" }
+  await assert.rejects(call(pi, "call-4", "bash", input), /archive unavailable/)
+  assert.equal(input.command, "git status")
+})
+
+test("rewrite failures keep the original command but still archive", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  pi.failRewrite = true
+  await start(pi, sink)
+  const input = { command: "git status" }
+  await call(pi, "call-5", "bash", input)
+  assert.equal(input.command, "git status")
+  assert.equal(sink.begins.length, 1)
+})
+
+test("archive opt-out keeps rewriting without archive metadata", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  pi.rewrite = result(0, "yarp run -- git status")
+  process.env["YARP_ARCHIVE_DISABLED"] = "1"
   try {
+    await installYarpExtension(pi, () => sink)
+    await pi.registry.emit(
+      "session_start",
+      { type: "session_start", reason: "startup" },
+      context,
+    )
     const input = { command: "git status" }
-    await pi.call("bash", input)
-    assert.equal(input.command, "git status")
+    await call(pi, "call-6", "bash", input)
+    assert.equal(input.command, "yarp run -- git status")
+    assert.deepEqual(pi.rewriteArgs, ["rewrite", "git status"])
+    assert.equal(sink.begins.length, 0)
   } finally {
-    delete process.env.YARP_DISABLED
+    delete process.env["YARP_ARCHIVE_DISABLED"]
   }
+})
+
+test("pruning opt-out still archives every call", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  process.env["YARP_DISABLED"] = "1"
+  try {
+    await start(pi, sink)
+    const input = { command: "git status" }
+    await call(pi, "call-7", "bash", input)
+    assert.equal(input.command, "git status")
+    assert.equal(pi.rewriteArgs, null)
+    assert.equal(sink.begins.length, 1)
+  } finally {
+    delete process.env["YARP_DISABLED"]
+  }
+})
+
+test("session shutdown closes the archive writer", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  await start(pi, sink)
+  await pi.registry.emit(
+    "session_shutdown",
+    { type: "session_shutdown", reason: "quit" },
+    context,
+  )
+  assert.equal(sink.closed, true)
 })
