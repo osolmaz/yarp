@@ -129,6 +129,14 @@ impl RawSpool {
     }
 }
 
+/// Prune one captured output stream with the same limits used for child processes.
+#[must_use]
+pub fn prune_bytes(input: &[u8]) -> Vec<u8> {
+    capture(std::io::Cursor::new(input), None, io::sink())
+        .map(|captured| captured.bounded.render())
+        .unwrap_or_else(|_| input.to_vec())
+}
+
 /// Run one allowlisted command, prune its two output streams, and return its exit code.
 ///
 /// # Errors
@@ -394,6 +402,7 @@ mod tests {
     fn leaves_short_output_unchanged() {
         let captured = capture(Cursor::new(b"one\ntwo\n"), None, io::sink()).expect("capture");
         assert_eq!(captured.bounded.render(), b"one\ntwo\n");
+        assert_eq!(prune_bytes(b"one\ntwo\n"), b"one\ntwo\n");
     }
 
     #[test]

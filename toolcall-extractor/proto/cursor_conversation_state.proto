@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package agent.v1;
+
+// Minimal checked schema used to traverse the current Cursor conversation root.
+// Unknown fields remain opaque and are skipped by protobuf decoding.
+message ConversationStateStructure {
+  repeated bytes message_blob_ids = 1;
+  repeated bytes turn_blob_ids = 8;
+}

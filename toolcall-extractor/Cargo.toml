@@ -1,0 +1,35 @@
+[package]
+name = "toolcall-extractor"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+description = "Extract tool calls from local coding-agent sessions"
+publish = false
+
+[[bin]]
+name = "toolcall-extractor"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4.42", default-features = false, features = ["std"] }
+clap = { version = "4.6.4", features = ["derive"] }
+duckdb = { version = "1.10505.0", features = ["bundled"] }
+fs2 = "0.4.3"
+prost = "0.14.4"
+rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.10.9"
+thiserror = "2.0.18"
+walkdir = "2.5.0"
+yarp-cli = { path = ".." }
+
+[dev-dependencies]
+tempfile = "3.24.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "deny"
+pedantic = "deny"
