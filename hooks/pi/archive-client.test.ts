@@ -86,6 +86,7 @@ const call = {
   toolName: "read",
   workingDirectory: "/repo",
   startedAtMs: 2,
+  requiresStreams: false,
 }
 
 test("sends framed requests and waits for acknowledgements", async () => {
@@ -95,6 +96,7 @@ test("sends framed requests and waits for acknowledgements", async () => {
   assert.equal(process.requests.length, 1)
   assert.equal(process.requests[0]?.operation, "begin_call")
   assert.equal(process.requests[0]?.requestId, 1)
+  assert.equal(process.requests[0]?.schemaVersion, 1)
   await client.close()
 })
 
@@ -148,7 +150,7 @@ test("serializes concurrent requests", async () => {
   await Promise.all([
     client.beginCall(session, call, {}, {}, 2),
     client.resultBefore(session, "call-1", { content: "before" }, 3),
-    client.finishCall(session, "call-1", { content: "after" }, false, 4),
+    client.finishCall(session, "call-1", { content: "after" }, false, true, 4),
   ])
   assert.deepEqual(seen, [1, 2, 3])
   await client.close()

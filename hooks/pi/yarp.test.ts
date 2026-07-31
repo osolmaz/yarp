@@ -6,6 +6,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   ExtensionEventMap,
+  ExtensionEventResultMap,
 } from "@earendil-works/pi-coding-agent"
 import type {
   ArchiveCall,
@@ -18,7 +19,7 @@ type EventName = keyof ExtensionEventMap
 type Handler<K extends EventName> = (
   event: ExtensionEventMap[K],
   context: ExtensionContext,
-) => Promise<void> | void
+) => Promise<ExtensionEventResultMap[K] | void> | ExtensionEventResultMap[K] | void
 
 class HandlerRegistry {
   private readonly handlers: { [K in EventName]: Array<Handler<K>> } = {
@@ -37,20 +38,27 @@ class HandlerRegistry {
     event: K,
     payload: ExtensionEventMap[K],
     context: ExtensionContext,
-  ): Promise<void> {
-    for (const handler of this.handlers[event]) await handler(payload, context)
+  ): Promise<ExtensionEventResultMap[K] | void> {
+    let result: ExtensionEventResultMap[K] | void = undefined
+    for (const handler of this.handlers[event]) {
+      const current = await handler(payload, context)
+      if (current !== undefined) result = current
+    }
+    return result
   }
 }
 
 class MockPi implements ExtensionAPI {
   readonly registry = new HandlerRegistry()
   rewrite: ExecResult = result(3)
+  restore: ExecResult = result(0, "raw output\n")
   failRewrite = false
   rewriteArgs: string[] | null = null
 
   async exec(command: string, args: string[], _options?: ExecOptions): Promise<ExecResult> {
     assert.equal(command, "yarp")
     if (args[0] === "--version") return result(0, "yarp 0.1.0\n")
+    if (args[0] === "archive" && args[1] === "restore") return this.restore
     this.rewriteArgs = args
     if (this.failRewrite) throw new Error("rewrite failed")
     return this.rewrite
@@ -74,6 +82,9 @@ class MemorySink implements ArchiveSink {
   readonly finishedResults: unknown[] = []
   closed = false
   failBegin = false
+  failBefore = false
+  failFinish = false
+  finishRequiresPreResult: boolean[] = []
 
   async beginCall(
     session: ArchiveSession,
@@ -90,6 +101,7 @@ class MemorySink implements ArchiveSink {
     _sourceCallId: string,
     resultValue: unknown,
   ): Promise<void> {
+    if (this.failBefore) throw new Error("before failed")
     this.beforeResults.push(resultValue)
   }
 
@@ -97,8 +109,12 @@ class MemorySink implements ArchiveSink {
     _session: ArchiveSession,
     _sourceCallId: string,
     resultValue: unknown,
+    _isError: boolean,
+    requirePreResult: boolean,
   ): Promise<void> {
+    if (this.failFinish) throw new Error("finish failed")
     this.finishedResults.push(resultValue)
+    this.finishRequiresPreResult.push(requirePreResult)
   }
 
   async close(): Promise<void> {
@@ -167,6 +183,7 @@ test("archives and rewrites supported shell calls", async () => {
 
   assert.match(input.cmd, /^yarp run --archive-agent/)
   assert.equal(sink.begins.length, 1)
+  assert.equal(sink.begins[0]?.call.requiresStreams, true)
   assert.deepEqual(sink.begins[0]?.inputBefore, { cmd: "git status" })
   assert.deepEqual(sink.begins[0]?.inputAfter, { cmd: input.cmd })
   assert.deepEqual(pi.rewriteArgs, [
@@ -218,6 +235,8 @@ test("archives unchanged non-shell calls and both result stages", async () => {
   assert.deepEqual(sink.begins[0]?.inputAfter, { path: "README.md" })
   assert.equal(sink.beforeResults.length, 1)
   assert.equal(sink.finishedResults.length, 1)
+  assert.deepEqual(sink.finishedResults[0], sink.beforeResults[0])
+  assert.deepEqual(sink.finishRequiresPreResult, [true])
 })
 
 test("finalizes preflight errors that skip tool_result", async () => {
@@ -238,6 +257,7 @@ test("finalizes preflight errors that skip tool_result", async () => {
   )
   assert.equal(sink.beforeResults.length, 0)
   assert.equal(sink.finishedResults.length, 1)
+  assert.deepEqual(sink.finishRequiresPreResult, [false])
 })
 
 test("archive start failure blocks tool mutation", async () => {
@@ -260,6 +280,69 @@ test("rewrite failures keep the original command but still archive", async () =>
   await call(pi, "call-5", "bash", input)
   assert.equal(input.command, "git status")
   assert.equal(sink.begins.length, 1)
+  assert.equal(sink.begins[0]?.call.requiresStreams, false)
+})
+
+test("leaves a call incomplete when pre-result capture fails", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  sink.failBefore = true
+  await start(pi, sink)
+  await call(pi, "call-before-failure", "read", { path: "README.md" })
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "call-before-failure",
+      toolName: "read",
+      input: { path: "README.md" },
+      content: [{ type: "text", text: "raw" }],
+      details: undefined,
+      isError: false,
+    },
+    context,
+  )
+  assert.equal(patch, undefined)
+  await pi.registry.emit(
+    "tool_execution_end",
+    {
+      type: "tool_execution_end",
+      toolCallId: "call-before-failure",
+      toolName: "read",
+      result: { content: [{ type: "text", text: "raw" }] },
+      isError: false,
+    },
+    context,
+  )
+  assert.equal(sink.finishedResults.length, 0)
+})
+
+test("restores raw shell output when result finalization fails", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  sink.failFinish = true
+  pi.rewrite = result(0, "yarp run --archive-call 'call-restore' -- git status")
+  pi.restore = { code: 0, stdout: "raw stdout\n", stderr: "raw stderr\n", killed: false }
+  await start(pi, sink)
+  await call(pi, "call-restore", "bash", { command: "git status" })
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "call-restore",
+      toolName: "bash",
+      input: { command: "rewritten" },
+      content: [{ type: "text", text: "pruned" }],
+      details: undefined,
+      isError: false,
+    },
+    context,
+  )
+  assert.deepEqual(patch, {
+    content: [{ type: "text", text: "raw stdout\nraw stderr\n" }],
+    isError: false,
+  })
+  assert.equal(sink.finishedResults.length, 0)
 })
 
 test("archive opt-out keeps rewriting without archive metadata", async () => {

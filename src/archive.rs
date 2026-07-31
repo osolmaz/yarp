@@ -1,5 +1,7 @@
 use rusqlite::blob::Blob;
-use rusqlite::{Connection, MAIN_DB, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, MAIN_DB, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -13,6 +15,7 @@ const SCHEMA_VERSION: i64 = 1;
 const ZSTD_LEVEL: i32 = 3;
 const COMPRESSION_PERCENT: u64 = 95;
 const MAX_FRAME_BYTES: u64 = 256 * 1024 * 1024;
+const INGEST_SCHEMA_VERSION: u32 = 1;
 
 const SCHEMA: &str = r"
 CREATE TABLE sessions (
@@ -33,9 +36,11 @@ CREATE TABLE tool_calls (
     model             TEXT,
     working_directory TEXT,
     started_at_ms     INTEGER NOT NULL,
+    requires_streams  INTEGER NOT NULL CHECK (requires_streams IN (0, 1)),
     finished_at_ms    INTEGER,
     status            TEXT NOT NULL CHECK (status IN ('started', 'finished')),
     is_error          INTEGER CHECK (is_error IN (0, 1)),
+    executed          INTEGER CHECK (executed IN (0, 1)),
     UNIQUE (session_id, source_call_id)
 );
 
@@ -79,6 +84,7 @@ pub struct CallIdentity {
     pub model: Option<String>,
     pub working_directory: Option<String>,
     pub started_at_ms: i64,
+    pub requires_streams: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -91,11 +97,13 @@ pub struct ArchiveKey {
 #[serde(
     tag = "operation",
     rename_all = "snake_case",
-    rename_all_fields = "camelCase"
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
 )]
 enum IngestOperation {
     BeginCall {
         request_id: u64,
+        schema_version: u32,
         session: SessionIdentity,
         call: CallIdentity,
         input_before: Value,
@@ -104,6 +112,7 @@ enum IngestOperation {
     },
     ResultBefore {
         request_id: u64,
+        schema_version: u32,
         session: SessionIdentity,
         source_call_id: String,
         result: Value,
@@ -111,10 +120,12 @@ enum IngestOperation {
     },
     FinishCall {
         request_id: u64,
+        schema_version: u32,
         session: SessionIdentity,
         source_call_id: String,
         result: Value,
         is_error: bool,
+        require_pre_result: bool,
         finished_at_ms: i64,
     },
 }
@@ -125,6 +136,14 @@ impl IngestOperation {
             Self::BeginCall { request_id, .. }
             | Self::ResultBefore { request_id, .. }
             | Self::FinishCall { request_id, .. } => *request_id,
+        }
+    }
+
+    const fn schema_version(&self) -> u32 {
+        match self {
+            Self::BeginCall { schema_version, .. }
+            | Self::ResultBefore { schema_version, .. }
+            | Self::FinishCall { schema_version, .. } => *schema_version,
         }
     }
 }
@@ -169,6 +188,34 @@ impl Archive {
     /// Returns an error when the path, permissions, `SQLite` database, or schema is invalid.
     pub fn open() -> Result<Self, String> {
         Self::open_path(archive_path()?)
+    }
+
+    /// Open the configured archive without performing any writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the archive is missing, unreadable, or uses another schema version.
+    pub fn open_read_only() -> Result<Self, String> {
+        let path = archive_path()?;
+        let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| {
+                format!(
+                    "could not open archive {} read-only: {error}",
+                    path.display()
+                )
+            })?;
+        connection
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(|error| format!("could not set archive busy timeout: {error}"))?;
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(|error| format!("could not read archive schema version: {error}"))?;
+        if version != SCHEMA_VERSION {
+            return Err(format!(
+                "archive schema version {version}, expected {SCHEMA_VERSION}"
+            ));
+        }
+        Ok(Self { connection, path })
     }
 
     /// Open an archive at an explicit path.
@@ -295,11 +342,13 @@ impl Archive {
         source_call_id: &str,
         result: &Value,
         is_error: bool,
+        require_pre_result: bool,
         finished_at_ms: i64,
     ) -> Result<(), String> {
         let body = canonical_json(result)?;
         let transaction = self.transaction()?;
         let call_id = find_call(&transaction, session, source_call_id)?;
+        validate_completion(&transaction, call_id, require_pre_result)?;
         insert_snapshot_bytes(
             &transaction,
             call_id,
@@ -311,8 +360,15 @@ impl Archive {
         )?;
         transaction
             .execute(
-                "UPDATE tool_calls SET finished_at_ms = ?1, status = 'finished', is_error = ?2 WHERE id = ?3",
-                params![finished_at_ms, i64::from(is_error), call_id],
+                "UPDATE tool_calls
+                 SET finished_at_ms = ?1, status = 'finished', is_error = ?2, executed = ?3
+                 WHERE id = ?4",
+                params![
+                    finished_at_ms,
+                    i64::from(is_error),
+                    i64::from(require_pre_result),
+                    call_id
+                ],
             )
             .map_err(|error| format!("could not finish tool call: {error}"))?;
         transaction
@@ -375,6 +431,38 @@ impl Archive {
         transaction
             .commit()
             .map_err(|error| format!("could not commit shell streams: {error}"))
+    }
+
+    /// Restore the exact pre-pruning shell streams for one call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the call, snapshots, or payload bodies cannot be read.
+    pub fn restore_streams(
+        &self,
+        key: &ArchiveKey,
+        mut stdout: impl Write,
+        mut stderr: impl Write,
+    ) -> Result<(), String> {
+        let call_id: i64 = self
+            .connection
+            .query_row(
+                "SELECT c.id
+                 FROM tool_calls c
+                 JOIN sessions s ON s.id = c.session_id
+                 WHERE s.agent = ?1 AND s.account = ?2 AND s.source_session_id = ?3
+                   AND c.source_call_id = ?4",
+                params![
+                    key.session.agent,
+                    key.session.account,
+                    key.session.source_session_id,
+                    key.source_call_id
+                ],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("could not find tool call {}: {error}", key.source_call_id))?;
+        self.copy_snapshot(call_id, "stdout", "before", &mut stdout)?;
+        self.copy_snapshot(call_id, "stderr", "before", &mut stderr)
     }
 
     /// Read aggregate archive statistics without reading payload content.
@@ -465,36 +553,7 @@ impl Archive {
                 |row| row.get(0),
             )
             .map_err(|error| format!("could not count incomplete calls: {error}"))?;
-        let missing_inputs: i64 = self
-            .connection
-            .query_row(
-                "SELECT count(*) FROM tool_calls c
-                 WHERE NOT EXISTS (SELECT 1 FROM snapshots s WHERE s.tool_call_id = c.id AND s.subject = 'input' AND s.stage = 'before')
-                    OR NOT EXISTS (SELECT 1 FROM snapshots s WHERE s.tool_call_id = c.id AND s.subject = 'input' AND s.stage = 'after')",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("could not check input snapshots: {error}"))?;
-        if missing_inputs > 0 {
-            report
-                .errors
-                .push(format!("{missing_inputs} call(s) missing input snapshots"));
-        }
-        let missing_results: i64 = self
-            .connection
-            .query_row(
-                "SELECT count(*) FROM tool_calls c
-                 WHERE c.status = 'finished'
-                   AND NOT EXISTS (SELECT 1 FROM snapshots s WHERE s.tool_call_id = c.id AND s.subject = 'result' AND s.stage = 'after')",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("could not check final result snapshots: {error}"))?;
-        if missing_results > 0 {
-            report.errors.push(format!(
-                "{missing_results} finished call(s) missing final results"
-            ));
-        }
+        self.verify_snapshot_sets(&mut report)?;
         let orphaned: i64 = self
             .connection
             .query_row(
@@ -539,6 +598,91 @@ impl Archive {
             .execute_batch("PRAGMA incremental_vacuum")
             .map_err(|error| format!("could not vacuum archive: {error}"))?;
         i64::try_from(deleted).map_err(|_| "pruned call count does not fit in i64".to_owned())
+    }
+
+    fn verify_snapshot_sets(&self, report: &mut VerifyReport) -> Result<(), String> {
+        let checks = [
+            (
+                "SELECT count(*) FROM tool_calls c
+                 WHERE NOT EXISTS (SELECT 1 FROM snapshots s WHERE s.tool_call_id = c.id AND s.subject = 'input' AND s.stage = 'before')
+                    OR NOT EXISTS (SELECT 1 FROM snapshots s WHERE s.tool_call_id = c.id AND s.subject = 'input' AND s.stage = 'after')",
+                "call(s) missing input snapshots",
+            ),
+            (
+                "SELECT count(*) FROM tool_calls c
+                 WHERE c.status = 'finished'
+                   AND NOT EXISTS (SELECT 1 FROM snapshots s WHERE s.tool_call_id = c.id AND s.subject = 'result' AND s.stage = 'after')",
+                "finished call(s) missing final results",
+            ),
+            (
+                "SELECT count(*) FROM tool_calls c
+                 WHERE c.status = 'finished' AND c.executed = 1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM snapshots s
+                       WHERE s.tool_call_id = c.id AND s.subject = 'result' AND s.stage = 'before'
+                   )",
+                "executed call(s) missing pre-YARP results",
+            ),
+            (
+                "SELECT count(*) FROM tool_calls c
+                 WHERE c.status = 'finished' AND c.requires_streams = 1
+                   AND 4 != (
+                       SELECT count(*) FROM snapshots s
+                       WHERE s.tool_call_id = c.id
+                         AND s.subject IN ('stdout', 'stderr')
+                         AND s.stage IN ('before', 'after')
+                   )",
+                "shell call(s) missing complete stream snapshots",
+            ),
+        ];
+        for (query, message) in checks {
+            let missing: i64 = self
+                .connection
+                .query_row(query, [], |row| row.get(0))
+                .map_err(|error| format!("could not verify snapshot sets: {error}"))?;
+            if missing > 0 {
+                report.errors.push(format!("{missing} {message}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn copy_snapshot(
+        &self,
+        call_id: i64,
+        subject: &str,
+        stage: &str,
+        writer: &mut impl Write,
+    ) -> Result<(), String> {
+        let (rowid, compression): (i64, String) = self
+            .connection
+            .query_row(
+                "SELECT p.rowid, p.compression
+                 FROM snapshots s
+                 JOIN payloads p ON p.sha256 = s.payload_sha256
+                 WHERE s.tool_call_id = ?1 AND s.subject = ?2 AND s.stage = ?3",
+                params![call_id, subject, stage],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|error| format!("could not find {subject}/{stage} snapshot: {error}"))?;
+        let blob = self
+            .connection
+            .blob_open(MAIN_DB, "payloads", "body", rowid, true)
+            .map_err(|error| format!("could not open {subject}/{stage} payload: {error}"))?;
+        match compression.as_str() {
+            "none" => {
+                let mut reader = blob;
+                io::copy(&mut reader, writer)
+            }
+            "zstd" => {
+                let mut decoder = zstd::stream::read::Decoder::new(blob)
+                    .map_err(|error| format!("could not decode {subject}/{stage}: {error}"))?;
+                io::copy(&mut decoder, writer)
+            }
+            unknown => return Err(format!("unknown payload compression {unknown}")),
+        }
+        .map_err(|error| format!("could not restore {subject}/{stage}: {error}"))?;
+        Ok(())
     }
 
     fn transaction(&mut self) -> Result<Transaction<'_>, String> {
@@ -670,6 +814,12 @@ fn run_ingest_with_archive(
 }
 
 fn apply_operation(archive: &mut Archive, operation: IngestOperation) -> Result<(), String> {
+    let schema_version = operation.schema_version();
+    if schema_version != INGEST_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported ingest schema version {schema_version}; expected {INGEST_SCHEMA_VERSION}"
+        ));
+    }
     match operation {
         IngestOperation::BeginCall {
             session,
@@ -691,9 +841,17 @@ fn apply_operation(archive: &mut Archive, operation: IngestOperation) -> Result<
             source_call_id,
             result,
             is_error,
+            require_pre_result,
             finished_at_ms,
             ..
-        } => archive.finish_call(&session, &source_call_id, &result, is_error, finished_at_ms),
+        } => archive.finish_call(
+            &session,
+            &source_call_id,
+            &result,
+            is_error,
+            require_pre_result,
+            finished_at_ms,
+        ),
     }
 }
 
@@ -765,8 +923,8 @@ fn ensure_call(
         .execute(
             "INSERT INTO tool_calls (
                 session_id, source_call_id, tool_name, provider, model,
-                working_directory, started_at_ms, status
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'started')
+                working_directory, started_at_ms, requires_streams, status
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'started')
              ON CONFLICT(session_id, source_call_id) DO NOTHING",
             params![
                 session_id,
@@ -775,13 +933,14 @@ fn ensure_call(
                 call.provider,
                 call.model,
                 call.working_directory,
-                call.started_at_ms
+                call.started_at_ms,
+                i64::from(call.requires_streams)
             ],
         )
         .map_err(|error| format!("could not store tool call: {error}"))?;
     let stored = transaction
         .query_row(
-            "SELECT id, tool_name, provider, model, working_directory, started_at_ms
+            "SELECT id, tool_name, provider, model, working_directory, started_at_ms, requires_streams
              FROM tool_calls WHERE session_id = ?1 AND source_call_id = ?2",
             params![session_id, call.source_call_id],
             |row| {
@@ -792,6 +951,7 @@ fn ensure_call(
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, i64>(5)?,
+                    row.get::<_, bool>(6)?,
                 ))
             },
         )
@@ -801,6 +961,7 @@ fn ensure_call(
         || stored.3 != call.model
         || stored.4 != call.working_directory
         || stored.5 != call.started_at_ms
+        || stored.6 != call.requires_streams
     {
         return Err(format!(
             "tool call {} was already stored with different metadata",
@@ -831,6 +992,52 @@ fn find_call(
             |row| row.get(0),
         )
         .map_err(|error| format!("could not find tool call {source_call_id}: {error}"))
+}
+
+fn validate_completion(
+    transaction: &Transaction<'_>,
+    call_id: i64,
+    require_pre_result: bool,
+) -> Result<(), String> {
+    let requires_streams: bool = transaction
+        .query_row(
+            "SELECT requires_streams FROM tool_calls WHERE id = ?1",
+            [call_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("could not read tool call requirements: {error}"))?;
+    if requires_streams {
+        let streams: i64 = transaction
+            .query_row(
+                "SELECT count(*) FROM snapshots
+                 WHERE tool_call_id = ?1
+                   AND subject IN ('stdout', 'stderr')
+                   AND stage IN ('before', 'after')",
+                [call_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("could not check shell stream snapshots: {error}"))?;
+        if streams != 4 {
+            return Err(format!(
+                "shell tool call is missing stream snapshots: found {streams} of 4"
+            ));
+        }
+    } else if require_pre_result {
+        let has_result: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM snapshots
+                    WHERE tool_call_id = ?1 AND subject = 'result' AND stage = 'before'
+                 )",
+                [call_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("could not check pre-YARP result snapshot: {error}"))?;
+        if !has_result {
+            return Err("executed tool call is missing its pre-YARP result".to_owned());
+        }
+    }
+    Ok(())
 }
 
 fn insert_snapshot_bytes(
@@ -1183,6 +1390,7 @@ mod tests {
             model: Some("gpt".to_owned()),
             working_directory: Some("/tmp".to_owned()),
             started_at_ms: 20,
+            requires_streams: false,
         }
     }
 
@@ -1220,6 +1428,7 @@ mod tests {
                 "call-1",
                 &serde_json::json!({"content": "pruned"}),
                 false,
+                true,
                 40,
             )
             .expect("finish");
@@ -1331,7 +1540,14 @@ mod tests {
             )
             .expect("begin");
         archive
-            .finish_call(&session(), "call-1", &serde_json::json!({}), false, 40)
+            .finish_call(
+                &session(),
+                "call-1",
+                &serde_json::json!({}),
+                false,
+                false,
+                40,
+            )
             .expect("finish");
         assert_eq!(archive.prune_before(50).expect("prune"), 1);
         assert_eq!(archive.stats().expect("stats").calls, 0);
@@ -1421,6 +1637,63 @@ mod tests {
     }
 
     #[test]
+    fn refuses_to_finish_executed_calls_without_required_snapshots() {
+        let (_directory, mut archive) = archive();
+        archive
+            .begin_call(
+                &session(),
+                &call(),
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                20,
+            )
+            .expect("begin");
+        let error = archive
+            .finish_call(
+                &session(),
+                "call-1",
+                &serde_json::json!({}),
+                false,
+                true,
+                40,
+            )
+            .expect_err("missing pre-result");
+        assert!(error.contains("missing its pre-YARP result"));
+        assert_eq!(archive.stats().expect("stats").incomplete_calls, 1);
+    }
+
+    #[test]
+    fn requires_every_shell_stream_before_finishing() {
+        let (_directory, mut archive) = archive();
+        let mut shell_call = call();
+        shell_call.requires_streams = true;
+        archive
+            .begin_call(
+                &session(),
+                &shell_call,
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                20,
+            )
+            .expect("begin");
+        archive
+            .result_before(&session(), "call-1", &serde_json::json!({}), 30)
+            .expect("before result");
+        let error = archive
+            .finish_call(
+                &session(),
+                "call-1",
+                &serde_json::json!({}),
+                false,
+                true,
+                40,
+            )
+            .expect_err("missing streams");
+        assert!(error.contains("found 0 of 4"));
+        assert_eq!(archive.stats().expect("stats").incomplete_calls, 1);
+    }
+
+    #[test]
     fn rejects_truncated_and_oversized_ingest_frames() {
         let (_directory, first_archive) = archive();
         let truncated = run_ingest_with_archive(first_archive, Cursor::new(vec![0, 1]), Vec::new())
@@ -1435,12 +1708,38 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unsupported_ingest_schema_versions() {
+        let (_directory, archive) = archive();
+        let operation = serde_json::json!({
+            "operation": "begin_call",
+            "requestId": 1,
+            "schemaVersion": 2,
+            "session": session(),
+            "call": call(),
+            "inputBefore": {},
+            "inputAfter": {},
+            "capturedAtMs": 20
+        });
+        let mut output = Vec::new();
+        run_ingest_with_archive(archive, Cursor::new(framed(&operation)), &mut output)
+            .expect("protocol response");
+        let ack: Value = serde_json::from_slice(&output).expect("ack");
+        assert_eq!(ack["ok"], false);
+        assert!(
+            ack["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("unsupported ingest"))
+        );
+    }
+
+    #[test]
     fn ingest_protocol_handles_every_operation() {
         let (_directory, archive) = archive();
         let operations = [
             serde_json::json!({
                 "operation": "begin_call",
                 "requestId": 1,
+                "schemaVersion": 1,
                 "session": session(),
                 "call": call(),
                 "inputBefore": {"path": "a"},
@@ -1450,6 +1749,7 @@ mod tests {
             serde_json::json!({
                 "operation": "result_before",
                 "requestId": 2,
+                "schemaVersion": 1,
                 "session": session(),
                 "sourceCallId": "call-1",
                 "result": {"content": "before"},
@@ -1458,10 +1758,12 @@ mod tests {
             serde_json::json!({
                 "operation": "finish_call",
                 "requestId": 3,
+                "schemaVersion": 1,
                 "session": session(),
                 "sourceCallId": "call-1",
                 "result": {"content": "after"},
                 "isError": false,
+                "requirePreResult": true,
                 "finishedAtMs": 40
             }),
         ];
@@ -1511,6 +1813,7 @@ mod tests {
         let operation = serde_json::json!({
             "operation": "begin_call",
             "requestId": 7,
+            "schemaVersion": 1,
             "session": session(),
             "call": call(),
             "inputBefore": {"path": "a"},

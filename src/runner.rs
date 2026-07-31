@@ -48,7 +48,7 @@ impl Captured {
 
 struct CapturedStream {
     bounded: Captured,
-    raw: NamedTempFile,
+    raw: Option<NamedTempFile>,
 }
 
 /// Run one allowlisted command, prune its two output streams, and return its exit code.
@@ -63,6 +63,21 @@ pub fn run(
     if !crate::rewrite::is_allowed_argv(arguments) {
         return Err("command is not on the YARP allowlist".to_owned());
     }
+
+    let (stdout_spool, stderr_spool) = if archive_key.is_some() {
+        (
+            Some(
+                NamedTempFile::new()
+                    .map_err(|error| format!("could not create stdout archive spool: {error}"))?,
+            ),
+            Some(
+                NamedTempFile::new()
+                    .map_err(|error| format!("could not create stderr archive spool: {error}"))?,
+            ),
+        )
+    } else {
+        (None, None)
+    };
 
     let mut child = Command::new(&arguments[0])
         .args(&arguments[1..])
@@ -81,8 +96,8 @@ pub fn run(
         .take()
         .ok_or_else(|| "could not capture child stderr".to_owned())?;
 
-    let stdout_thread = std::thread::spawn(move || capture(stdout));
-    let stderr_thread = std::thread::spawn(move || capture(stderr));
+    let stdout_thread = std::thread::spawn(move || capture(stdout, stdout_spool));
+    let stderr_thread = std::thread::spawn(move || capture(stderr, stderr_spool));
     let status = child
         .wait()
         .map_err(|error| format!("could not wait for child: {error}"))?;
@@ -93,19 +108,27 @@ pub fn run(
     let stderr_after = stderr.bounded.render();
 
     if let Some(key) = archive_key {
+        let stdout_raw = stdout
+            .raw
+            .as_mut()
+            .ok_or_else(|| "stdout archive spool is missing".to_owned())?;
+        let stderr_raw = stderr
+            .raw
+            .as_mut()
+            .ok_or_else(|| "stderr archive spool is missing".to_owned())?;
         let archived = crate::archive::Archive::open().and_then(|mut archive| {
             archive.capture_streams(
                 key,
                 unix_time_ms(),
-                stdout.raw.as_file_mut(),
-                stderr.raw.as_file_mut(),
+                stdout_raw.as_file_mut(),
+                stderr_raw.as_file_mut(),
                 &stdout_after,
                 &stderr_after,
             )
         });
         if let Err(error) = archived {
-            copy_raw(stdout.raw.as_file_mut(), &mut io::stdout(), "stdout")?;
-            copy_raw(stderr.raw.as_file_mut(), &mut io::stderr(), "stderr")?;
+            copy_raw(stdout_raw.as_file_mut(), &mut io::stdout(), "stdout")?;
+            copy_raw(stderr_raw.as_file_mut(), &mut io::stderr(), "stderr")?;
             eprintln!("yarp: archive failed after command execution: {error}");
             return Ok(exit_code(status));
         }
@@ -121,9 +144,8 @@ pub fn run(
     Ok(exit_code(status))
 }
 
-fn capture(mut reader: impl Read) -> io::Result<CapturedStream> {
+fn capture(mut reader: impl Read, mut raw: Option<NamedTempFile>) -> io::Result<CapturedStream> {
     let mut captured = Captured::default();
-    let mut raw = NamedTempFile::new()?;
     let mut line = Vec::new();
     let mut line_was_truncated = false;
     let mut buffer = [0_u8; 8 * 1024];
@@ -133,7 +155,9 @@ fn capture(mut reader: impl Read) -> io::Result<CapturedStream> {
         if count == 0 {
             break;
         }
-        raw.write_all(&buffer[..count])?;
+        if let Some(file) = &mut raw {
+            file.write_all(&buffer[..count])?;
+        }
         for &byte in &buffer[..count] {
             if line.len() < MAX_LINE_BYTES {
                 line.push(byte);
@@ -149,7 +173,9 @@ fn capture(mut reader: impl Read) -> io::Result<CapturedStream> {
     if !line.is_empty() || line_was_truncated {
         finish_line(&mut captured, &mut line, &mut line_was_truncated);
     }
-    raw.flush()?;
+    if let Some(file) = &mut raw {
+        file.flush()?;
+    }
     Ok(CapturedStream {
         bounded: captured,
         raw,
@@ -221,14 +247,14 @@ mod tests {
 
     #[test]
     fn leaves_short_output_unchanged() {
-        let captured = capture(Cursor::new(b"one\ntwo\n")).expect("capture");
+        let captured = capture(Cursor::new(b"one\ntwo\n"), None).expect("capture");
         assert_eq!(captured.bounded.render(), b"one\ntwo\n");
     }
 
     #[test]
     fn prunes_middle_lines() {
         let input = numbered_lines("line ", 250);
-        let captured = capture(Cursor::new(input)).expect("capture");
+        let captured = capture(Cursor::new(input), None).expect("capture");
         let rendered = String::from_utf8(captured.bounded.render()).expect("UTF-8 output");
         assert!(rendered.starts_with("line 0\n"));
         assert!(rendered.contains("[yarp: omitted 50 lines]\n"));
@@ -239,7 +265,7 @@ mod tests {
     #[test]
     fn keeps_all_lines_at_the_boundary() {
         let input = numbered_lines("", 200);
-        let rendered = capture(Cursor::new(input.as_bytes()))
+        let rendered = capture(Cursor::new(input.as_bytes()), None)
             .expect("capture")
             .bounded
             .render();
@@ -249,7 +275,7 @@ mod tests {
     #[test]
     fn truncates_one_very_long_line_without_growing_unbounded() {
         let input = vec![b'x'; MAX_LINE_BYTES * 2];
-        let rendered = capture(Cursor::new(input))
+        let rendered = capture(Cursor::new(input), None)
             .expect("capture")
             .bounded
             .render();
@@ -260,14 +286,14 @@ mod tests {
     #[test]
     fn handles_empty_and_unterminated_output() {
         assert!(
-            capture(Cursor::new(Vec::<u8>::new()))
+            capture(Cursor::new(Vec::<u8>::new()), None)
                 .expect("capture")
                 .bounded
                 .render()
                 .is_empty()
         );
         assert_eq!(
-            capture(Cursor::new(b"last line"))
+            capture(Cursor::new(b"last line"), None)
                 .expect("capture")
                 .bounded
                 .render(),
@@ -278,15 +304,20 @@ mod tests {
     #[test]
     fn raw_spool_keeps_omitted_lines() {
         let input = numbered_lines("line ", 250);
-        let mut captured = capture(Cursor::new(input.as_bytes())).expect("capture");
+        let spool = NamedTempFile::new().expect("spool");
+        let mut captured = capture(Cursor::new(input.as_bytes()), Some(spool)).expect("capture");
         let mut raw = String::new();
         captured
             .raw
+            .as_mut()
+            .expect("raw spool")
             .as_file_mut()
             .seek(SeekFrom::Start(0))
             .expect("seek");
         captured
             .raw
+            .as_mut()
+            .expect("raw spool")
             .as_file_mut()
             .read_to_string(&mut raw)
             .expect("read");

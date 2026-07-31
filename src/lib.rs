@@ -50,6 +50,9 @@ pub fn run_cli(arguments: &[String]) -> i32 {
                 }
             }
         }
+        [command, subcommand, rest @ ..] if command == "archive" && subcommand == "restore" => {
+            archive_restore(rest)
+        }
         [command, subcommand, option, timestamp]
             if command == "archive" && subcommand == "prune" && option == "--before" =>
         {
@@ -113,6 +116,22 @@ fn archive_verify() -> i32 {
     }
 }
 
+fn archive_restore(arguments: &[String]) -> i32 {
+    let key = match parse_archive_key(arguments) {
+        Ok(value) => value,
+        Err(error) => return usage_error(&error),
+    };
+    match archive::Archive::open_read_only()
+        .and_then(|archive| archive.restore_streams(&key, io::stdout().lock(), io::stderr().lock()))
+    {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("yarp: {error}");
+            74
+        }
+    }
+}
+
 fn archive_prune(timestamp: &str) -> i32 {
     let parsed = match OffsetDateTime::parse(timestamp, &Rfc3339) {
         Ok(value) => value,
@@ -167,6 +186,38 @@ fn parse_archive_rewrite(arguments: &[String]) -> Result<(ArchiveCommandRef<'_>,
         },
         shell,
     ))
+}
+
+fn parse_archive_key(arguments: &[String]) -> Result<archive::ArchiveKey, String> {
+    let [
+        agent_flag,
+        agent,
+        account_flag,
+        account,
+        session_flag,
+        session,
+        call_flag,
+        call,
+    ] = arguments
+    else {
+        return Err("invalid archive key arguments".to_owned());
+    };
+    if agent_flag != "--archive-agent"
+        || account_flag != "--archive-account"
+        || session_flag != "--archive-session"
+        || call_flag != "--archive-call"
+    {
+        return Err("invalid archive key options".to_owned());
+    }
+    Ok(archive::ArchiveKey {
+        session: archive::SessionIdentity {
+            agent: agent.clone(),
+            account: account.clone(),
+            source_session_id: session.clone(),
+            started_at_ms: None,
+        },
+        source_call_id: call.clone(),
+    })
 }
 
 fn parse_run(arguments: &[String]) -> Result<(Option<archive::ArchiveKey>, &[String]), String> {

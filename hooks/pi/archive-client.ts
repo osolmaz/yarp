@@ -5,6 +5,7 @@ import type { Readable, Writable } from "node:stream"
 
 const MAX_ACK_BUFFER_BYTES = 64 * 1024
 const CLOSE_TIMEOUT_MS = 2_000
+const INGEST_SCHEMA_VERSION = 1
 
 export type ArchiveSession = {
   agent: string
@@ -20,6 +21,7 @@ export type ArchiveCall = {
   model?: string
   workingDirectory?: string
   startedAtMs: number
+  requiresStreams: boolean
 }
 
 export interface ArchiveSink {
@@ -41,6 +43,7 @@ export interface ArchiveSink {
     sourceCallId: string,
     result: unknown,
     isError: boolean,
+    requirePreResult: boolean,
     finishedAtMs: number,
   ): Promise<void>
   close(): Promise<void>
@@ -117,6 +120,7 @@ export class ArchiveClient implements ArchiveSink {
     sourceCallId: string,
     result: unknown,
     isError: boolean,
+    requirePreResult: boolean,
     finishedAtMs: number,
   ): Promise<void> {
     return this.send({
@@ -125,6 +129,7 @@ export class ArchiveClient implements ArchiveSink {
       sourceCallId,
       result,
       isError,
+      requirePreResult,
       finishedAtMs,
     })
   }
@@ -147,7 +152,7 @@ export class ArchiveClient implements ArchiveSink {
   private send(operation: Record<string, unknown>): Promise<void> {
     if (this.closing) return Promise.reject(new Error("YARP archive client is closing"))
     const requestId = this.nextRequestId++
-    const request = { ...operation, requestId }
+    const request = { ...operation, requestId, schemaVersion: INGEST_SCHEMA_VERSION }
     const task = this.queue.then(() => this.sendWithRetry(requestId, request))
     this.queue = task.catch(() => undefined)
     return task

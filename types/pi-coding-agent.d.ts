@@ -42,7 +42,14 @@ declare module "@earendil-works/pi-coding-agent" {
     content: unknown[]
     details: unknown
     isError: boolean
-    usage?: unknown
+    usage?: Record<string, unknown>
+  }
+
+  export type ToolResultEventResult = {
+    content?: unknown[]
+    details?: unknown
+    isError?: boolean
+    usage?: Record<string, unknown>
   }
 
   export type ToolExecutionEndEvent = {
@@ -71,6 +78,14 @@ declare module "@earendil-works/pi-coding-agent" {
     tool_execution_end: ToolExecutionEndEvent
   }
 
+  export type ExtensionEventResultMap = {
+    session_start: void
+    session_shutdown: void
+    tool_call: void
+    tool_result: ToolResultEventResult
+    tool_execution_end: void
+  }
+
   export interface ExtensionAPI {
     exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>
     on<K extends keyof ExtensionEventMap>(
@@ -78,7 +93,7 @@ declare module "@earendil-works/pi-coding-agent" {
       handler: (
         event: ExtensionEventMap[K],
         context: ExtensionContext,
-      ) => Promise<void> | void,
+      ) => Promise<ExtensionEventResultMap[K] | void> | ExtensionEventResultMap[K] | void,
     ): void
   }
 }

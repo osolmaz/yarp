@@ -38,6 +38,7 @@ fn call(source_call_id: &str, tool_name: &str) -> CallIdentity {
         model: Some("gpt".to_owned()),
         working_directory: Some("/tmp".to_owned()),
         started_at_ms: 20,
+        requires_streams: matches!(tool_name, "bash" | "exec_command"),
     }
 }
 
@@ -96,6 +97,16 @@ fn rejects_invalid_cli_and_disallowed_direct_execution() {
 #[test]
 fn runs_an_allowlisted_command() {
     let output = yarp(&["run", "--", "git", "status", "--short"]);
+    assert!(output.status.success());
+}
+
+#[test]
+fn direct_run_does_not_require_a_temporary_directory() {
+    let output = Command::new(env!("CARGO_BIN_EXE_yarp"))
+        .args(["run", "--", "git", "status", "--short"])
+        .env("TMPDIR", "/definitely/not/a/directory")
+        .output()
+        .expect("run without temp directory");
     assert!(output.status.success());
 }
 
@@ -165,9 +176,38 @@ fn archives_raw_and_pruned_shell_streams() {
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stdout).contains("[yarp: omitted"));
 
+    let restored = yarp_with_archive(
+        &[
+            "archive",
+            "restore",
+            "--archive-agent",
+            "pi",
+            "--archive-account",
+            "test",
+            "--archive-session",
+            "session-1",
+            "--archive-call",
+            "call-shell",
+        ],
+        &database,
+    );
+    assert!(restored.status.success());
+    assert!(restored.stdout.len() > output.stdout.len());
+    assert!(!String::from_utf8_lossy(&restored.stdout).contains("[yarp: omitted"));
+
     let mut archive = Archive::open_path(database.clone()).expect("reopen");
     archive
-        .finish_call(&session(), "call-shell", &json!({"exitCode": 1}), false, 40)
+        .result_before(&session(), "call-shell", &json!({"exitCode": 1}), 35)
+        .expect("result before");
+    archive
+        .finish_call(
+            &session(),
+            "call-shell",
+            &json!({"exitCode": 1}),
+            false,
+            true,
+            40,
+        )
         .expect("finish");
     assert!(archive.verify().expect("verify").errors.is_empty());
     drop(archive);
@@ -242,7 +282,14 @@ fn archive_commands_report_verify_and_prune() {
         )
         .expect("begin");
     archive
-        .finish_call(&session(), "call-cli", &json!({"ok": true}), false, 40)
+        .finish_call(
+            &session(),
+            "call-cli",
+            &json!({"ok": true}),
+            false,
+            false,
+            40,
+        )
         .expect("finish");
     drop(archive);
 
@@ -285,6 +332,7 @@ fn ingest_cli_commits_and_acknowledges_a_call() {
     let request = json!({
         "operation": "begin_call",
         "requestId": 9,
+        "schemaVersion": 1,
         "session": session(),
         "call": call("call-ingest", "read"),
         "inputBefore": {},
@@ -323,6 +371,7 @@ fn killed_ingest_process_leaves_an_integral_incomplete_call() {
     let request = json!({
         "operation": "begin_call",
         "requestId": 10,
+        "schemaVersion": 1,
         "session": session(),
         "call": call("call-crash", "read"),
         "inputBefore": {},
