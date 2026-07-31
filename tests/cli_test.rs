@@ -197,7 +197,7 @@ fn archives_raw_and_pruned_shell_streams() {
 
     let mut archive = Archive::open_path(database.clone()).expect("reopen");
     archive
-        .result_before(&session(), "call-shell", &json!({"exitCode": 1}), 35)
+        .result_before(&session(), "call-shell", &json!({"exitCode": 1}), None, 35)
         .expect("result before");
     archive
         .finish_call(

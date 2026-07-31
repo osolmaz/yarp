@@ -53,7 +53,7 @@ CREATE TABLE payloads (
 
 CREATE TABLE snapshots (
     tool_call_id   INTEGER NOT NULL REFERENCES tool_calls(id) ON DELETE CASCADE,
-    subject        TEXT NOT NULL CHECK (subject IN ('input', 'result', 'stdout', 'stderr')),
+    subject        TEXT NOT NULL CHECK (subject IN ('input', 'result', 'source_output', 'stdout', 'stderr')),
     stage          TEXT NOT NULL CHECK (stage IN ('before', 'after')),
     media_type     TEXT NOT NULL,
     captured_at_ms INTEGER NOT NULL,
@@ -116,6 +116,7 @@ enum IngestOperation {
         session: SessionIdentity,
         source_call_id: String,
         result: Value,
+        full_output_path: Option<PathBuf>,
         captured_at_ms: i64,
     },
     FinishCall {
@@ -312,9 +313,33 @@ impl Archive {
         session: &SessionIdentity,
         source_call_id: &str,
         result: &Value,
+        full_output_path: Option<&Path>,
         captured_at_ms: i64,
     ) -> Result<(), String> {
         let body = canonical_json(result)?;
+        let mut full_output = full_output_path
+            .map(|path| {
+                let file = OpenOptions::new().read(true).open(path).map_err(|error| {
+                    format!(
+                        "could not open source full output {}: {error}",
+                        path.display()
+                    )
+                })?;
+                let metadata = file.metadata().map_err(|error| {
+                    format!(
+                        "could not inspect source full output {}: {error}",
+                        path.display()
+                    )
+                })?;
+                if !metadata.is_file() {
+                    return Err(format!(
+                        "source full output {} is not a regular file",
+                        path.display()
+                    ));
+                }
+                Ok((file, metadata.len()))
+            })
+            .transpose()?;
         let transaction = self.transaction()?;
         let call_id = find_call(&transaction, session, source_call_id)?;
         insert_snapshot_bytes(
@@ -326,6 +351,26 @@ impl Archive {
             captured_at_ms,
             &body,
         )?;
+        if let Some((file, original_length)) = &mut full_output {
+            insert_snapshot_reader(
+                &transaction,
+                call_id,
+                "source_output",
+                "before",
+                stream_media_type(file)?,
+                captured_at_ms,
+                file,
+            )?;
+            let final_length = file
+                .metadata()
+                .map_err(|error| format!("could not recheck source full output: {error}"))?
+                .len();
+            if final_length != *original_length {
+                return Err(format!(
+                    "source full output changed size while archiving: {original_length} to {final_length} bytes"
+                ));
+            }
+        }
         transaction
             .commit()
             .map_err(|error| format!("could not commit pre-YARP result: {error}"))
@@ -636,7 +681,7 @@ impl Archive {
             ),
             (
                 "SELECT count(*) FROM snapshots
-                 WHERE subject NOT IN ('input', 'result', 'stdout', 'stderr')",
+                 WHERE subject NOT IN ('input', 'result', 'source_output', 'stdout', 'stderr')",
                 "snapshot(s) with invalid subject",
             ),
             (
@@ -646,7 +691,7 @@ impl Archive {
             (
                 "SELECT count(*) FROM snapshots
                  WHERE (subject IN ('input', 'result') AND media_type != 'application/json')
-                    OR (subject IN ('stdout', 'stderr') AND media_type NOT IN ('text/plain; charset=utf-8', 'application/octet-stream'))",
+                    OR (subject IN ('source_output', 'stdout', 'stderr') AND media_type NOT IN ('text/plain; charset=utf-8', 'application/octet-stream'))",
                 "snapshot(s) with invalid media type",
             ),
             (
@@ -926,9 +971,16 @@ fn apply_operation(archive: &mut Archive, operation: IngestOperation) -> Result<
             session,
             source_call_id,
             result,
+            full_output_path,
             captured_at_ms,
             ..
-        } => archive.result_before(&session, &source_call_id, &result, captured_at_ms),
+        } => archive.result_before(
+            &session,
+            &source_call_id,
+            &result,
+            full_output_path.as_deref(),
+            captured_at_ms,
+        ),
         IngestOperation::FinishCall {
             session,
             source_call_id,
@@ -1513,6 +1565,7 @@ mod tests {
                 &session(),
                 "call-1",
                 &serde_json::json!({"content": "raw"}),
+                None,
                 30,
             )
             .expect("before");
@@ -1622,6 +1675,45 @@ mod tests {
     }
 
     #[test]
+    fn stores_exact_source_full_output_with_the_result() {
+        let (directory, mut archive) = archive();
+        archive
+            .begin_call(
+                &session(),
+                &call(),
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                20,
+            )
+            .expect("begin");
+        let full_output_path = directory.path().join("pi-full-output.log");
+        let expected = b"complete output\n\xff";
+        fs::write(&full_output_path, expected).expect("full output");
+        archive
+            .result_before(
+                &session(),
+                "call-1",
+                &serde_json::json!({"content": "truncated"}),
+                Some(&full_output_path),
+                30,
+            )
+            .expect("result before");
+
+        let call_id: i64 = archive
+            .connection
+            .query_row("SELECT id FROM tool_calls", [], |row| row.get(0))
+            .expect("call id");
+        let mut restored = archive
+            .verified_snapshot(call_id, "source_output", "before")
+            .expect("source output");
+        let mut actual = Vec::new();
+        restored
+            .read_to_end(&mut actual)
+            .expect("read source output");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn prunes_only_finished_calls() {
         let (_directory, mut archive) = archive();
         archive
@@ -1713,7 +1805,7 @@ mod tests {
             .begin_call(&session(), &call(), &value, &value, 20)
             .expect("begin");
         archive
-            .result_before(&session(), "call-1", &value, 30)
+            .result_before(&session(), "call-1", &value, None, 30)
             .expect("result before");
         archive
             .finish_call(&session(), "call-1", &value, false, true, 40)
@@ -1978,7 +2070,7 @@ mod tests {
             )
             .expect("begin");
         archive
-            .result_before(&session(), "call-1", &serde_json::json!({}), 30)
+            .result_before(&session(), "call-1", &serde_json::json!({}), None, 30)
             .expect("before result");
         let error = archive
             .finish_call(
@@ -2035,7 +2127,9 @@ mod tests {
 
     #[test]
     fn ingest_protocol_handles_every_operation() {
-        let (_directory, archive) = archive();
+        let (directory, archive) = archive();
+        let full_output_path = directory.path().join("full-output.log");
+        fs::write(&full_output_path, b"complete output").expect("full output");
         let operations = [
             serde_json::json!({
                 "operation": "begin_call",
@@ -2054,6 +2148,7 @@ mod tests {
                 "session": session(),
                 "sourceCallId": "call-1",
                 "result": {"content": "before"},
+                "fullOutputPath": full_output_path,
                 "capturedAtMs": 30
             }),
             serde_json::json!({
@@ -2074,6 +2169,17 @@ mod tests {
         let acknowledgements = String::from_utf8(output).expect("UTF-8");
         assert_eq!(acknowledgements.lines().count(), 3);
         assert!(acknowledgements.contains("\"requestId\":3"));
+        let reopened = Archive::open_path(directory.path().join("data/tool-calls.sqlite3"))
+            .expect("reopen archive");
+        let source_outputs: i64 = reopened
+            .connection
+            .query_row(
+                "SELECT count(*) FROM snapshots WHERE subject = 'source_output'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("source outputs");
+        assert_eq!(source_outputs, 1);
     }
 
     #[cfg(unix)]

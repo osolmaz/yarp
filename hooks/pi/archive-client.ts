@@ -39,6 +39,7 @@ export interface ArchiveSink {
     sourceCallId: string,
     result: unknown,
     capturedAtMs: number,
+    fullOutputPath?: string,
   ): Promise<void>
   finishCall(
     session: ArchiveSession,
@@ -111,6 +112,7 @@ export class ArchiveClient implements ArchiveSink {
     sourceCallId: string,
     result: unknown,
     capturedAtMs: number,
+    fullOutputPath?: string,
   ): Promise<void> {
     return this.send({
       operation: "result_before",
@@ -118,6 +120,7 @@ export class ArchiveClient implements ArchiveSink {
       sourceCallId,
       result,
       capturedAtMs,
+      ...(fullOutputPath === undefined ? {} : { fullOutputPath }),
     })
   }
 

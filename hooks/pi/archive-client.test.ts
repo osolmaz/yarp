@@ -173,8 +173,15 @@ test("ignores duplicate acknowledgements after a request commits", async () => {
   })
   const client = new ArchiveClient(() => process)
   await client.beginCall(session, call, {}, {}, 2)
-  await client.resultBefore(session, "call-1", { content: "before" }, 3)
+  await client.resultBefore(
+    session,
+    "call-1",
+    { content: "before" },
+    3,
+    "/tmp/pi-full.log",
+  )
   assert.equal(process.requests.length, 2)
+  assert.equal(process.requests[1]?.fullOutputPath, "/tmp/pi-full.log")
   await client.close()
 })
 
