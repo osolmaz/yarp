@@ -88,6 +88,7 @@ class MemorySink implements ArchiveSink {
   readonly beforeResults: unknown[] = []
   readonly fullOutputPaths: Array<string | undefined> = []
   readonly finishedResults: unknown[] = []
+  readonly updatedResults: unknown[] = []
   closed = false
   failBegin = false
   failBefore = false
@@ -126,6 +127,14 @@ class MemorySink implements ArchiveSink {
     if (this.failFinish) throw new Error("finish failed")
     this.finishedResults.push(resultValue)
     this.finishRequiresPreResult.push(requirePreResult)
+  }
+
+  async updateFinalResult(
+    _session: ArchiveSession,
+    _sourceCallId: string,
+    resultValue: unknown,
+  ): Promise<void> {
+    this.updatedResults.push(resultValue)
   }
 
   async close(): Promise<void> {
@@ -252,6 +261,14 @@ test("archives unchanged non-shell calls and both result stages", async () => {
   assert.equal(sink.beforeResults.length, 1)
   assert.equal(sink.finishedResults.length, 1)
   assert.deepEqual(sink.finishedResults[0], sink.beforeResults[0])
+  assert.deepEqual(sink.updatedResults, [
+    {
+      content: [{ type: "text", text: "final" }],
+      details: { lines: 1 },
+      isError: false,
+      usage: null,
+    },
+  ])
   assert.deepEqual(sink.fullOutputPaths, [undefined])
   assert.deepEqual(sink.finishRequiresPreResult, [true])
 })

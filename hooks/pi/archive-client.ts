@@ -49,6 +49,13 @@ export interface ArchiveSink {
     requirePreResult: boolean,
     finishedAtMs: number,
   ): Promise<void>
+  updateFinalResult(
+    session: ArchiveSession,
+    sourceCallId: string,
+    result: unknown,
+    isError: boolean,
+    finishedAtMs: number,
+  ): Promise<void>
   close(): Promise<void>
 }
 
@@ -139,6 +146,23 @@ export class ArchiveClient implements ArchiveSink {
       result,
       isError,
       requirePreResult,
+      finishedAtMs,
+    })
+  }
+
+  updateFinalResult(
+    session: ArchiveSession,
+    sourceCallId: string,
+    result: unknown,
+    isError: boolean,
+    finishedAtMs: number,
+  ): Promise<void> {
+    return this.send({
+      operation: "update_final_result",
+      session,
+      sourceCallId,
+      result,
+      isError,
       finishedAtMs,
     })
   }

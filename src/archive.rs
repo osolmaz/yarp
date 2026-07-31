@@ -129,6 +129,15 @@ enum IngestOperation {
         require_pre_result: bool,
         finished_at_ms: i64,
     },
+    UpdateFinalResult {
+        request_id: u64,
+        schema_version: u32,
+        session: SessionIdentity,
+        source_call_id: String,
+        result: Value,
+        is_error: bool,
+        finished_at_ms: i64,
+    },
 }
 
 impl IngestOperation {
@@ -136,7 +145,8 @@ impl IngestOperation {
         match self {
             Self::BeginCall { request_id, .. }
             | Self::ResultBefore { request_id, .. }
-            | Self::FinishCall { request_id, .. } => *request_id,
+            | Self::FinishCall { request_id, .. }
+            | Self::UpdateFinalResult { request_id, .. } => *request_id,
         }
     }
 
@@ -144,7 +154,8 @@ impl IngestOperation {
         match self {
             Self::BeginCall { schema_version, .. }
             | Self::ResultBefore { schema_version, .. }
-            | Self::FinishCall { schema_version, .. } => *schema_version,
+            | Self::FinishCall { schema_version, .. }
+            | Self::UpdateFinalResult { schema_version, .. } => *schema_version,
         }
     }
 }
@@ -188,7 +199,8 @@ impl Archive {
     ///
     /// Returns an error when the path, permissions, `SQLite` database, or schema is invalid.
     pub fn open() -> Result<Self, String> {
-        Self::open_path(archive_path()?)
+        let repair_default_directory = std::env::var_os("YARP_ARCHIVE_PATH").is_none();
+        Self::open_path_with_policy(archive_path()?, repair_default_directory)
     }
 
     /// Open the configured archive without performing any writes.
@@ -225,7 +237,14 @@ impl Archive {
     ///
     /// Returns an error when the path, permissions, `SQLite` database, or schema is invalid.
     pub fn open_path(path: PathBuf) -> Result<Self, String> {
-        prepare_path(&path)?;
+        Self::open_path_with_policy(path, false)
+    }
+
+    fn open_path_with_policy(
+        path: PathBuf,
+        repair_existing_directory: bool,
+    ) -> Result<Self, String> {
+        prepare_path(&path, repair_existing_directory)?;
         let mut connection = Connection::open(&path)
             .map_err(|error| format!("could not open archive {}: {error}", path.display()))?;
         connection
@@ -419,6 +438,64 @@ impl Archive {
         transaction
             .commit()
             .map_err(|error| format!("could not commit final tool result: {error}"))
+    }
+
+    /// Reconcile a finished call with the result after every Pi result hook has run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the call is not finished or the replacement cannot be committed.
+    pub fn update_final_result(
+        &mut self,
+        session: &SessionIdentity,
+        source_call_id: &str,
+        result: &Value,
+        is_error: bool,
+        finished_at_ms: i64,
+    ) -> Result<(), String> {
+        let body = canonical_json(result)?;
+        let transaction = self.transaction()?;
+        let call_id = find_call(&transaction, session, source_call_id)?;
+        let status: String = transaction
+            .query_row(
+                "SELECT status FROM tool_calls WHERE id = ?1",
+                [call_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("could not read final tool call status: {error}"))?;
+        if status != "finished" {
+            return Err(format!(
+                "tool call {source_call_id} is not finished and cannot reconcile its result"
+            ));
+        }
+        let replaced_sha = replace_snapshot_bytes(
+            &transaction,
+            call_id,
+            "result",
+            "after",
+            "application/json",
+            finished_at_ms,
+            &body,
+        )?;
+        transaction
+            .execute(
+                "UPDATE tool_calls SET finished_at_ms = ?1, is_error = ?2 WHERE id = ?3",
+                params![finished_at_ms, i64::from(is_error), call_id],
+            )
+            .map_err(|error| format!("could not reconcile final tool call: {error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM payloads
+                 WHERE sha256 = ?1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM snapshots WHERE snapshots.payload_sha256 = payloads.sha256
+                   )",
+                [&replaced_sha],
+            )
+            .map_err(|error| format!("could not remove replaced final payload: {error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("could not commit reconciled tool result: {error}"))
     }
 
     /// Store exact shell streams before and after pruning.
@@ -997,6 +1074,20 @@ fn apply_operation(archive: &mut Archive, operation: IngestOperation) -> Result<
             require_pre_result,
             finished_at_ms,
         ),
+        IngestOperation::UpdateFinalResult {
+            session,
+            source_call_id,
+            result,
+            is_error,
+            finished_at_ms,
+            ..
+        } => archive.update_final_result(
+            &session,
+            &source_call_id,
+            &result,
+            is_error,
+            finished_at_ms,
+        ),
     }
 }
 
@@ -1024,12 +1115,25 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), String> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Exclusive)
         .map_err(|error| format!("could not start archive migration: {error}"))?;
-    transaction
-        .execute_batch(SCHEMA)
-        .map_err(|error| format!("could not create archive schema: {error}"))?;
-    transaction
-        .pragma_update(None, "user_version", SCHEMA_VERSION)
-        .map_err(|error| format!("could not set archive schema version: {error}"))?;
+    let version: i64 = transaction
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| format!("could not recheck archive schema version: {error}"))?;
+    match version {
+        0 => {
+            transaction
+                .execute_batch(SCHEMA)
+                .map_err(|error| format!("could not create archive schema: {error}"))?;
+            transaction
+                .pragma_update(None, "user_version", SCHEMA_VERSION)
+                .map_err(|error| format!("could not set archive schema version: {error}"))?;
+        }
+        SCHEMA_VERSION => {}
+        other => {
+            return Err(format!(
+                "archive schema version changed to {other} while initializing; expected 0 or {SCHEMA_VERSION}"
+            ));
+        }
+    }
     transaction
         .commit()
         .map_err(|error| format!("could not commit archive schema: {error}"))
@@ -1204,6 +1308,38 @@ fn insert_snapshot_bytes(
         captured_at_ms,
         &mut Cursor::new(body),
     )
+}
+
+fn replace_snapshot_bytes(
+    transaction: &Transaction<'_>,
+    call_id: i64,
+    subject: &str,
+    stage: &str,
+    media_type: &str,
+    captured_at_ms: i64,
+    body: &[u8],
+) -> Result<Vec<u8>, String> {
+    let replaced_sha: Vec<u8> = transaction
+        .query_row(
+            "SELECT payload_sha256 FROM snapshots
+             WHERE tool_call_id = ?1 AND subject = ?2 AND stage = ?3",
+            params![call_id, subject, stage],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("could not find {subject}/{stage} snapshot: {error}"))?;
+    let sha = insert_payload(transaction, &mut Cursor::new(body))?;
+    let updated = transaction
+        .execute(
+            "UPDATE snapshots
+             SET media_type = ?1, captured_at_ms = ?2, payload_sha256 = ?3
+             WHERE tool_call_id = ?4 AND subject = ?5 AND stage = ?6",
+            params![media_type, captured_at_ms, sha, call_id, subject, stage],
+        )
+        .map_err(|error| format!("could not replace {subject}/{stage} snapshot: {error}"))?;
+    if updated != 1 {
+        return Err(format!("snapshot {subject}/{stage} does not exist"));
+    }
+    Ok(replaced_sha)
 }
 
 fn insert_snapshot_reader(
@@ -1406,7 +1542,7 @@ fn archive_file_bytes(path: &Path) -> Result<u64, String> {
     }))
 }
 
-fn prepare_path(path: &Path) -> Result<(), String> {
+fn prepare_path(path: &Path, repair_existing_directory: bool) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("archive path {} has no parent", path.display()))?;
@@ -1417,7 +1553,7 @@ fn prepare_path(path: &Path) -> Result<(), String> {
             parent.display()
         )
     })?;
-    if !parent_existed || parent.file_name().is_some_and(|name| name == "yarp") {
+    if !parent_existed || repair_existing_directory {
         set_file_mode(parent, 0o700)?;
     } else {
         require_private_directory(parent)?;
@@ -1589,6 +1725,69 @@ mod tests {
     }
 
     #[test]
+    fn reconciles_the_final_result_after_other_hooks() {
+        let (_directory, mut archive) = archive();
+        archive
+            .begin_call(
+                &session(),
+                &call(),
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                20,
+            )
+            .expect("begin");
+        archive
+            .result_before(
+                &session(),
+                "call-1",
+                &serde_json::json!({"content": "before"}),
+                None,
+                30,
+            )
+            .expect("before");
+        archive
+            .finish_call(
+                &session(),
+                "call-1",
+                &serde_json::json!({"content": "provisional"}),
+                false,
+                true,
+                40,
+            )
+            .expect("finish");
+        archive
+            .update_final_result(
+                &session(),
+                "call-1",
+                &serde_json::json!({"content": "final"}),
+                true,
+                50,
+            )
+            .expect("update final");
+
+        let call_id: i64 = archive
+            .connection
+            .query_row("SELECT id FROM tool_calls", [], |row| row.get(0))
+            .expect("call id");
+        let mut restored = archive
+            .verified_snapshot(call_id, "result", "after")
+            .expect("final result");
+        let mut body = Vec::new();
+        restored.read_to_end(&mut body).expect("read final result");
+        assert_eq!(body, br#"{"content":"final"}"#);
+        let metadata: (i64, i64) = archive
+            .connection
+            .query_row(
+                "SELECT is_error, finished_at_ms FROM tool_calls WHERE id = ?1",
+                [call_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("final metadata");
+        assert_eq!(metadata, (1, 50));
+        assert!(archive.verify().expect("verify").errors.is_empty());
+    }
+
+    #[test]
     fn deduplicates_unchanged_snapshots() {
         let (_directory, mut archive) = archive();
         let value = serde_json::json!({"same": true});
@@ -1755,6 +1954,7 @@ mod tests {
         let directory = TempDir::new().expect("temp directory");
         let path = directory.path().join("yarp/tool-calls.sqlite3");
         fs::create_dir(path.parent().expect("parent")).expect("archive directory");
+        set_file_mode(path.parent().expect("parent"), 0o700).expect("private directory");
         let connection = Connection::open(&path).expect("sqlite");
         connection
             .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
@@ -1928,6 +2128,36 @@ mod tests {
                 .errors
                 .iter()
                 .any(|error| error.contains("invalid subject"))
+        );
+    }
+
+    #[test]
+    fn concurrent_first_open_initializes_the_schema_once() {
+        let directory = TempDir::new().expect("temp directory");
+        let path = directory.path().join("yarp/tool-calls.sqlite3");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    Archive::open_path(path)
+                        .and_then(|archive| archive.stats())
+                        .expect("open archive")
+                })
+            })
+            .collect();
+        for thread in threads {
+            assert_eq!(thread.join().expect("join").calls, 0);
+        }
+        assert!(
+            Archive::open_path(path)
+                .expect("reopen")
+                .verify()
+                .expect("verify")
+                .errors
+                .is_empty()
         );
     }
 
@@ -2162,13 +2392,23 @@ mod tests {
                 "requirePreResult": true,
                 "finishedAtMs": 40
             }),
+            serde_json::json!({
+                "operation": "update_final_result",
+                "requestId": 4,
+                "schemaVersion": 1,
+                "session": session(),
+                "sourceCallId": "call-1",
+                "result": {"content": "final"},
+                "isError": false,
+                "finishedAtMs": 50
+            }),
         ];
         let input: Vec<u8> = operations.iter().flat_map(framed).collect();
         let mut output = Vec::new();
         run_ingest_with_archive(archive, Cursor::new(input), &mut output).expect("ingest");
         let acknowledgements = String::from_utf8(output).expect("UTF-8");
-        assert_eq!(acknowledgements.lines().count(), 3);
-        assert!(acknowledgements.contains("\"requestId\":3"));
+        assert_eq!(acknowledgements.lines().count(), 4);
+        assert!(acknowledgements.contains("\"requestId\":4"));
         let reopened = Archive::open_path(directory.path().join("data/tool-calls.sqlite3"))
             .expect("reopen archive");
         let source_outputs: i64 = reopened
@@ -2192,7 +2432,7 @@ mod tests {
         drop(Archive::open_path(path.clone()).expect("create"));
         fs::set_permissions(&data, fs::Permissions::from_mode(0o777)).expect("directory mode");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).expect("file mode");
-        let archive = Archive::open_path(path).expect("repair");
+        let archive = Archive::open_path_with_policy(path, true).expect("repair");
         assert!(archive.verify().expect("verify").errors.is_empty());
     }
 
@@ -2201,7 +2441,7 @@ mod tests {
     fn refuses_to_modify_an_unrelated_public_directory() {
         use std::os::unix::fs::PermissionsExt as _;
         let directory = TempDir::new().expect("temp directory");
-        let public = directory.path().join("public");
+        let public = directory.path().join("yarp");
         fs::create_dir(&public).expect("public directory");
         fs::set_permissions(&public, fs::Permissions::from_mode(0o777)).expect("public mode");
         let error = Archive::open_path(public.join("archive.sqlite3"))

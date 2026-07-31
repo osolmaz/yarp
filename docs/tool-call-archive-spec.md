@@ -103,7 +103,7 @@ YARP compresses a payload with Zstandard level 3 when the compressed body is at 
 
 YARP observes `tool_execution_start` to retain arguments in memory for calls rejected before `tool_call`. At `tool_call`, YARP writes the session, the call with `status = 'started'`, and both input snapshots in one transaction. The transaction must commit before tool execution begins. A call rejected before `tool_call` never executes, so YARP writes its unchanged input snapshots with its final preflight result at `tool_execution_end`.
 
-The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before`, then writes the finalized `result/after`, `is_error`, `finished_at_ms`, and `status = 'finished'`. The final transaction verifies that `result/before` exists and that executed wrapped shell calls have all four stream snapshots.
+The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before`, then writes a provisional `result/after`, `is_error`, `finished_at_ms`, and `status = 'finished'` while it can still restore raw output on failure. After all result hooks run, `tool_execution_end` reconciles `result/after` and its final metadata in one transaction. Completion verifies that `result/before` exists and that executed wrapped shell calls have all four stream snapshots.
 
 Pi can reject or block a call before tool execution without emitting `tool_result`, and validation can reject it before `tool_call`. For those preflight failures, `tool_execution_end` records the error result and finishes the call without requiring `result/before`. The archive does not infer a rejection or cancellation category from result text.
 
@@ -127,7 +127,7 @@ Schema creation and migration run inside `BEGIN EXCLUSIVE`. Normal writes use sh
 
 ## Filesystem permissions
 
-YARP creates `~/.local/share/yarp` with mode `0700` and the database with mode `0600` on POSIX systems. YARP narrows broader permissions on paths owned by the current user before opening the database. Failure to narrow them is an error.
+YARP creates `~/.local/share/yarp` with mode `0700` and the database with mode `0600` on POSIX systems. YARP narrows broader permissions on that known default directory and its database before opening them. An explicit override must already use a private directory; YARP never changes an existing override directory. Failure to establish private permissions is an error.
 
 The archive can contain commands, source code, file contents, environment-derived values, and secrets printed by tools. YARP never uploads, syncs, or serves this database.
 

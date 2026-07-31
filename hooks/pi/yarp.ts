@@ -99,7 +99,7 @@ export async function installYarpExtension(
 
   let sink: ArchiveSink | null = null
   let session: ArchiveSession | null = null
-  const activeCalls = new Map<string, { requiresStreams: boolean }>()
+  const activeCalls = new Map<string, { requiresStreams: boolean; finished: boolean }>()
   const pendingCalls = new Map<string, PendingCall>()
 
   pi.on("session_start", async (_event, context) => {
@@ -172,7 +172,7 @@ export async function installYarpExtension(
         capturedAtMs,
       )
       pendingCalls.delete(event.toolCallId)
-      activeCalls.set(event.toolCallId, { requiresStreams })
+      activeCalls.set(event.toolCallId, { requiresStreams, finished: false })
     }
 
     if (rewritten !== null && binding !== null && rewritten !== binding.command) {
@@ -201,7 +201,7 @@ export async function installYarpExtension(
         true,
         Date.now(),
       )
-      activeCalls.delete(event.toolCallId)
+      active.finished = true
     } catch (error) {
       activeCalls.delete(event.toolCallId)
       console.error(`[yarp] result archive failed: ${errorMessage(error)}`)
@@ -213,29 +213,39 @@ export async function installYarpExtension(
 
   pi.on("tool_execution_end", async (event) => {
     if (sink === null || session === null) return
-    const active = activeCalls.has(event.toolCallId)
+    const active = activeCalls.get(event.toolCallId)
     const pending = pendingCalls.get(event.toolCallId)
-    if (!active && pending === undefined) return
+    if (active === undefined && pending === undefined) return
     try {
-      if (pending !== undefined) {
-        await sink.beginCall(
+      if (active?.finished === true) {
+        await sink.updateFinalResult(
           session,
-          pending.call,
-          pending.input,
-          pending.input,
-          pending.capturedAtMs,
+          event.toolCallId,
+          executionEndSnapshot(event),
+          event.isError,
+          Date.now(),
+        )
+      } else {
+        if (pending !== undefined) {
+          await sink.beginCall(
+            session,
+            pending.call,
+            pending.input,
+            pending.input,
+            pending.capturedAtMs,
+          )
+        }
+        await sink.finishCall(
+          session,
+          event.toolCallId,
+          executionEndSnapshot(event),
+          event.isError,
+          false,
+          Date.now(),
         )
       }
-      await sink.finishCall(
-        session,
-        event.toolCallId,
-        executionEndSnapshot(event),
-        event.isError,
-        false,
-        Date.now(),
-      )
     } catch (error) {
-      console.error(`[yarp] preflight result archive failed: ${errorMessage(error)}`)
+      console.error(`[yarp] final result archive failed: ${errorMessage(error)}`)
     } finally {
       activeCalls.delete(event.toolCallId)
       pendingCalls.delete(event.toolCallId)
