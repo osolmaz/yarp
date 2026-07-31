@@ -852,6 +852,7 @@ fn append_issues(connection: &Connection, run_key: &str, records: Vec<IssueRecor
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
 
     use super::*;
 
@@ -860,6 +861,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let directory = temp.path().join("data");
         fs::create_dir(&directory).expect("data directory");
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .expect("private data directory");
         fs::File::create(directory.join("reserved"))
             .expect("reserved file")
             .set_len(private_fs::MAX_DATA_BYTES)

@@ -22,6 +22,11 @@ fn pi_import_resumes_an_appended_result() {
     fs::create_dir(&sessions).expect("sessions");
     let session = sessions.join("session.jsonl");
     fs::write(
+        sessions.join("unsupported.jsonl"),
+        "{\"type\":\"session\",\"version\":2,\"id\":\"old\"}\n",
+    )
+    .expect("unsupported session");
+    fs::write(
         &session,
         concat!(
             "{\"type\":\"session\",\"version\":3,\"id\":\"s1\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"cwd\":\"/tmp\"}\n",
@@ -39,7 +44,7 @@ fn pi_import_resumes_an_appended_result() {
     let first = Database::stats(&path).expect("stats");
     assert_eq!(first.tool_calls, 1);
     assert_eq!(first.tool_results, 0);
-    assert_eq!(first.issues, 1);
+    assert_eq!(first.issues, 2);
 
     fs::write(
         &session,
@@ -50,6 +55,9 @@ fn pi_import_resumes_an_appended_result() {
             "{\"type\":\"message\",\"id\":\"m2\",\"parentId\":\"m1\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"c1\",\"content\":[{\"type\":\"text\",\"text\":\"ok\\n\"}],\"isError\":false}}\n",
             "{\"type\":\"message\",\"id\":\"m3\",\"parentId\":\"m2\",\"timestamp\":123,\"message\":{\"role\":\"assistant\",\"provider\":\"test\",\"model\":\"model\",\"content\":[{\"type\":\"text\",\"text\":\"ignored\"},{\"type\":\"toolCall\",\"id\":\"c2\",\"name\":\"read\"}]}}\n",
             "{\"type\":\"message\",\"id\":\"m4\",\"parentId\":\"m3\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"c2\",\"content\":[{\"type\":\"text\",\"text\":\"text\"},{\"type\":\"image\",\"data\":\"pixels\"}],\"details\":{\"status\":\"ok\",\"output\":\"drop\",\"nested\":[null,{\"value\":1,\"cwd\":\"drop\"}]},\"isError\":true}}\n",
+            "{\"type\":\"message\",\"id\":\"m5\",\"parentId\":\"m4\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"reuse\",\"name\":\"read\",\"arguments\":{\"path\":\"a\"}}]}}\n",
+            "{\"type\":\"message\",\"id\":\"m6\",\"parentId\":\"m4\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"reuse\",\"name\":\"read\",\"arguments\":{\"path\":\"b\"}}]}}\n",
+            "{\"type\":\"message\",\"id\":\"m7\",\"parentId\":\"m5\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"reuse\",\"content\":\"branch a\"}}\n",
             "{\"type\":\"other\"}\n"
         ),
     )
@@ -58,8 +66,9 @@ fn pi_import_resumes_an_appended_result() {
     adapters::pi::extract("test", &sessions, &mut db).expect("second import");
     db.finish(true).expect("finish");
     let second = Database::stats(&path).expect("stats");
-    assert_eq!(second.tool_calls, 2);
-    assert_eq!(second.tool_results, 2);
+    assert_eq!(second.tool_calls, 4);
+    assert_eq!(second.tool_results, 3);
+    assert_eq!(second.calls_without_results, 1);
 }
 
 #[test]
