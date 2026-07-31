@@ -1,0 +1,18 @@
+[package]
+name = "yarp-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+description = "Prune command output before it reaches Pi's context"
+publish = false
+
+[[bin]]
+name = "yarp"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "deny"
+pedantic = "deny"

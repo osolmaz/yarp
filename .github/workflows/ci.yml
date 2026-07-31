@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: "1.91"
+          components: clippy,rustfmt,llvm-tools-preview
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Rust format
+        run: cargo fmt --check
+      - name: Rust check
+        run: cargo check --workspace --locked
+      - name: Rust lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Rust tests
+        run: cargo test --workspace --all-targets --locked
+      - name: Install Rust quality tools
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo install cargo-llvm-cov --locked --version 0.8.7
+          cargo install slophammer-rs --locked --version 0.4.0
+      - name: Dependency audit
+        run: cargo audit --deny warnings
+      - name: Coverage
+        run: cargo llvm-cov --workspace --all-targets --fail-under-lines 85
+
+      - name: Install TypeScript tools
+        run: npm ci --ignore-scripts
+      - name: JavaScript dependency audit
+        run: npm audit
+      - name: Pi extension type check
+        run: npm run typecheck:pi
+      - name: Pi extension tests
+        run: npm run test:pi
+
+      - name: Slophammer DRY check
+        run: slophammer-rs dry .
+      - name: Slophammer dependency boundaries
+        run: slophammer-rs boundaries .
+      - name: Slophammer unsafe-code policy
+        run: slophammer-rs unsafe .
+      - name: Slophammer repository checks
+        run: slophammer-rs check .
