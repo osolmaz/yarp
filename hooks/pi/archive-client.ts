@@ -6,6 +6,7 @@ import type { Readable, Writable } from "node:stream"
 const MAX_ACK_BUFFER_BYTES = 64 * 1024
 const CLOSE_TIMEOUT_MS = 2_000
 const INGEST_SCHEMA_VERSION = 1
+const MAX_FRAME_BYTES = 256 * 1024 * 1024
 
 export type ArchiveSession = {
   agent: string
@@ -81,7 +82,10 @@ export class ArchiveClient implements ArchiveSink {
   private queue: Promise<void> = Promise.resolve()
   private closing = false
 
-  constructor(private readonly spawnWriter: SpawnWriter = defaultSpawnWriter) {}
+  constructor(
+    private readonly spawnWriter: SpawnWriter = defaultSpawnWriter,
+    private readonly maxFrameBytes: number = MAX_FRAME_BYTES,
+  ) {}
 
   beginCall(
     session: ArchiveSession,
@@ -181,17 +185,22 @@ export class ArchiveClient implements ArchiveSink {
     requestId: number,
     request: Record<string, unknown>,
   ): Promise<void> {
-    const child = this.ensureChild()
     const body = Buffer.from(JSON.stringify(request), "utf8")
-    const frame = Buffer.allocUnsafe(8 + body.length)
-    frame.writeBigUInt64BE(BigInt(body.length), 0)
-    body.copy(frame, 8)
+    if (body.length === 0 || body.length > this.maxFrameBytes) {
+      throw new ArchiveRejectedError(
+        `archive request is ${body.length} bytes; maximum is ${this.maxFrameBytes}`,
+      )
+    }
+    const child = this.ensureChild()
+    const header = Buffer.allocUnsafe(8)
+    header.writeBigUInt64BE(BigInt(body.length), 0)
 
     const acknowledgement = new Promise<void>((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject })
     })
     try {
-      if (!child.stdin.write(frame)) await once(child.stdin, "drain")
+      if (!child.stdin.write(header)) await once(child.stdin, "drain")
+      if (!child.stdin.write(body)) await once(child.stdin, "drain")
     } catch (error) {
       this.pending.delete(requestId)
       throw error

@@ -318,6 +318,40 @@ fn archive_commands_report_verify_and_prune() {
     assert!(String::from_utf8_lossy(&prune.stdout).contains("pruned_calls: 1"));
 }
 
+#[cfg(unix)]
+#[test]
+fn verify_reports_insecure_permissions_without_repairing_them() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let directory = TempDir::new().expect("temp directory");
+    let archive_directory = directory.path().join("yarp");
+    let database = archive_directory.join("tool-calls.sqlite3");
+    drop(Archive::open_path(database.clone()).expect("archive"));
+    std::fs::set_permissions(&archive_directory, std::fs::Permissions::from_mode(0o755))
+        .expect("directory permissions");
+    std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o644))
+        .expect("database permissions");
+
+    let verify = yarp_with_archive(&["archive", "verify"], &database);
+    assert_eq!(verify.status.code(), Some(65));
+    assert!(String::from_utf8_lossy(&verify.stderr).contains("expected 700"));
+    assert_eq!(
+        std::fs::metadata(&archive_directory)
+            .expect("directory metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755,
+    );
+    assert_eq!(
+        std::fs::metadata(&database)
+            .expect("database metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o644,
+    );
+}
+
 #[test]
 fn ingest_cli_commits_and_acknowledges_a_call() {
     let directory = TempDir::new().expect("temp directory");
@@ -396,6 +430,70 @@ fn killed_ingest_process_leaves_an_integral_incomplete_call() {
     let report = archive.verify().expect("verify");
     assert!(report.errors.is_empty());
     assert_eq!(report.incomplete_calls, 1);
+}
+
+#[test]
+fn killed_ingest_process_preserves_a_committed_pre_result() {
+    let directory = TempDir::new().expect("temp directory");
+    let database = directory.path().join("yarp/tool-calls.sqlite3");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yarp"))
+        .args(["archive", "ingest"])
+        .env("YARP_ARCHIVE_PATH", &database)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn ingest");
+    let operations = [
+        json!({
+            "operation": "begin_call",
+            "requestId": 20,
+            "schemaVersion": 1,
+            "session": session(),
+            "call": call("call-result-crash", "read"),
+            "inputBefore": {},
+            "inputAfter": {},
+            "capturedAtMs": 20
+        }),
+        json!({
+            "operation": "result_before",
+            "requestId": 21,
+            "schemaVersion": 1,
+            "session": session(),
+            "sourceCallId": "call-result-crash",
+            "result": {"content": "before"},
+            "capturedAtMs": 30
+        }),
+    ];
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+    for operation in operations {
+        let body = serde_json::to_vec(&operation).expect("request");
+        stdin
+            .write_all(&(body.len() as u64).to_be_bytes())
+            .expect("length");
+        stdin.write_all(&body).expect("body");
+        stdin.flush().expect("flush");
+        let mut ack = String::new();
+        stdout.read_line(&mut ack).expect("ack");
+        assert!(ack.contains("\"ok\":true"));
+    }
+    child.kill().expect("kill");
+    child.wait().expect("wait");
+
+    let archive = Archive::open_path(database.clone()).expect("reopen");
+    let report = archive.verify().expect("verify");
+    assert!(report.errors.is_empty());
+    assert_eq!(report.incomplete_calls, 1);
+    drop(archive);
+    let connection = Connection::open(database).expect("sqlite");
+    let pre_results: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM snapshots WHERE subject = 'result' AND stage = 'before'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("pre-result count");
+    assert_eq!(pre_results, 1);
 }
 
 fn numbered_lines(prefix: &str, count: usize) -> String {

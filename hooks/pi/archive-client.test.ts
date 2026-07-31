@@ -119,6 +119,21 @@ test("restarts once and reuses the request id after transport failure", async ()
   await client.close()
 })
 
+test("rejects oversized requests before starting the writer", async () => {
+  let starts = 0
+  const client = new ArchiveClient(() => {
+    starts += 1
+    return new FakeProcess((request, writer) => writer.acknowledge(request))
+  }, 64)
+
+  await assert.rejects(
+    client.beginCall(session, call, { content: "x".repeat(128) }, {}, 2),
+    /maximum is 64/,
+  )
+  assert.equal(starts, 0)
+  await client.close()
+})
+
 test("does not retry a rejected archive operation", async () => {
   let starts = 0
   const client = new ArchiveClient(() => {
@@ -133,6 +148,18 @@ test("does not retry a rejected archive operation", async () => {
     /snapshot conflict/,
   )
   assert.equal(starts, 1)
+  await client.close()
+})
+
+test("ignores duplicate acknowledgements after a request commits", async () => {
+  const process = new FakeProcess((request, writer) => {
+    writer.acknowledge(request)
+    writer.acknowledge(request)
+  })
+  const client = new ArchiveClient(() => process)
+  await client.beginCall(session, call, {}, {}, 2)
+  await client.resultBefore(session, "call-1", { content: "before" }, 3)
+  assert.equal(process.requests.length, 2)
   await client.close()
 })
 
