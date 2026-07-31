@@ -89,6 +89,7 @@ fn reject_source_item(
     item.snapshot_mtime_ns = identity.mtime_ns;
     item.status = SourceStatus::Rejected;
     sink.begin_source()?;
+    sink.reset_source(&item.source_item_key)?;
     sink.source_item(&item)?;
     sink.issue(&IssueRecord {
         issue_key: keys::key(&[

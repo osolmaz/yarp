@@ -280,6 +280,9 @@ fn cursor_reads_current_sqlite_blobs_and_validates_transcript() {
     let acp = temp.path().join("acp");
     let projects = temp.path().join("projects/p/agent-transcripts");
     fs::create_dir_all(&chats).expect("chats");
+    let unsupported_chat = chats.parent().expect("chat root").join("unsupported");
+    fs::create_dir_all(&unsupported_chat).expect("unsupported chat");
+    rusqlite::Connection::open(unsupported_chat.join("store.db")).expect("unsupported SQLite");
     fs::create_dir_all(&acp).expect("acp");
     fs::create_dir_all(&projects).expect("projects");
     let session_id = "11111111-1111-1111-1111-111111111111";
@@ -407,5 +410,5 @@ fn cursor_reads_current_sqlite_blobs_and_validates_transcript() {
     let stats = Database::stats(&path).expect("stats");
     assert_eq!(stats.tool_calls, 2);
     assert_eq!(stats.tool_results, 2);
-    assert_eq!(stats.issues, 1);
+    assert_eq!(stats.issues, 2);
 }
