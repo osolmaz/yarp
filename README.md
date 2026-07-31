@@ -70,8 +70,37 @@ yarp archive prune --before 2026-01-01T00:00:00Z
 
 Set `YARP_ARCHIVE_DISABLED=1` to opt out of capture. The archive may contain commands, source code, file contents, and secrets printed by tools. It stays local and uses private filesystem permissions. See the [archive specification](docs/tool-call-archive-spec.md) for the full format and failure rules.
 
+## Analyze existing tool calls offline
+
+The workspace also includes `toolcall-extractor`, a separate offline program for normalizing existing Pi, Codex, Claude Code, and Cursor tool calls into a private DuckDB database. It does not run from YARP or the Pi extension.
+
+Build it from a checkout:
+
+```sh
+cargo build --release -p toolcall-extractor
+```
+
+Imports require an explicit Unix-user label and source path. For example:
+
+```sh
+target/release/toolcall-extractor extract --unix-user "$USER" codex \
+  --sessions "$HOME/.codex/sessions" \
+  --state-db "$HOME/.codex/state_5.sqlite"
+```
+
+Inspect counts and integrity without printing tool content:
+
+```sh
+target/release/toolcall-extractor stats
+target/release/toolcall-extractor issues
+target/release/toolcall-extractor verify
+target/release/toolcall-extractor benchmark-yarp
+```
+
+The default database is `~/.local/share/toolcall-extractor/toolcalls.duckdb`. Tool inputs and outputs can contain secrets, so its directory and files are private. The extractor reads agent state without modifying it, has no network code, and stops before its files reach 10,000,000,000 bytes. See [the implementation plan](docs/toolcall-extractor-implementation-plan.md) for supported formats and privacy boundaries.
+
 ## Limits
 
 YARP keeps the first 160 and last 40 lines of each output stream. It marks omitted lines in the middle. A single line is limited to 16 KiB.
 
-YARP does not collect usage data or access the network. Archive capture is local and enabled by default.
+YARP does not collect usage data or access the network. Archive capture is local and enabled by default. The offline extractor writes only when invoked explicitly.

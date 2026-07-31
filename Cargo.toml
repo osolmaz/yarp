@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "toolcall-extractor"]
+resolver = "3"
+
 [package]
 name = "yarp-cli"
 version = "0.1.0"

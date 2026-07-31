@@ -1,0 +1,702 @@
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::path::{Path, PathBuf};
+
+use duckdb::{Connection, OptionalExt, params};
+use serde::Serialize;
+
+use crate::error::{Error, Result};
+use crate::keys;
+use crate::model::{
+    IssueRecord, ObservationRecord, SessionRecord, SourceItemRecord, SourceRootRecord,
+    ToolCallRecord, ToolResultRecord,
+};
+use crate::private_fs;
+use crate::sink::{Checkpoint, Sink};
+
+const SCHEMA_VERSION: i64 = 1;
+const BUFFER_ROWS: usize = 1_024;
+
+pub struct Database {
+    connection: Connection,
+    path: PathBuf,
+    run_key: String,
+    in_transaction: bool,
+    sessions: Vec<SessionRecord>,
+    tool_calls: Vec<ToolCallRecord>,
+    tool_results: Vec<ToolResultRecord>,
+    observations: Vec<ObservationRecord>,
+    issues: Vec<IssueRecord>,
+    _lock: File,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct AgentStats {
+    pub sessions: i64,
+    pub tool_calls: i64,
+    pub tool_results: i64,
+    pub errors: i64,
+    pub input_characters: i64,
+    pub output_characters: i64,
+    pub structured_output_characters: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Stats {
+    pub sessions: i64,
+    pub tool_calls: i64,
+    pub tool_results: i64,
+    pub calls_without_results: i64,
+    pub calls_with_conflicting_results: i64,
+    pub errors: i64,
+    pub issues: i64,
+    pub input_characters: i64,
+    pub output_characters: i64,
+    pub structured_output_characters: i64,
+    pub database_bytes: u64,
+    pub by_agent: BTreeMap<String, AgentStats>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Verification {
+    pub schema_version: i64,
+    pub orphan_calls: i64,
+    pub orphan_results: i64,
+    pub orphan_observations: i64,
+    pub calls_without_results: i64,
+    pub calls_with_conflicting_results: i64,
+    pub issues: i64,
+    pub private_permissions: bool,
+    pub under_size_limit: bool,
+}
+
+impl Verification {
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.schema_version == SCHEMA_VERSION
+            && self.orphan_calls == 0
+            && self.orphan_results == 0
+            && self.orphan_observations == 0
+            && self.private_permissions
+            && self.under_size_limit
+    }
+}
+
+impl Database {
+    pub fn open(path: &Path, unix_user: &str, agent: &str) -> Result<Self> {
+        private_fs::prepare_database_path(path)?;
+        let lock = private_fs::acquire_database_lock(path)?;
+        let connection = Connection::open(path)?;
+        private_fs::protect_database(path)?;
+        connection.execute_batch(
+            "SET enable_external_access = false;
+             SET autoinstall_known_extensions = false;
+             SET autoload_known_extensions = false;",
+        )?;
+        create_schema(&connection)?;
+        create_staging_tables(&connection)?;
+        let started_at_ms = keys::now_ms();
+        connection.execute(
+            "UPDATE import_runs
+             SET status = 'failed', finished_at_ms = ?
+             WHERE status = 'running'",
+            [started_at_ms],
+        )?;
+        let run_key = keys::key(&[
+            b"run",
+            unix_user.as_bytes(),
+            agent.as_bytes(),
+            &started_at_ms.to_be_bytes(),
+            &std::process::id().to_be_bytes(),
+        ]);
+        connection.execute(
+            "INSERT INTO import_runs
+             (run_key, unix_user, agent, started_at_ms, status)
+             VALUES (?, ?, ?, ?, 'running')",
+            params![run_key, unix_user, agent, started_at_ms],
+        )?;
+        Ok(Self {
+            connection,
+            path: path.to_owned(),
+            run_key,
+            in_transaction: false,
+            sessions: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_results: Vec::new(),
+            observations: Vec::new(),
+            issues: Vec::new(),
+            _lock: lock,
+        })
+    }
+
+    pub fn open_read_only(path: &Path) -> Result<Connection> {
+        if !path.exists() {
+            return Err(Error::InvalidSource(format!(
+                "database does not exist: {}",
+                path.display()
+            )));
+        }
+        let connection = Connection::open_with_flags(
+            path,
+            duckdb::Config::default().access_mode(duckdb::AccessMode::ReadOnly)?,
+        )?;
+        connection.execute_batch("SET enable_external_access = false;")?;
+        Ok(connection)
+    }
+
+    fn execute_cached(&self, sql: &str, parameters: impl duckdb::Params) -> Result<()> {
+        self.connection.prepare_cached(sql)?.execute(parameters)?;
+        Ok(())
+    }
+
+    fn flush_buffers(&mut self) -> Result<()> {
+        append_sessions(&self.connection, std::mem::take(&mut self.sessions))?;
+        append_calls(&self.connection, std::mem::take(&mut self.tool_calls))?;
+        append_results(&self.connection, std::mem::take(&mut self.tool_results))?;
+        append_observations(&self.connection, std::mem::take(&mut self.observations))?;
+        append_issues(
+            &self.connection,
+            &self.run_key,
+            std::mem::take(&mut self.issues),
+        )
+    }
+
+    fn merge_staging(&self) -> Result<()> {
+        self.connection.execute_batch(
+            "INSERT OR IGNORE INTO sessions
+             SELECT session_key, unix_user, agent, native_session_id, started_at_ms
+             FROM (
+                 SELECT *, row_number() OVER (PARTITION BY session_key) AS duplicate_number
+                 FROM staging_sessions
+             ) WHERE duplicate_number = 1;
+
+             INSERT OR IGNORE INTO tool_calls
+             SELECT call_key, session_key, native_call_id, native_worker_id, called_at_ms,
+                    provider, model, working_directory, tool_name, input_format, input_text,
+                    input_sha256
+             FROM (
+                 SELECT *, row_number() OVER (PARTITION BY call_key) AS duplicate_number
+                 FROM staging_tool_calls
+             ) WHERE duplicate_number = 1;
+
+             INSERT OR IGNORE INTO tool_results
+             SELECT result_key, call_key, returned_at_ms, is_error, output_text, output_json,
+                    result_sha256
+             FROM (
+                 SELECT *, row_number() OVER (PARTITION BY result_key) AS duplicate_number
+                 FROM staging_tool_results
+             ) WHERE duplicate_number = 1;
+
+             INSERT OR IGNORE INTO observations
+             SELECT observation_key, source_item_key, call_key, result_key, record_kind,
+                    native_record_kind, sequence_number, native_branch_id, is_current,
+                    line_number, byte_offset, sqlite_rowid, sqlite_blob_id, content_index,
+                    record_sha256
+             FROM (
+                 SELECT *, row_number() OVER (PARTITION BY observation_key) AS duplicate_number
+                 FROM staging_observations
+             ) WHERE duplicate_number = 1;
+
+             INSERT OR IGNORE INTO import_issues
+             SELECT issue_key, run_key, source_item_key, severity, code, line_number,
+                    byte_offset, sqlite_blob_id, record_sha256, message, occurrence_count
+             FROM staging_issues;
+
+             DELETE FROM staging_sessions;
+             DELETE FROM staging_tool_calls;
+             DELETE FROM staging_tool_results;
+             DELETE FROM staging_observations;
+             DELETE FROM staging_issues;",
+        )?;
+        Ok(())
+    }
+
+    fn clear_buffers(&mut self) {
+        self.sessions.clear();
+        self.tool_calls.clear();
+        self.tool_results.clear();
+        self.observations.clear();
+        self.issues.clear();
+    }
+
+    pub fn finish(&mut self, success: bool) -> Result<()> {
+        if self.in_transaction {
+            self.rollback_source()?;
+        }
+        let status = if success { "complete" } else { "failed" };
+        self.execute_cached(
+            "UPDATE import_runs SET status = ?, finished_at_ms = ? WHERE run_key = ?",
+            params![status, keys::now_ms(), self.run_key],
+        )?;
+        self.connection.execute_batch("CHECKPOINT;")?;
+        private_fs::protect_database(&self.path)?;
+        private_fs::enforce_size_limit(&self.path, 0)
+    }
+
+    pub fn stats(path: &Path) -> Result<Stats> {
+        let connection = Self::open_read_only(path)?;
+        let scalar = |sql: &str| -> Result<i64> {
+            connection
+                .query_row(sql, [], |row| row.get(0))
+                .map_err(Into::into)
+        };
+        Ok(Stats {
+            sessions: scalar("SELECT count(*) FROM sessions")?,
+            tool_calls: scalar("SELECT count(*) FROM tool_calls")?,
+            tool_results: scalar("SELECT count(*) FROM tool_results")?,
+            calls_without_results: scalar(
+                "SELECT count(*) FROM tool_calls c
+                 WHERE NOT EXISTS (SELECT 1 FROM tool_results r WHERE r.call_key = c.call_key)",
+            )?,
+            calls_with_conflicting_results: scalar(
+                "SELECT count(*) FROM (
+                     SELECT call_key FROM tool_results GROUP BY call_key HAVING count(*) > 1
+                 )",
+            )?,
+            errors: scalar("SELECT count(*) FROM tool_results WHERE is_error = true")?,
+            issues: scalar("SELECT coalesce(sum(occurrence_count), 0) FROM import_issues")?,
+            input_characters: scalar(
+                "SELECT coalesce(sum(length(input_text)), 0) FROM tool_calls",
+            )?,
+            output_characters: scalar(
+                "SELECT coalesce(sum(length(output_text)), 0) FROM tool_results",
+            )?,
+            structured_output_characters: scalar(
+                "SELECT coalesce(sum(length(output_json)), 0) FROM tool_results",
+            )?,
+            database_bytes: private_fs::data_directory_bytes(path)?,
+            by_agent: agent_stats(&connection)?,
+        })
+    }
+
+    pub fn verify(path: &Path) -> Result<Verification> {
+        let connection = Self::open_read_only(path)?;
+        let scalar = |sql: &str| -> Result<i64> {
+            connection
+                .query_row(sql, [], |row| row.get(0))
+                .map_err(Into::into)
+        };
+        let schema_version = scalar("SELECT version FROM schema_info")?;
+        let private_permissions = private_fs::verify_private(path).is_ok();
+        let under_size_limit =
+            private_fs::data_directory_bytes(path)? <= private_fs::MAX_DATA_BYTES;
+        Ok(Verification {
+            schema_version,
+            orphan_calls: scalar(
+                "SELECT count(*) FROM tool_calls c LEFT JOIN sessions s
+                 ON s.session_key = c.session_key WHERE s.session_key IS NULL",
+            )?,
+            orphan_results: scalar(
+                "SELECT count(*) FROM tool_results r LEFT JOIN tool_calls c
+                 ON c.call_key = r.call_key WHERE c.call_key IS NULL",
+            )?,
+            orphan_observations: scalar(
+                "SELECT count(*) FROM observations o LEFT JOIN source_items s
+                 ON s.source_item_key = o.source_item_key
+                 WHERE s.source_item_key IS NULL",
+            )?,
+            calls_without_results: scalar(
+                "SELECT count(*) FROM tool_calls c
+                 WHERE NOT EXISTS (SELECT 1 FROM tool_results r WHERE r.call_key = c.call_key)",
+            )?,
+            calls_with_conflicting_results: scalar(
+                "SELECT count(*) FROM (
+                     SELECT call_key FROM tool_results GROUP BY call_key HAVING count(*) > 1
+                 )",
+            )?,
+            issues: scalar("SELECT coalesce(sum(occurrence_count), 0) FROM import_issues")?,
+            private_permissions,
+            under_size_limit,
+        })
+    }
+
+    pub fn print_issues(path: &Path) -> Result<()> {
+        let connection = Self::open_read_only(path)?;
+        let mut statement = connection.prepare(
+            "SELECT r.agent, s.relative_path, i.line_number, i.byte_offset,
+                    i.sqlite_blob_id, i.severity, i.code, i.message, i.occurrence_count
+             FROM import_issues i
+             LEFT JOIN source_items s ON s.source_item_key = i.source_item_key
+             LEFT JOIN source_roots r ON r.source_root_key = s.source_root_key
+             ORDER BY i.severity DESC, r.agent, s.relative_path, i.line_number
+             LIMIT 1000",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(serde_json::json!({
+                "agent": row.get::<_, Option<String>>(0)?,
+                "source": row.get::<_, Option<String>>(1)?,
+                "line": row.get::<_, Option<u64>>(2)?,
+                "byte_offset": row.get::<_, Option<u64>>(3)?,
+                "sqlite_blob_id": row.get::<_, Option<String>>(4)?,
+                "severity": row.get::<_, String>(5)?,
+                "code": row.get::<_, String>(6)?,
+                "message": row.get::<_, String>(7)?,
+                "occurrences": row.get::<_, u64>(8)?,
+            }))
+        })?;
+        for row in rows {
+            println!("{}", serde_json::to_string(&row?)?);
+        }
+        Ok(())
+    }
+}
+
+fn agent_stats(connection: &Connection) -> Result<BTreeMap<String, AgentStats>> {
+    let mut statement = connection.prepare(
+        "SELECT a.agent,
+                (SELECT count(*) FROM sessions s WHERE s.agent = a.agent),
+                (SELECT count(*) FROM tool_calls c JOIN sessions s ON s.session_key = c.session_key
+                 WHERE s.agent = a.agent),
+                (SELECT count(*) FROM tool_results r JOIN tool_calls c ON c.call_key = r.call_key
+                 JOIN sessions s ON s.session_key = c.session_key WHERE s.agent = a.agent),
+                (SELECT count(*) FROM tool_results r JOIN tool_calls c ON c.call_key = r.call_key
+                 JOIN sessions s ON s.session_key = c.session_key
+                 WHERE s.agent = a.agent AND r.is_error = true),
+                (SELECT coalesce(sum(length(c.input_text)), 0) FROM tool_calls c
+                 JOIN sessions s ON s.session_key = c.session_key WHERE s.agent = a.agent),
+                (SELECT coalesce(sum(length(r.output_text)), 0) FROM tool_results r
+                 JOIN tool_calls c ON c.call_key = r.call_key
+                 JOIN sessions s ON s.session_key = c.session_key WHERE s.agent = a.agent),
+                (SELECT coalesce(sum(length(r.output_json)), 0) FROM tool_results r
+                 JOIN tool_calls c ON c.call_key = r.call_key
+                 JOIN sessions s ON s.session_key = c.session_key WHERE s.agent = a.agent)
+         FROM (SELECT DISTINCT agent FROM sessions) a ORDER BY a.agent",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            AgentStats {
+                sessions: row.get(1)?,
+                tool_calls: row.get(2)?,
+                tool_results: row.get(3)?,
+                errors: row.get(4)?,
+                input_characters: row.get(5)?,
+                output_characters: row.get(6)?,
+                structured_output_characters: row.get(7)?,
+            },
+        ))
+    })?;
+    let mut stats = BTreeMap::new();
+    for row in rows {
+        let (agent, values) = row?;
+        stats.insert(agent, values);
+    }
+    Ok(stats)
+}
+
+impl Sink for Database {
+    fn checkpoint(&self, source_item_key: &str) -> Result<Option<Checkpoint>> {
+        self.connection
+            .query_row(
+                "SELECT adapter_version, device_id, inode, size_bytes, snapshot_mtime_ns,
+                        imported_byte_count, prefix_sha256, status
+                 FROM source_items WHERE source_item_key = ?",
+                [source_item_key],
+                |row| {
+                    Ok(Checkpoint {
+                        adapter_version: row.get(0)?,
+                        device_id: row.get(1)?,
+                        inode: row.get(2)?,
+                        size_bytes: row.get(3)?,
+                        snapshot_mtime_ns: row.get(4)?,
+                        imported_byte_count: row.get(5)?,
+                        prefix_sha256: row.get(6)?,
+                        status: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn resolve_call(&self, session_key: &str, native_call_id: &str) -> Result<Option<String>> {
+        let mut statement = self.connection.prepare_cached(
+            "SELECT call_key FROM tool_calls
+             WHERE session_key = ? AND native_call_id = ?
+             ORDER BY called_at_ms DESC NULLS LAST, call_key
+             LIMIT 2",
+        )?;
+        let mut rows = statement.query(params![session_key, native_call_id])?;
+        let first = rows
+            .next()?
+            .map(|row| row.get::<_, String>(0))
+            .transpose()?;
+        if first.is_some() && rows.next()?.is_some() {
+            return Ok(None);
+        }
+        Ok(first)
+    }
+
+    fn begin_source(&mut self) -> Result<()> {
+        if self.in_transaction {
+            return Err(Error::InvalidSource(
+                "source transaction already active".to_owned(),
+            ));
+        }
+        self.connection.execute_batch("BEGIN TRANSACTION;")?;
+        self.in_transaction = true;
+        Ok(())
+    }
+
+    fn commit_source(&mut self) -> Result<()> {
+        if !self.in_transaction {
+            return Ok(());
+        }
+        self.flush_buffers()?;
+        self.merge_staging()?;
+        if private_fs::enforce_size_limit(&self.path, 0).is_err() {
+            self.connection.execute_batch("ROLLBACK;")?;
+            self.in_transaction = false;
+            return Err(Error::SizeLimit);
+        }
+        self.connection.execute_batch("COMMIT;")?;
+        self.in_transaction = false;
+        Ok(())
+    }
+
+    fn rollback_source(&mut self) -> Result<()> {
+        self.clear_buffers();
+        if self.in_transaction {
+            self.connection.execute_batch("ROLLBACK;")?;
+            self.in_transaction = false;
+        }
+        Ok(())
+    }
+
+    fn source_root(&mut self, record: &SourceRootRecord) -> Result<()> {
+        self.execute_cached(
+            "INSERT INTO source_roots
+             (source_root_key, unix_user, agent, source_kind, root_path)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (source_root_key) DO NOTHING",
+            params![
+                record.source_root_key,
+                record.unix_user,
+                record.agent,
+                record.source_kind,
+                record.root_path
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn source_item(&mut self, record: &SourceItemRecord) -> Result<()> {
+        self.execute_cached(
+            "INSERT INTO source_items
+             (source_item_key, source_root_key, relative_path, adapter_version,
+              device_id, inode, size_bytes, snapshot_mtime_ns, imported_byte_count,
+              prefix_sha256, last_run_key, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (source_item_key) DO UPDATE SET
+               source_root_key = excluded.source_root_key,
+               relative_path = excluded.relative_path,
+               adapter_version = excluded.adapter_version,
+               device_id = excluded.device_id,
+               inode = excluded.inode,
+               size_bytes = excluded.size_bytes,
+               snapshot_mtime_ns = excluded.snapshot_mtime_ns,
+               imported_byte_count = excluded.imported_byte_count,
+               prefix_sha256 = excluded.prefix_sha256,
+               last_run_key = excluded.last_run_key,
+               status = excluded.status",
+            params![
+                record.source_item_key,
+                record.source_root_key,
+                record.relative_path,
+                record.adapter_version,
+                record.device_id,
+                record.inode,
+                record.size_bytes,
+                record.snapshot_mtime_ns,
+                record.imported_byte_count,
+                record.prefix_sha256,
+                self.run_key,
+                record.status.as_str()
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn session(&mut self, record: &SessionRecord) -> Result<()> {
+        self.sessions.push(record.clone());
+        if self.sessions.len() >= BUFFER_ROWS {
+            append_sessions(&self.connection, std::mem::take(&mut self.sessions))?;
+        }
+        Ok(())
+    }
+
+    fn tool_call(&mut self, record: &ToolCallRecord) -> Result<()> {
+        self.tool_calls.push(record.clone());
+        if self.tool_calls.len() >= BUFFER_ROWS {
+            append_calls(&self.connection, std::mem::take(&mut self.tool_calls))?;
+        }
+        Ok(())
+    }
+
+    fn tool_result(&mut self, record: &ToolResultRecord) -> Result<()> {
+        self.tool_results.push(record.clone());
+        if self.tool_results.len() >= BUFFER_ROWS {
+            append_results(&self.connection, std::mem::take(&mut self.tool_results))?;
+        }
+        Ok(())
+    }
+
+    fn observation(&mut self, record: &ObservationRecord) -> Result<()> {
+        self.observations.push(record.clone());
+        if self.observations.len() >= BUFFER_ROWS {
+            append_observations(&self.connection, std::mem::take(&mut self.observations))?;
+        }
+        Ok(())
+    }
+
+    fn issue(&mut self, record: &IssueRecord) -> Result<()> {
+        self.issues.push(record.clone());
+        if self.issues.len() >= BUFFER_ROWS {
+            append_issues(
+                &self.connection,
+                &self.run_key,
+                std::mem::take(&mut self.issues),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn create_schema(connection: &Connection) -> Result<()> {
+    connection.execute_batch(include_str!("schema.sql"))?;
+    let version: i64 =
+        connection.query_row("SELECT version FROM schema_info", [], |row| row.get(0))?;
+    if version != SCHEMA_VERSION {
+        return Err(Error::InvalidSource(format!(
+            "unsupported schema version {version}"
+        )));
+    }
+    Ok(())
+}
+
+fn create_staging_tables(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "CREATE TEMP TABLE staging_sessions AS SELECT * FROM sessions WHERE false;
+         CREATE TEMP TABLE staging_tool_calls AS SELECT * FROM tool_calls WHERE false;
+         CREATE TEMP TABLE staging_tool_results AS SELECT * FROM tool_results WHERE false;
+         CREATE TEMP TABLE staging_observations AS SELECT * FROM observations WHERE false;
+         CREATE TEMP TABLE staging_issues AS SELECT * FROM import_issues WHERE false;",
+    )?;
+    Ok(())
+}
+
+fn append_sessions(connection: &Connection, records: Vec<SessionRecord>) -> Result<()> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let mut appender = connection.appender("staging_sessions")?;
+    for record in records {
+        appender.append_row(params![
+            record.session_key,
+            record.unix_user,
+            record.agent,
+            record.native_session_id,
+            record.started_at_ms
+        ])?;
+    }
+    appender.flush()?;
+    Ok(())
+}
+
+fn append_calls(connection: &Connection, records: Vec<ToolCallRecord>) -> Result<()> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let mut appender = connection.appender("staging_tool_calls")?;
+    for record in records {
+        appender.append_row(params![
+            record.call_key,
+            record.session_key,
+            record.native_call_id,
+            record.native_worker_id,
+            record.called_at_ms,
+            record.provider,
+            record.model,
+            record.working_directory,
+            record.tool_name,
+            record.input_format.as_str(),
+            record.input_text,
+            record.input_sha256
+        ])?;
+    }
+    appender.flush()?;
+    Ok(())
+}
+
+fn append_results(connection: &Connection, records: Vec<ToolResultRecord>) -> Result<()> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let mut appender = connection.appender("staging_tool_results")?;
+    for record in records {
+        appender.append_row(params![
+            record.result_key,
+            record.call_key,
+            record.returned_at_ms,
+            record.is_error,
+            record.output_text,
+            record.output_json,
+            record.result_sha256
+        ])?;
+    }
+    appender.flush()?;
+    Ok(())
+}
+
+fn append_observations(connection: &Connection, records: Vec<ObservationRecord>) -> Result<()> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let mut appender = connection.appender("staging_observations")?;
+    for record in records {
+        appender.append_row(params![
+            record.observation_key,
+            record.source_item_key,
+            record.call_key,
+            record.result_key,
+            record.record_kind.as_str(),
+            record.native_record_kind,
+            record.sequence_number,
+            record.native_branch_id,
+            record.is_current,
+            record.line_number,
+            record.byte_offset,
+            record.sqlite_rowid,
+            record.sqlite_blob_id,
+            record.content_index,
+            record.record_sha256
+        ])?;
+    }
+    appender.flush()?;
+    Ok(())
+}
+
+fn append_issues(connection: &Connection, run_key: &str, records: Vec<IssueRecord>) -> Result<()> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let mut appender = connection.appender("staging_issues")?;
+    for record in records {
+        let issue_key = record.issue_key.clone();
+        appender.append_row(params![
+            issue_key,
+            run_key,
+            record.source_item_key,
+            record.severity.as_str(),
+            record.code,
+            record.line_number,
+            record.byte_offset,
+            record.sqlite_blob_id,
+            record.record_sha256,
+            keys::bounded_message(&record.message),
+            record.occurrence_count
+        ])?;
+    }
+    appender.flush()?;
+    Ok(())
+}

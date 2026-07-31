@@ -2,7 +2,23 @@
 
 `toolcall-extractor` will be an offline command in the YARP repository. It will read existing Pi, Codex, Claude Code, and Cursor session stores and write normalized tool calls and results to one local DuckDB database.
 
-The extractor will never run from the Pi extension or the `yarp` pruning command. It will not intercept new calls, change an agent session, or add background logging. The earlier live archive design is removed.
+The extractor will never run from the Pi extension or the `yarp` pruning command. It will not intercept new calls, change an agent session, or add background logging. The live archive design remains a separate feature with its own specification and implementation plan.
+
+## Implementation status
+
+As of July 31, 2026, the package, schema, CLI, stable JSONL reader, private writer, framed cross-user path, YARP benchmark, and all four adapters are implemented. Synthetic tests cover Pi resume after a partial line, Codex calls and outputs, Claude cross-file pairing, and Cursor SQLite/protobuf extraction with transcript validation. Earlier real-data validation found 6,991 Claude calls and 12,385 Cursor calls, but the final local dataset was intentionally limited to Pi and Codex after the user asked to stop there. Bob's framed import was tested with synthetic data but was not run on Bob's sources.
+
+The verified Pi and Codex dataset contains:
+
+- 6,750 sessions, 312,691 calls, and 312,599 distinct results.
+- 226,810 Codex calls and 85,881 Pi calls.
+- 111 calls without results and 19 calls with conflicting result variants.
+- 177,173,118 input characters, 468,653,697 rendered output characters, and 1,319,376,708 structured-output characters.
+- 20 bounded import issues, no orphan calls, results, or observations, private permissions, and 2,847,420,416 bytes of extractor-owned storage.
+
+The final YARP benchmark evaluated 162,653 text results. Of 3,579 eligible shell results, 302 changed. YARP removed 5,014,309 characters, or 43.2589% of eligible output and 1.06994% of all evaluated rendered output. It removed 136,558 of 289,192 eligible lines in 1.342 seconds. This is a large reduction within eligible output, but only a 1.07% reduction across the whole evaluated corpus because most stored results are not commands YARP accepts.
+
+Implementation and synthetic verification are complete. The remaining release work is repository checks, review, CI, and merge. Full final imports for Claude, Cursor, or Bob are outside the revised run scope.
 
 ## Outcome
 
@@ -43,10 +59,12 @@ yarp/
 │   │   │   └── cursor.rs
 │   │   ├── database.rs
 │   │   ├── model.rs
-│   │   ├── snapshot.rs
-│   │   ├── verify.rs
+│   │   ├── private_fs.rs
+│   │   ├── sink.rs
+│   │   ├── stream.rs
 │   │   └── main.rs
-│   └── tests/fixtures/          # Small synthetic and sanitized fixtures
+│   ├── proto/                   # Checked Cursor root schema
+│   └── tests/                   # Synthetic integration fixtures
 └── docs/
     └── toolcall-extractor-implementation-plan.md
 ```
@@ -58,21 +76,17 @@ The root manifest will become a Cargo workspace containing `yarp-cli` and `toolc
 Each extraction command handles one agent and one explicitly named Unix user. Source paths are required. This prevents an accidental scan of every home directory.
 
 ```text
-toolcall-extractor extract pi \
-  --unix-user onur \
+toolcall-extractor extract --unix-user onur pi \
   --sessions /home/onur/.pi/agent/sessions
 
-toolcall-extractor extract codex \
-  --unix-user onur \
+toolcall-extractor extract --unix-user onur codex \
   --sessions /home/onur/.codex/sessions \
   --state-db /home/onur/.codex/state_5.sqlite
 
-toolcall-extractor extract claude \
-  --unix-user onur \
+toolcall-extractor extract --unix-user onur claude \
   --projects /home/onur/.claude/projects
 
-toolcall-extractor extract cursor \
-  --unix-user onur \
+toolcall-extractor extract --unix-user onur cursor \
   --chats /home/onur/.cursor/chats \
   --acp-sessions /home/onur/.cursor/acp-sessions \
   --projects /home/onur/.cursor/projects
@@ -84,6 +98,7 @@ All commands accept `--database`. The remaining commands operate on an existing 
 toolcall-extractor stats
 toolcall-extractor issues
 toolcall-extractor verify
+toolcall-extractor benchmark-yarp
 ```
 
 `stats` and `issues` print counts and source locations. They never print tool inputs or results. `verify` checks the database schema, key relationships, source checkpoints, result conflicts, and file permissions.
@@ -151,7 +166,7 @@ CREATE TABLE source_items (
     prefix_sha256 BLOB CHECK (
         prefix_sha256 IS NULL OR octet_length(prefix_sha256) = 32
     ),
-    last_run_key VARCHAR NOT NULL REFERENCES import_runs(run_key),
+    last_run_key VARCHAR NOT NULL,
     status VARCHAR NOT NULL CHECK (status IN ('complete', 'deferred', 'rejected')),
     UNIQUE (source_root_key, relative_path),
     CHECK ((device_id IS NULL) = (inode IS NULL)),
@@ -184,7 +199,7 @@ CREATE TABLE tool_calls (
 
 CREATE TABLE tool_results (
     result_key VARCHAR PRIMARY KEY,
-    call_key VARCHAR NOT NULL REFERENCES tool_calls(call_key),
+    call_key VARCHAR NOT NULL,
     returned_at_ms BIGINT,
     is_error BOOLEAN,
     output_text VARCHAR,
@@ -196,7 +211,7 @@ CREATE TABLE tool_results (
 
 CREATE TABLE observations (
     observation_key VARCHAR PRIMARY KEY,
-    source_item_key VARCHAR NOT NULL REFERENCES source_items(source_item_key),
+    source_item_key VARCHAR NOT NULL,
     call_key VARCHAR REFERENCES tool_calls(call_key),
     result_key VARCHAR REFERENCES tool_results(result_key),
     record_kind VARCHAR NOT NULL CHECK (
@@ -217,8 +232,8 @@ CREATE TABLE observations (
 
 CREATE TABLE import_issues (
     issue_key VARCHAR PRIMARY KEY,
-    run_key VARCHAR NOT NULL REFERENCES import_runs(run_key),
-    source_item_key VARCHAR REFERENCES source_items(source_item_key),
+    run_key VARCHAR NOT NULL,
+    source_item_key VARCHAR,
     severity VARCHAR NOT NULL CHECK (severity IN ('warning', 'error')),
     code VARCHAR NOT NULL,
     line_number UBIGINT,
@@ -234,7 +249,7 @@ CREATE TABLE import_issues (
 
 `input_text` contains canonical JSON when `input_format = 'json'` and exact source text otherwise. `output_text` holds rendered output. `output_json` holds allowlisted structured output, such as Pi result details, Claude's `toolUseResult`, or Cursor's high-level result. An adapter removes a rendered-text copy from `output_json` when the same bytes already appear in `output_text`.
 
-`source_kind` identifies roots with different roles under one agent, including Cursor chats, Cursor ACP sessions, Cursor project transcripts, Codex rollouts, and Codex state. `adapter_version` records the parser contract used for the current checkpoint. A newer adapter invalidates an older checkpoint and reparses that source item.
+`source_kind` identifies roots with different roles under one agent, including Cursor chats, Cursor ACP sessions, Cursor project transcripts, Codex rollouts, and Codex state. `adapter_version` records the parser contract used for the current checkpoint. A newer adapter invalidates an older checkpoint and reparses that source item. Relationships that can arrive out of order through cross-file or framed imports are verified explicitly instead of using DuckDB foreign keys; this allows Claude results and Cursor historical blobs to precede their matching calls without weakening final integrity checks.
 
 Source order, branch identity, native record type, and Cursor current-state membership belong to observations because different source projections of one call can disagree. `is_current` is true for a record reachable from the latest Cursor root, false for retained historical state, and null when the source does not define reachability.
 
@@ -247,9 +262,9 @@ Native tool-call IDs are provenance. They are not universal primary keys. Pi has
 Each adapter will generate `call_key` from the strongest stable source identity it has:
 
 - Pi uses the session entry ID, content index, and native tool-call ID.
-- Codex uses the canonical thread, native call ID, and response-item identity. Event projections map to that call.
-- Claude Code uses the session, message UUID, content index, and tool-use ID. Main and sidechain projections, including subagents, can map to one call.
-- Cursor uses the session, tool-call ID, message or blob identity, and normalized call fingerprint. Transcript and SQLite observations map to one call.
+- Codex uses the Unix user, canonical thread, and native call ID. Event projections map to that call.
+- Claude Code uses the Unix user, session, and tool-use ID. Main and sidechain projections, including subagents, map to one call while message locations remain observations.
+- Cursor uses the Unix user, session, and tool-call ID. Blob and transcript locations remain observations, and normalized fingerprints validate transcript projections.
 
 Reimporting the same source occurrence is idempotent. Distinct projections add observations, and the query views derive their counts. Distinct results for one call remain separate `tool_results` rows. Calls without a result and results without a defensible call match remain visible as issues.
 
