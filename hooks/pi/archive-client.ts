@@ -41,6 +41,13 @@ export interface ArchiveSink {
     capturedAtMs: number,
     fullOutputPath?: string,
   ): Promise<void>
+  stageResult(
+    session: ArchiveSession,
+    sourceCallId: string,
+    result: unknown,
+    isError: boolean,
+    capturedAtMs: number,
+  ): Promise<void>
   finishCall(
     session: ArchiveSession,
     sourceCallId: string,
@@ -128,6 +135,23 @@ export class ArchiveClient implements ArchiveSink {
       result,
       capturedAtMs,
       ...(fullOutputPath === undefined ? {} : { fullOutputPath }),
+    })
+  }
+
+  stageResult(
+    session: ArchiveSession,
+    sourceCallId: string,
+    result: unknown,
+    isError: boolean,
+    capturedAtMs: number,
+  ): Promise<void> {
+    return this.send({
+      operation: "stage_result",
+      session,
+      sourceCallId,
+      result,
+      isError,
+      capturedAtMs,
     })
   }
 

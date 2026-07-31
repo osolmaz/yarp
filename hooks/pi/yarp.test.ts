@@ -87,11 +87,13 @@ class MemorySink implements ArchiveSink {
   readonly begins: BeginRecord[] = []
   readonly beforeResults: unknown[] = []
   readonly fullOutputPaths: Array<string | undefined> = []
+  readonly stagedResults: unknown[] = []
   readonly finishedResults: unknown[] = []
   readonly updatedResults: unknown[] = []
   closed = false
   failBegin = false
   failBefore = false
+  failStage = false
   failFinish = false
   finishRequiresPreResult: boolean[] = []
 
@@ -115,6 +117,15 @@ class MemorySink implements ArchiveSink {
     if (this.failBefore) throw new Error("before failed")
     this.beforeResults.push(resultValue)
     this.fullOutputPaths.push(fullOutputPath)
+  }
+
+  async stageResult(
+    _session: ArchiveSession,
+    _sourceCallId: string,
+    resultValue: unknown,
+  ): Promise<void> {
+    if (this.failStage) throw new Error("stage failed")
+    this.stagedResults.push(resultValue)
   }
 
   async finishCall(
@@ -259,8 +270,9 @@ test("archives unchanged non-shell calls and both result stages", async () => {
   assert.deepEqual(sink.begins[0]?.inputBefore, { path: "README.md" })
   assert.deepEqual(sink.begins[0]?.inputAfter, { path: "README.md" })
   assert.equal(sink.beforeResults.length, 1)
-  assert.equal(sink.finishedResults.length, 1)
-  assert.deepEqual(sink.finishedResults[0], sink.beforeResults[0])
+  assert.equal(sink.stagedResults.length, 1)
+  assert.deepEqual(sink.stagedResults[0], sink.beforeResults[0])
+  assert.equal(sink.finishedResults.length, 0)
   assert.deepEqual(sink.updatedResults, [
     {
       content: [{ type: "text", text: "final" }],
@@ -270,10 +282,10 @@ test("archives unchanged non-shell calls and both result stages", async () => {
     },
   ])
   assert.deepEqual(sink.fullOutputPaths, [undefined])
-  assert.deepEqual(sink.finishRequiresPreResult, [true])
+  assert.deepEqual(sink.finishRequiresPreResult, [])
 })
 
-test("passes source full-output paths to the archive", async () => {
+test("passes only built-in Bash full-output paths to the archive", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
   await start(pi, sink)
@@ -294,7 +306,21 @@ test("passes source full-output paths to the archive", async () => {
     },
     context,
   )
-  assert.deepEqual(sink.fullOutputPaths, ["/tmp/pi-bash-full.log"])
+  await call(pi, "call-untrusted-output", "custom", { path: "ignored" })
+  await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "call-untrusted-output",
+      toolName: "custom",
+      input: { path: "ignored" },
+      content: [{ type: "text", text: "custom" }],
+      details: { fullOutputPath: "/home/user/.ssh/id_rsa" },
+      isError: false,
+    },
+    context,
+  )
+  assert.deepEqual(sink.fullOutputPaths, ["/tmp/pi-bash-full.log", undefined])
 })
 
 test("finalizes preflight errors that skip tool_result", async () => {
@@ -408,7 +434,7 @@ test("leaves a call incomplete when pre-result capture fails", async () => {
 test("restores raw shell output when result finalization fails", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
-  sink.failFinish = true
+  sink.failStage = true
   pi.rewrite = result(0, "yarp run --archive-call 'call-restore' -- git status")
   pi.restore = { code: 0, stdout: "raw stdout\n", stderr: "raw stderr\n", killed: false }
   await start(pi, sink)
@@ -437,7 +463,7 @@ test("restores raw shell output when result finalization fails", async () => {
 test("contains raw restore transport failures", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
-  sink.failFinish = true
+  sink.failStage = true
   pi.failRestore = true
   pi.rewrite = result(0, "yarp run --archive-call 'call-restore-error' -- git status")
   await start(pi, sink)
@@ -578,8 +604,8 @@ test("correlates parallel results by call id", async () => {
       context,
     ),
   ])
-  assert.equal(sink.finishedResults.length, 2)
-  const errors = sink.finishedResults.map((value) => {
+  assert.equal(sink.stagedResults.length, 2)
+  const errors = sink.stagedResults.map((value) => {
     if (typeof value !== "object" || value === null || !("isError" in value)) {
       throw new Error("missing isError")
     }
