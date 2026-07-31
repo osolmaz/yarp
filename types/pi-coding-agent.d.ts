@@ -52,6 +52,13 @@ declare module "@earendil-works/pi-coding-agent" {
     usage?: Record<string, unknown>
   }
 
+  export type ToolExecutionStartEvent = {
+    type: "tool_execution_start"
+    toolCallId: string
+    toolName: string
+    args: unknown
+  }
+
   export type ToolExecutionEndEvent = {
     type: "tool_execution_end"
     toolCallId: string
@@ -75,6 +82,7 @@ declare module "@earendil-works/pi-coding-agent" {
     session_shutdown: SessionShutdownEvent
     tool_call: ToolCallEvent
     tool_result: ToolResultEvent
+    tool_execution_start: ToolExecutionStartEvent
     tool_execution_end: ToolExecutionEndEvent
   }
 
@@ -83,6 +91,7 @@ declare module "@earendil-works/pi-coding-agent" {
     session_shutdown: void
     tool_call: void
     tool_result: ToolResultEventResult
+    tool_execution_start: void
     tool_execution_end: void
   }
 

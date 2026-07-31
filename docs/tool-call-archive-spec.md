@@ -51,7 +51,7 @@ CREATE TABLE payloads (
 CREATE TABLE snapshots (
     tool_call_id   INTEGER NOT NULL REFERENCES tool_calls(id) ON DELETE CASCADE,
     subject        TEXT NOT NULL CHECK (
-        subject IN ('input', 'result', 'stdout', 'stderr')
+        subject IN ('input', 'result', 'source_output', 'stdout', 'stderr')
     ),
     stage          TEXT NOT NULL CHECK (stage IN ('before', 'after')),
     media_type     TEXT NOT NULL,
@@ -79,20 +79,21 @@ A snapshot points to immutable bytes in `payloads`. Its `subject` says what was 
 | --- | --- | --- |
 | `input` | Tool arguments received by YARP. | Arguments after YARP rewrites them. |
 | `result` | Tool result received before YARP changes it. | Tool result returned to Pi. |
+| `source_output` | Exact complete output read from a source tool's `fullOutputPath`. | Not used. |
 | `stdout` | Exact child stdout before pruning. | Exact stdout emitted after pruning. |
 | `stderr` | Exact child stderr before pruning. | Exact stderr emitted after pruning. |
 
-Every tool call must have `input/before` and `input/after` snapshots. Every finalized call must have `result/after`. An executed call must also have either `result/before` or the raw stream snapshots that represent its pre-pruning output. Shell stream snapshots are required when YARP executes and prunes the child process itself. Other tools may omit stream snapshots.
+Every tool call must have `input/before` and `input/after` snapshots. Every finalized call must have `result/after`. An executed call must also have `result/before`. Shell stream snapshots are additionally required when YARP executes and prunes the child process itself. Other tools may omit stream snapshots.
 
 When YARP makes no change, the before and after snapshots point to the same payload. The archive does not duplicate the bytes.
 
-The word `before` means before YARP processing. A source tool may already have applied its own limits before its `tool_result` event. YARP must use a source tool's complete-output path when that path is available. Otherwise, `result/before` contains the exact result exposed by the source tool.
+The word `before` means before YARP processing. A source tool may already have applied its own limits before its `tool_result` event. When that event exposes `fullOutputPath`, YARP stores the file's exact bytes as `source_output/before` in the same transaction as `result/before`. Otherwise, `result/before` contains the exact result exposed by the source tool.
 
 ## Payload encoding
 
 Tool inputs and structured results use RFC 8785 canonical JSON encoded as UTF-8. Their media type is `application/json`.
 
-Stdout and stderr keep their exact bytes. Valid UTF-8 text uses `text/plain; charset=utf-8`. Other output uses `application/octet-stream`. YARP must not normalize line endings or remove terminal control bytes before hashing a stream payload.
+Source output, stdout, and stderr keep their exact bytes. Valid UTF-8 text uses `text/plain; charset=utf-8`. Other output uses `application/octet-stream`. YARP must not normalize line endings or remove terminal control bytes before hashing a stream payload.
 
 `sha256` is the SHA-256 digest of the uncompressed bytes. `uncompressed_byte_length` is the length of those bytes.
 
@@ -100,11 +101,11 @@ YARP compresses a payload with Zstandard level 3 when the compressed body is at 
 
 ## Write lifecycle
 
-At `tool_call`, YARP writes the session, the call with `status = 'started'`, and both input snapshots in one transaction. The transaction must commit before tool execution begins.
+YARP observes `tool_execution_start` to retain arguments in memory for calls rejected before `tool_call`. At `tool_call`, YARP writes the session, the call with `status = 'started'`, and both input snapshots in one transaction. The transaction must commit before tool execution begins. A call rejected before `tool_call` never executes, so YARP writes its unchanged input snapshots with its final preflight result at `tool_execution_end`.
 
 The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before`, then writes the finalized `result/after`, `is_error`, `finished_at_ms`, and `status = 'finished'`. The final transaction verifies that `result/before` exists and that executed wrapped shell calls have all four stream snapshots.
 
-Pi can reject or block a call before tool execution without emitting `tool_result`. For those preflight failures, `tool_execution_end` records the error result and finishes the call without requiring `result/before`. The archive does not infer a rejection or cancellation category from result text.
+Pi can reject or block a call before tool execution without emitting `tool_result`, and validation can reject it before `tool_call`. For those preflight failures, `tool_execution_end` records the error result and finishes the call without requiring `result/before`. The archive does not infer a rejection or cancellation category from result text.
 
 An interrupted process can leave a call in `started`. Readers must treat this as an incomplete call. A missing finish time does not describe a completed call with empty output.
 

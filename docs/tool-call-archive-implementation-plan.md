@@ -49,11 +49,11 @@ The extension will serialize requests through one queue. An acknowledgement has 
 
 ### Pi call capture
 
-Extend the Pi package with one in-memory call map keyed by `toolCallId`.
+Extend the Pi package with in-memory pending and active call maps keyed by `toolCallId`. Record the public `tool_execution_start` arguments in memory so calls rejected by validation before `tool_call` remain observable.
 
-At `tool_call`, capture the original input, run the existing YARP rewrite decision, capture the resulting input, and commit both snapshots before execution. Calls outside the rewrite allowlist still get archived.
+At `tool_call`, capture the original input, run the existing YARP rewrite decision, capture the resulting input, and commit both snapshots before execution. Calls outside the rewrite allowlist still get archived. If Pi rejects a call before `tool_call`, commit its unchanged input and preflight result at `tool_execution_end`; no tool executed before that transaction.
 
-Use `tool_result` to capture the result before YARP changes it and finish executed calls while the result can still be replaced. If that capture fails, leave the row incomplete; non-shell results remain unchanged and wrapped shell calls restore the archived raw streams. Use `tool_execution_end` only to finish preflight failures that skip `tool_result`. Record `isError` from the event without classifying errors from their text.
+Use `tool_result` to capture the result before YARP changes it and finish executed calls while the result can still be replaced. When Pi exposes `fullOutputPath`, pass it to the Rust ingest process so its exact bytes are stored with the structured result. If that capture fails, leave the row incomplete; non-shell results remain unchanged and wrapped shell calls restore the archived raw streams. Use `tool_execution_end` only to finish preflight failures that skip `tool_result`. Record `isError` from the event without classifying errors from their text.
 
 Exercise parallel tool mode in tests. Sibling calls can finish in a different order from their source order. Add duplicate prevention because both result hooks can observe one call.
 

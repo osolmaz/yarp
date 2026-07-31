@@ -4,6 +4,7 @@ import type {
   ExtensionContext,
   ToolCallEvent,
   ToolExecutionEndEvent,
+  ToolExecutionStartEvent,
   ToolResultEvent,
 } from "@earendil-works/pi-coding-agent"
 import {
@@ -21,6 +22,12 @@ type CommandBinding = {
 }
 
 type ArchiveSinkFactory = () => ArchiveSink
+
+type PendingCall = {
+  call: ArchiveCall
+  input: unknown
+  capturedAtMs: number
+}
 
 type ResultPatch = {
   content?: ToolResultEvent["content"]
@@ -93,6 +100,7 @@ export async function installYarpExtension(
   let sink: ArchiveSink | null = null
   let session: ArchiveSession | null = null
   const activeCalls = new Map<string, { requiresStreams: boolean }>()
+  const pendingCalls = new Map<string, PendingCall>()
 
   pi.on("session_start", async (_event, context) => {
     if (archiveDisabled()) return
@@ -100,6 +108,7 @@ export async function installYarpExtension(
     sink = createSink()
     session = sessionIdentity(context)
     activeCalls.clear()
+    pendingCalls.clear()
   })
 
   pi.on("session_shutdown", async () => {
@@ -107,7 +116,18 @@ export async function installYarpExtension(
     sink = null
     session = null
     activeCalls.clear()
+    pendingCalls.clear()
     await current?.close()
+  })
+
+  pi.on("tool_execution_start", (event, context) => {
+    if (archiveDisabled() || sink === null || session === null) return
+    const capturedAtMs = Date.now()
+    pendingCalls.set(event.toolCallId, {
+      call: callIdentity(event, context, false, capturedAtMs),
+      input: structuredClone(event.args),
+      capturedAtMs,
+    })
   })
 
   pi.on("tool_call", async (event, context) => {
@@ -142,13 +162,16 @@ export async function installYarpExtension(
     if (archive !== null) {
       const requiresStreams =
         rewritten !== null && binding !== null && rewritten !== binding.command
+      const pending = pendingCalls.get(event.toolCallId)
+      const capturedAtMs = pending?.capturedAtMs ?? Date.now()
       await archive.sink.beginCall(
         archive.session,
-        callIdentity(event, context, requiresStreams),
+        callIdentity(event, context, requiresStreams, capturedAtMs),
         inputBefore,
         inputAfter,
-        Date.now(),
+        capturedAtMs,
       )
+      pendingCalls.delete(event.toolCallId)
       activeCalls.set(event.toolCallId, { requiresStreams })
     }
 
@@ -163,7 +186,13 @@ export async function installYarpExtension(
     if (active === undefined) return
     const snapshot = resultSnapshot(event)
     try {
-      await sink.resultBefore(session, event.toolCallId, snapshot, Date.now())
+      await sink.resultBefore(
+        session,
+        event.toolCallId,
+        snapshot,
+        Date.now(),
+        sourceFullOutputPath(event),
+      )
       await sink.finishCall(
         session,
         event.toolCallId,
@@ -183,8 +212,20 @@ export async function installYarpExtension(
   })
 
   pi.on("tool_execution_end", async (event) => {
-    if (sink === null || session === null || !activeCalls.has(event.toolCallId)) return
+    if (sink === null || session === null) return
+    const active = activeCalls.has(event.toolCallId)
+    const pending = pendingCalls.get(event.toolCallId)
+    if (!active && pending === undefined) return
     try {
+      if (pending !== undefined) {
+        await sink.beginCall(
+          session,
+          pending.call,
+          pending.input,
+          pending.input,
+          pending.capturedAtMs,
+        )
+      }
       await sink.finishCall(
         session,
         event.toolCallId,
@@ -197,6 +238,7 @@ export async function installYarpExtension(
       console.error(`[yarp] preflight result archive failed: ${errorMessage(error)}`)
     } finally {
       activeCalls.delete(event.toolCallId)
+      pendingCalls.delete(event.toolCallId)
     }
   })
 }
@@ -228,15 +270,16 @@ function sessionIdentity(context: ExtensionContext): ArchiveSession {
 }
 
 function callIdentity(
-  event: ToolCallEvent,
+  event: ToolCallEvent | ToolExecutionStartEvent,
   context: ExtensionContext,
   requiresStreams: boolean,
+  startedAtMs = Date.now(),
 ): ArchiveCall {
   const call: ArchiveCall = {
     sourceCallId: event.toolCallId,
     toolName: event.toolName,
     workingDirectory: context.cwd,
-    startedAtMs: Date.now(),
+    startedAtMs,
     requiresStreams,
   }
   if (context.model !== undefined) {
@@ -244,6 +287,12 @@ function callIdentity(
     call.model = context.model.id
   }
   return call
+}
+
+function sourceFullOutputPath(event: ToolResultEvent): string | undefined {
+  if (!isRecord(event.details)) return undefined
+  const path = event.details.fullOutputPath
+  return typeof path === "string" && path !== "" ? path : undefined
 }
 
 function resultSnapshot(event: ToolResultEvent): Record<string, unknown> {

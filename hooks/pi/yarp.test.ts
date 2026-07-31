@@ -27,6 +27,7 @@ class HandlerRegistry {
     session_shutdown: [],
     tool_call: [],
     tool_result: [],
+    tool_execution_start: [],
     tool_execution_end: [],
   }
 
@@ -85,6 +86,7 @@ type BeginRecord = {
 class MemorySink implements ArchiveSink {
   readonly begins: BeginRecord[] = []
   readonly beforeResults: unknown[] = []
+  readonly fullOutputPaths: Array<string | undefined> = []
   readonly finishedResults: unknown[] = []
   closed = false
   failBegin = false
@@ -106,9 +108,12 @@ class MemorySink implements ArchiveSink {
     _session: ArchiveSession,
     _sourceCallId: string,
     resultValue: unknown,
+    _capturedAtMs: number,
+    fullOutputPath?: string,
   ): Promise<void> {
     if (this.failBefore) throw new Error("before failed")
     this.beforeResults.push(resultValue)
+    this.fullOutputPaths.push(fullOutputPath)
   }
 
   async finishCall(
@@ -154,6 +159,11 @@ async function call(
   toolName: string,
   input: Record<string, unknown>,
 ): Promise<void> {
+  await pi.registry.emit(
+    "tool_execution_start",
+    { type: "tool_execution_start", toolCallId, toolName, args: structuredClone(input) },
+    context,
+  )
   await pi.registry.emit(
     "tool_call",
     { type: "tool_call", toolCallId, toolName, input },
@@ -242,7 +252,32 @@ test("archives unchanged non-shell calls and both result stages", async () => {
   assert.equal(sink.beforeResults.length, 1)
   assert.equal(sink.finishedResults.length, 1)
   assert.deepEqual(sink.finishedResults[0], sink.beforeResults[0])
+  assert.deepEqual(sink.fullOutputPaths, [undefined])
   assert.deepEqual(sink.finishRequiresPreResult, [true])
+})
+
+test("passes source full-output paths to the archive", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  await start(pi, sink)
+  await call(pi, "call-full-output", "bash", { command: "printf output" })
+  await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "call-full-output",
+      toolName: "bash",
+      input: { command: "printf output" },
+      content: [{ type: "text", text: "truncated" }],
+      details: {
+        truncation: { truncated: true },
+        fullOutputPath: "/tmp/pi-bash-full.log",
+      },
+      isError: false,
+    },
+    context,
+  )
+  assert.deepEqual(sink.fullOutputPaths, ["/tmp/pi-bash-full.log"])
 })
 
 test("finalizes preflight errors that skip tool_result", async () => {
@@ -263,6 +298,36 @@ test("finalizes preflight errors that skip tool_result", async () => {
   )
   assert.equal(sink.beforeResults.length, 0)
   assert.equal(sink.finishedResults.length, 1)
+  assert.deepEqual(sink.finishRequiresPreResult, [false])
+})
+
+test("archives calls rejected before the tool_call hook", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  await start(pi, sink)
+  await pi.registry.emit(
+    "tool_execution_start",
+    {
+      type: "tool_execution_start",
+      toolCallId: "missing-before-hook",
+      toolName: "missing",
+      args: { value: "raw" },
+    },
+    context,
+  )
+  await pi.registry.emit(
+    "tool_execution_end",
+    {
+      type: "tool_execution_end",
+      toolCallId: "missing-before-hook",
+      toolName: "missing",
+      result: { content: [{ type: "text", text: "Tool missing not found" }] },
+      isError: true,
+    },
+    context,
+  )
+  assert.deepEqual(sink.begins[0]?.inputBefore, { value: "raw" })
+  assert.deepEqual(sink.begins[0]?.inputAfter, { value: "raw" })
   assert.deepEqual(sink.finishRequiresPreResult, [false])
 })
 
