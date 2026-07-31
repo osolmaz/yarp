@@ -9,7 +9,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, tempfile};
 
 const SCHEMA_VERSION: i64 = 1;
 const ZSTD_LEVEL: i32 = 3;
@@ -461,8 +461,13 @@ impl Archive {
                 |row| row.get(0),
             )
             .map_err(|error| format!("could not find tool call {}: {error}", key.source_call_id))?;
-        self.copy_snapshot(call_id, "stdout", "before", &mut stdout)?;
-        self.copy_snapshot(call_id, "stderr", "before", &mut stderr)
+        let mut restored_stdout = self.verified_snapshot(call_id, "stdout", "before")?;
+        let mut restored_stderr = self.verified_snapshot(call_id, "stderr", "before")?;
+        io::copy(&mut restored_stdout, &mut stdout)
+            .map_err(|error| format!("could not write restored stdout: {error}"))?;
+        io::copy(&mut restored_stderr, &mut stderr)
+            .map_err(|error| format!("could not write restored stderr: {error}"))?;
+        Ok(())
     }
 
     /// Read aggregate archive statistics without reading payload content.
@@ -553,6 +558,7 @@ impl Archive {
                 |row| row.get(0),
             )
             .map_err(|error| format!("could not count incomplete calls: {error}"))?;
+        self.verify_constrained_values(&mut report)?;
         self.verify_snapshot_sets(&mut report)?;
         let orphaned: i64 = self
             .connection
@@ -598,6 +604,69 @@ impl Archive {
             .execute_batch("PRAGMA incremental_vacuum")
             .map_err(|error| format!("could not vacuum archive: {error}"))?;
         i64::try_from(deleted).map_err(|_| "pruned call count does not fit in i64".to_owned())
+    }
+
+    fn verify_constrained_values(&self, report: &mut VerifyReport) -> Result<(), String> {
+        let checks = [
+            (
+                "SELECT count(*) FROM tool_calls
+                 WHERE status NOT IN ('started', 'finished')",
+                "tool call(s) with invalid status",
+            ),
+            (
+                "SELECT count(*) FROM tool_calls
+                 WHERE requires_streams NOT IN (0, 1)",
+                "tool call(s) with invalid requires_streams",
+            ),
+            (
+                "SELECT count(*) FROM tool_calls
+                 WHERE is_error IS NOT NULL AND is_error NOT IN (0, 1)",
+                "tool call(s) with invalid is_error",
+            ),
+            (
+                "SELECT count(*) FROM tool_calls
+                 WHERE executed IS NOT NULL AND executed NOT IN (0, 1)",
+                "tool call(s) with invalid executed",
+            ),
+            (
+                "SELECT count(*) FROM tool_calls
+                 WHERE (status = 'started' AND (finished_at_ms IS NOT NULL OR is_error IS NOT NULL OR executed IS NOT NULL))
+                    OR (status = 'finished' AND (finished_at_ms IS NULL OR is_error IS NULL OR executed IS NULL))",
+                "tool call(s) with inconsistent lifecycle state",
+            ),
+            (
+                "SELECT count(*) FROM snapshots
+                 WHERE subject NOT IN ('input', 'result', 'stdout', 'stderr')",
+                "snapshot(s) with invalid subject",
+            ),
+            (
+                "SELECT count(*) FROM snapshots WHERE stage NOT IN ('before', 'after')",
+                "snapshot(s) with invalid stage",
+            ),
+            (
+                "SELECT count(*) FROM snapshots
+                 WHERE (subject IN ('input', 'result') AND media_type != 'application/json')
+                    OR (subject IN ('stdout', 'stderr') AND media_type NOT IN ('text/plain; charset=utf-8', 'application/octet-stream'))",
+                "snapshot(s) with invalid media type",
+            ),
+            (
+                "SELECT count(*) FROM payloads
+                 WHERE length(sha256) != 32
+                    OR compression NOT IN ('none', 'zstd')
+                    OR uncompressed_byte_length < 0",
+                "payload(s) with invalid constrained values",
+            ),
+        ];
+        for (query, message) in checks {
+            let invalid: i64 = self
+                .connection
+                .query_row(query, [], |row| row.get(0))
+                .map_err(|error| format!("could not verify constrained values: {error}"))?;
+            if invalid > 0 {
+                report.errors.push(format!("{invalid} {message}"));
+            }
+        }
+        Ok(())
     }
 
     fn verify_snapshot_sets(&self, report: &mut VerifyReport) -> Result<(), String> {
@@ -647,42 +716,66 @@ impl Archive {
         Ok(())
     }
 
-    fn copy_snapshot(
+    fn verified_snapshot(
         &self,
         call_id: i64,
         subject: &str,
         stage: &str,
-        writer: &mut impl Write,
-    ) -> Result<(), String> {
-        let (rowid, compression): (i64, String) = self
+    ) -> Result<std::fs::File, String> {
+        let (rowid, expected_sha, compression, expected_length): (i64, Vec<u8>, String, i64) = self
             .connection
             .query_row(
-                "SELECT p.rowid, p.compression
+                "SELECT p.rowid, p.sha256, p.compression, p.uncompressed_byte_length
                  FROM snapshots s
                  JOIN payloads p ON p.sha256 = s.payload_sha256
                  WHERE s.tool_call_id = ?1 AND s.subject = ?2 AND s.stage = ?3",
                 params![call_id, subject, stage],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .map_err(|error| format!("could not find {subject}/{stage} snapshot: {error}"))?;
         let blob = self
             .connection
             .blob_open(MAIN_DB, "payloads", "body", rowid, true)
             .map_err(|error| format!("could not open {subject}/{stage} payload: {error}"))?;
-        match compression.as_str() {
-            "none" => {
-                let mut reader = blob;
-                io::copy(&mut reader, writer)
-            }
-            "zstd" => {
-                let mut decoder = zstd::stream::read::Decoder::new(blob)
-                    .map_err(|error| format!("could not decode {subject}/{stage}: {error}"))?;
-                io::copy(&mut decoder, writer)
-            }
+        let mut reader: Box<dyn Read> = match compression.as_str() {
+            "none" => Box::new(blob),
+            "zstd" => Box::new(
+                zstd::stream::read::Decoder::new(blob)
+                    .map_err(|error| format!("could not decode {subject}/{stage}: {error}"))?,
+            ),
             unknown => return Err(format!("unknown payload compression {unknown}")),
+        };
+        let expected_length = u64::try_from(expected_length)
+            .map_err(|_| format!("invalid {subject}/{stage} payload length {expected_length}"))?;
+        let mut restored = tempfile().map_err(|error| {
+            format!("could not create {subject}/{stage} restore spool: {error}")
+        })?;
+        let mut hasher = Sha256::new();
+        let mut length = 0_u64;
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            let count = reader
+                .read(&mut buffer)
+                .map_err(|error| format!("could not read {subject}/{stage} payload: {error}"))?;
+            if count == 0 {
+                break;
+            }
+            restored
+                .write_all(&buffer[..count])
+                .map_err(|error| format!("could not spool {subject}/{stage} payload: {error}"))?;
+            hasher.update(&buffer[..count]);
+            length = length.saturating_add(count as u64);
         }
-        .map_err(|error| format!("could not restore {subject}/{stage}: {error}"))?;
-        Ok(())
+        let actual_sha: [u8; 32] = hasher.finalize().into();
+        if length != expected_length || actual_sha.as_slice() != expected_sha {
+            return Err(format!(
+                "{subject}/{stage} payload failed integrity verification"
+            ));
+        }
+        restored.seek(SeekFrom::Start(0)).map_err(|error| {
+            format!("could not rewind {subject}/{stage} restore spool: {error}")
+        })?;
+        Ok(restored)
     }
 
     fn transaction(&mut self) -> Result<Transaction<'_>, String> {
@@ -1650,6 +1743,99 @@ mod tests {
             .expect("corrupt");
         let error = archive.verify().expect_err("corruption");
         assert!(error.contains("payload"));
+    }
+
+    #[test]
+    fn restore_rejects_corrupt_payloads_before_writing_output() {
+        let (_directory, mut archive) = archive();
+        let mut shell_call = call();
+        shell_call.requires_streams = true;
+        archive
+            .begin_call(
+                &session(),
+                &shell_call,
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                20,
+            )
+            .expect("begin");
+        archive
+            .capture_streams(
+                &ArchiveKey {
+                    session: session(),
+                    source_call_id: "call-1".to_owned(),
+                },
+                30,
+                &mut Cursor::new(b"raw stdout"),
+                &mut Cursor::new(b"raw stderr"),
+                b"after stdout",
+                b"after stderr",
+            )
+            .expect("streams");
+        archive
+            .connection
+            .execute(
+                "UPDATE payloads SET body = ?1
+                 WHERE sha256 = (
+                     SELECT payload_sha256 FROM snapshots
+                     WHERE subject = 'stdout' AND stage = 'before'
+                 )",
+                [b"BAD stdout".as_slice()],
+            )
+            .expect("corrupt stdout");
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let error = archive
+            .restore_streams(
+                &ArchiveKey {
+                    session: session(),
+                    source_call_id: "call-1".to_owned(),
+                },
+                &mut stdout,
+                &mut stderr,
+            )
+            .expect_err("corrupt restore");
+        assert!(error.contains("integrity verification"));
+        assert!(stdout.is_empty());
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn verification_rejects_values_inserted_without_check_constraints() {
+        let (_directory, mut archive) = archive();
+        archive
+            .begin_call(
+                &session(),
+                &call(),
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                20,
+            )
+            .expect("begin");
+        archive
+            .connection
+            .pragma_update(None, "ignore_check_constraints", "ON")
+            .expect("ignore constraints");
+        archive
+            .connection
+            .execute(
+                "INSERT INTO snapshots (
+                    tool_call_id, subject, stage, media_type, captured_at_ms, payload_sha256
+                 )
+                 SELECT tool_call_id, 'other', stage, media_type, captured_at_ms, payload_sha256
+                 FROM snapshots WHERE subject = 'input' AND stage = 'before'",
+                [],
+            )
+            .expect("invalid snapshot");
+
+        let report = archive.verify().expect("verify");
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("invalid subject"))
+        );
     }
 
     #[test]
