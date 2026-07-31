@@ -25,6 +25,7 @@ class HandlerRegistry {
   private readonly handlers: { [K in EventName]: Array<Handler<K>> } = {
     session_start: [],
     session_shutdown: [],
+    message_end: [],
     tool_call: [],
     tool_result: [],
     tool_execution_start: [],
@@ -95,6 +96,7 @@ class MemorySink implements ArchiveSink {
   failBefore = false
   failStage = false
   failFinish = false
+  failUpdate = false
   finishRequiresPreResult: boolean[] = []
 
   async beginCall(
@@ -145,6 +147,7 @@ class MemorySink implements ArchiveSink {
     _sourceCallId: string,
     resultValue: unknown,
   ): Promise<void> {
+    if (this.failUpdate) throw new Error("update failed")
     this.updatedResults.push(resultValue)
   }
 
@@ -458,6 +461,61 @@ test("restores raw shell output when result finalization fails", async () => {
   })
   assert.equal(sink.finishedResults.length, 0)
   assert.equal(pi.restoreOptions, undefined)
+})
+
+test("restores raw shell output when final reconciliation fails", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  sink.failUpdate = true
+  pi.rewrite = result(0, "yarp run --archive-call 'call-final-restore' -- git status")
+  pi.restore = { code: 0, stdout: "raw stdout\n", stderr: "raw stderr\n", killed: false }
+  await start(pi, sink)
+  await call(pi, "call-final-restore", "bash", { command: "git status" })
+  await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "call-final-restore",
+      toolName: "bash",
+      input: { command: "rewritten" },
+      content: [{ type: "text", text: "pruned" }],
+      details: undefined,
+      isError: false,
+    },
+    context,
+  )
+  await pi.registry.emit(
+    "tool_execution_end",
+    {
+      type: "tool_execution_end",
+      toolCallId: "call-final-restore",
+      toolName: "bash",
+      result: { content: [{ type: "text", text: "pruned" }] },
+      isError: false,
+    },
+    context,
+  )
+  const patch = await pi.registry.emit(
+    "message_end",
+    {
+      type: "message_end",
+      message: {
+        role: "toolResult",
+        toolCallId: "call-final-restore",
+        content: [{ type: "text", text: "pruned" }],
+        isError: false,
+      },
+    },
+    context,
+  )
+  assert.deepEqual(patch, {
+    message: {
+      role: "toolResult",
+      toolCallId: "call-final-restore",
+      content: [{ type: "text", text: "raw stdout\nraw stderr\n" }],
+      isError: false,
+    },
+  })
 })
 
 test("contains raw restore transport failures", async () => {

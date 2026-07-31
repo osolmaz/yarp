@@ -53,7 +53,7 @@ Extend the Pi package with in-memory pending and active call maps keyed by `tool
 
 At `tool_call`, capture the original input, run the existing YARP rewrite decision, capture the resulting input, and commit both snapshots before execution. Calls outside the rewrite allowlist still get archived. If Pi rejects a call before `tool_call`, commit its unchanged input and preflight result at `tool_execution_end`; no tool executed before that transaction.
 
-Use `tool_result` to capture the result before YARP changes it and stage the provisional post-YARP result while leaving the call incomplete. For Pi's built-in Bash tool only, pass its documented `fullOutputPath` to the Rust ingest process so the exact bytes are stored with the structured result; ignore path-shaped metadata from every other tool. If capture fails, leave the row incomplete; non-shell results remain unchanged and wrapped shell calls restore the archived raw streams. Use `tool_execution_end` to atomically finalize the result after every result hook, or to finish preflight failures that skip `tool_result`. Record `isError` from the event without classifying errors from their text.
+Use `tool_result` to capture the result before YARP changes it and stage the provisional post-YARP result while leaving the call incomplete. For Pi's built-in Bash tool only, pass its documented `fullOutputPath` to the Rust ingest process so the exact bytes are stored with the structured result; ignore path-shaped metadata from every other tool. If capture fails, leave the row incomplete; non-shell results remain unchanged and wrapped shell calls restore the archived raw streams. Use `tool_execution_end` to atomically finalize the result after every result hook, or to finish preflight failures that skip `tool_result`. If finalization fails for a wrapped shell call, restore its raw streams and replace the public tool-result message at `message_end`. Record `isError` from the event without classifying errors from their text.
 
 Exercise parallel tool mode in tests. Sibling calls can finish in a different order from their source order. Add duplicate prevention because both result hooks can observe one call.
 
@@ -61,7 +61,7 @@ Exercise parallel tool mode in tests. Sibling calls can finish in a different or
 
 Pass the archive session and call identifiers to `yarp run` without placing payload data in shell arguments. The Rust runner will write raw stdout and stderr snapshots before rendering its bounded output, then write the exact emitted streams as after snapshots.
 
-Preserve child exit codes and stream separation. Archive writes must not make stdout or stderr visible on the other stream. A database failure after command execution returns the unpruned stream and a clear archive error.
+Preserve child exit codes and stream separation. Archive writes must not make stdout or stderr visible on the other stream. A database or raw-spool failure after command execution returns the unpruned streams with the child status and a clear archive error.
 
 Long-running and interactive behavior needs an explicit regression test because the current runner buffers supported commands until exit. This archive work must not make that behavior worse. Any later streaming change belongs in a separate change.
 

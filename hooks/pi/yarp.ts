@@ -101,6 +101,7 @@ export async function installYarpExtension(
   let session: ArchiveSession | null = null
   const activeCalls = new Map<string, { requiresStreams: boolean; staged: boolean }>()
   const pendingCalls = new Map<string, PendingCall>()
+  const restoredFinalResults = new Map<string, ResultPatch>()
 
   pi.on("session_start", async (_event, context) => {
     if (archiveDisabled()) return
@@ -109,6 +110,7 @@ export async function installYarpExtension(
     session = sessionIdentity(context)
     activeCalls.clear()
     pendingCalls.clear()
+    restoredFinalResults.clear()
   })
 
   pi.on("session_shutdown", async () => {
@@ -117,6 +119,7 @@ export async function installYarpExtension(
     session = null
     activeCalls.clear()
     pendingCalls.clear()
+    restoredFinalResults.clear()
     await current?.close()
   })
 
@@ -205,7 +208,7 @@ export async function installYarpExtension(
       activeCalls.delete(event.toolCallId)
       console.error(`[yarp] result archive failed: ${errorMessage(error)}`)
       if (active.requiresStreams) {
-        return restoreRawResult(pi, session, event)
+        return restoreRawStreams(pi, session, event.toolCallId, event.isError)
       }
     }
   })
@@ -245,9 +248,29 @@ export async function installYarpExtension(
       }
     } catch (error) {
       console.error(`[yarp] final result archive failed: ${errorMessage(error)}`)
+      if (active?.staged === true && active.requiresStreams) {
+        const restored = await restoreRawStreams(pi, session, event.toolCallId, event.isError)
+        if (restored !== undefined) restoredFinalResults.set(event.toolCallId, restored)
+      }
     } finally {
       activeCalls.delete(event.toolCallId)
       pendingCalls.delete(event.toolCallId)
+    }
+  })
+
+  pi.on("message_end", (event) => {
+    if (event.message.role !== "toolResult") return
+    const toolCallId = event.message.toolCallId
+    if (typeof toolCallId !== "string") return
+    const restored = restoredFinalResults.get(toolCallId)
+    if (restored === undefined) return
+    restoredFinalResults.delete(toolCallId)
+    return {
+      message: {
+        ...event.message,
+        content: restored.content ?? [],
+        isError: restored.isError ?? false,
+      },
     }
   })
 }
@@ -330,10 +353,11 @@ function normalizeResult(
   return normalized
 }
 
-async function restoreRawResult(
+async function restoreRawStreams(
   pi: ExtensionAPI,
   session: ArchiveSession,
-  event: ToolResultEvent,
+  toolCallId: string,
+  isError: boolean,
 ): Promise<ResultPatch | undefined> {
   const args = [
     "archive",
@@ -345,7 +369,7 @@ async function restoreRawResult(
     "--archive-session",
     session.sourceSessionId,
     "--archive-call",
-    event.toolCallId,
+    toolCallId,
   ]
   let result: Awaited<ReturnType<ExtensionAPI["exec"]>>
   try {
@@ -358,13 +382,10 @@ async function restoreRawResult(
     console.error(`[yarp] raw result restore failed: ${result.stderr.trim() || `exit ${result.code}`}`)
     return undefined
   }
-  const restored: ResultPatch = {
+  return {
     content: [{ type: "text", text: `${result.stdout}${result.stderr}` }],
-    isError: event.isError,
+    isError,
   }
-  if (event.details !== undefined) restored.details = event.details
-  if (event.usage !== undefined) restored.usage = event.usage
-  return restored
 }
 
 function archiveDisabled(): boolean {

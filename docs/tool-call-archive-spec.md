@@ -103,7 +103,7 @@ YARP compresses a payload with Zstandard level 3 when the compressed body is at 
 
 YARP observes `tool_execution_start` to retain arguments in memory for calls rejected before `tool_call`. At `tool_call`, YARP writes the session, the call with `status = 'started'`, and both input snapshots in one transaction. The transaction must commit before tool execution begins. A call rejected before `tool_call` never executes, so YARP writes its unchanged input snapshots with its final preflight result at `tool_execution_end`.
 
-The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before`, then stages a provisional `result/after` and `is_error` while it can still restore raw output on failure. The call remains `started`, so a crash or later reconciliation failure is visible as an incomplete call. After all result hooks run, `tool_execution_end` replaces the provisional result and atomically writes its final metadata with `status = 'finished'`. Completion verifies that `result/before` exists and that executed wrapped shell calls have all four stream snapshots.
+The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before`, then stages a provisional `result/after` and `is_error` while it can still restore raw output on failure. The call remains `started`, so a crash or later reconciliation failure is visible as an incomplete call. After all result hooks run, `tool_execution_end` replaces the provisional result and atomically writes its final metadata with `status = 'finished'`. If this final transaction fails for a wrapped shell call, YARP restores its raw streams and replaces the public tool-result message at `message_end`. Completion verifies that `result/before` exists and that executed wrapped shell calls have all four stream snapshots.
 
 Pi can reject or block a call before tool execution without emitting `tool_result`, and validation can reject it before `tool_call`. For those preflight failures, `tool_execution_end` records the error result and finishes the call without requiring `result/before`. The archive does not infer a rejection or cancellation category from result text.
 
@@ -137,7 +137,7 @@ YARP must never hide an archive failure.
 
 If the initial tool-call transaction cannot commit after one writer restart and bounded retry, YARP blocks the call. This preserves the guarantee that an executed call has an archived input.
 
-If a result transaction fails after the tool has executed, YARP leaves the call in `started` and reports the archive failure clearly. Non-shell tools keep the unchanged result already exposed by Pi. Wrapped shell tools restore the committed raw streams and return them instead of the pruned result.
+If a result transaction fails after the tool has executed, YARP leaves the call in `started` and reports the archive failure clearly. Non-shell tools keep the unchanged result already exposed by Pi. Wrapped shell tools restore the committed raw streams and return them instead of the pruned result. If the runner's raw spool fails after the child starts, it drains the child, emits the exact raw bytes on their original streams, reports the archive error, and preserves the child status.
 
 A process crash, full disk, invalid database, unsupported schema version, failed integrity check, or permission error is fatal to capture. YARP must not create a second database or fall back to per-call files.
 

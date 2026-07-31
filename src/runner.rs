@@ -48,7 +48,85 @@ impl Captured {
 
 struct CapturedStream {
     bounded: Captured,
-    raw: Option<NamedTempFile>,
+    raw: Option<RawSpool>,
+    archive_error: Option<String>,
+    raw_emitted: bool,
+}
+
+struct RawSpool {
+    file: NamedTempFile,
+    bytes_written: usize,
+    #[cfg(test)]
+    fail_after: Option<usize>,
+}
+
+struct SpoolWriteError {
+    source: io::Error,
+    bytes_written: usize,
+}
+
+impl RawSpool {
+    fn new() -> io::Result<Self> {
+        Ok(Self {
+            file: NamedTempFile::new()?,
+            bytes_written: 0,
+            #[cfg(test)]
+            fail_after: None,
+        })
+    }
+
+    #[cfg(test)]
+    fn failing_after(limit: usize) -> io::Result<Self> {
+        let mut spool = Self::new()?;
+        spool.fail_after = Some(limit);
+        Ok(spool)
+    }
+
+    fn write_chunk(&mut self, body: &[u8]) -> Result<(), SpoolWriteError> {
+        #[cfg(test)]
+        let permitted = self.fail_after.map_or(body.len(), |limit| {
+            limit.saturating_sub(self.bytes_written).min(body.len())
+        });
+        #[cfg(not(test))]
+        let permitted = body.len();
+
+        let mut offset = 0;
+        while offset < permitted {
+            match self.file.write(&body[offset..permitted]) {
+                Ok(0) => {
+                    return Err(SpoolWriteError {
+                        source: io::Error::new(
+                            io::ErrorKind::WriteZero,
+                            "archive spool wrote zero bytes",
+                        ),
+                        bytes_written: offset,
+                    });
+                }
+                Ok(count) => {
+                    offset += count;
+                    self.bytes_written = self.bytes_written.saturating_add(count);
+                }
+                Err(source) => {
+                    return Err(SpoolWriteError {
+                        source,
+                        bytes_written: offset,
+                    });
+                }
+            }
+        }
+
+        if permitted != body.len() {
+            return Err(SpoolWriteError {
+                source: io::Error::other("simulated archive spool failure"),
+                bytes_written: offset,
+            });
+        }
+        Ok(())
+    }
+
+    fn as_file_mut(&mut self) -> &mut std::fs::File {
+        self.file.as_file_mut()
+    }
 }
 
 /// Run one allowlisted command, prune its two output streams, and return its exit code.
@@ -67,11 +145,11 @@ pub fn run(
     let (stdout_spool, stderr_spool) = if archive_key.is_some() {
         (
             Some(
-                NamedTempFile::new()
+                RawSpool::new()
                     .map_err(|error| format!("could not create stdout archive spool: {error}"))?,
             ),
             Some(
-                NamedTempFile::new()
+                RawSpool::new()
                     .map_err(|error| format!("could not create stderr archive spool: {error}"))?,
             ),
         )
@@ -96,16 +174,43 @@ pub fn run(
         .take()
         .ok_or_else(|| "could not capture child stderr".to_owned())?;
 
-    let stdout_thread = std::thread::spawn(move || capture(stdout, stdout_spool));
-    let stderr_thread = std::thread::spawn(move || capture(stderr, stderr_spool));
+    let stdout_thread = std::thread::spawn(move || capture(stdout, stdout_spool, io::stdout()));
+    let stderr_thread = std::thread::spawn(move || capture(stderr, stderr_spool, io::stderr()));
     let status = child
         .wait()
         .map_err(|error| format!("could not wait for child: {error}"))?;
 
     let mut stdout = join_capture(stdout_thread, "stdout")?;
     let mut stderr = join_capture(stderr_thread, "stderr")?;
-    let stdout_after = stdout.bounded.render();
-    let stderr_after = stderr.bounded.render();
+    let stdout_after = std::mem::take(&mut stdout.bounded).render();
+    let stderr_after = std::mem::take(&mut stderr.bounded).render();
+
+    let capture_errors = [
+        stdout
+            .archive_error
+            .as_ref()
+            .map(|error| format!("stdout: {error}")),
+        stderr
+            .archive_error
+            .as_ref()
+            .map(|error| format!("stderr: {error}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    if !capture_errors.is_empty() {
+        if !stdout.raw_emitted {
+            emit_raw(&mut stdout, &mut io::stdout(), "stdout")?;
+        }
+        if !stderr.raw_emitted {
+            emit_raw(&mut stderr, &mut io::stderr(), "stderr")?;
+        }
+        eprintln!(
+            "yarp: archive failed after command execution: {}",
+            capture_errors.join("; ")
+        );
+        return Ok(exit_code(status));
+    }
 
     if let Some(key) = archive_key {
         let stdout_raw = stdout
@@ -144,10 +249,16 @@ pub fn run(
     Ok(exit_code(status))
 }
 
-fn capture(mut reader: impl Read, mut raw: Option<NamedTempFile>) -> io::Result<CapturedStream> {
+fn capture(
+    mut reader: impl Read,
+    mut raw: Option<RawSpool>,
+    mut fallback: impl Write,
+) -> io::Result<CapturedStream> {
     let mut captured = Captured::default();
     let mut line = Vec::new();
     let mut line_was_truncated = false;
+    let mut archive_error = None;
+    let mut raw_emitted = false;
     let mut buffer = [0_u8; 8 * 1024];
 
     loop {
@@ -155,8 +266,16 @@ fn capture(mut reader: impl Read, mut raw: Option<NamedTempFile>) -> io::Result<
         if count == 0 {
             break;
         }
-        if let Some(file) = &mut raw {
-            file.write_all(&buffer[..count])?;
+        if raw_emitted {
+            fallback.write_all(&buffer[..count])?;
+        } else if let Some(spool) = &mut raw
+            && let Err(error) = spool.write_chunk(&buffer[..count])
+        {
+            rewind_and_copy(spool.as_file_mut(), &mut fallback)?;
+            fallback.write_all(&buffer[error.bytes_written..count])?;
+            archive_error = Some(format!("could not write archive spool: {}", error.source));
+            raw = None;
+            raw_emitted = true;
         }
         for &byte in &buffer[..count] {
             if line.len() < MAX_LINE_BYTES {
@@ -173,12 +292,22 @@ fn capture(mut reader: impl Read, mut raw: Option<NamedTempFile>) -> io::Result<
     if !line.is_empty() || line_was_truncated {
         finish_line(&mut captured, &mut line, &mut line_was_truncated);
     }
-    if let Some(file) = &mut raw {
-        file.flush()?;
+    if let Some(spool) = &mut raw
+        && let Err(error) = spool.file.flush()
+    {
+        rewind_and_copy(spool.as_file_mut(), &mut fallback)?;
+        archive_error = Some(format!("could not flush archive spool: {error}"));
+        raw = None;
+        raw_emitted = true;
+    }
+    if raw_emitted {
+        fallback.flush()?;
     }
     Ok(CapturedStream {
         bounded: captured,
         raw,
+        archive_error,
+        raw_emitted,
     })
 }
 
@@ -207,11 +336,27 @@ fn join_capture(
         .map_err(|error| format!("could not read child {stream}: {error}"))
 }
 
-fn copy_raw(file: &mut std::fs::File, output: &mut impl Write, stream: &str) -> Result<(), String> {
-    file.seek(SeekFrom::Start(0))
-        .map_err(|error| format!("could not rewind raw {stream}: {error}"))?;
-    io::copy(file, output).map_err(|error| format!("could not restore raw {stream}: {error}"))?;
+fn rewind_and_copy(file: &mut std::fs::File, output: &mut impl Write) -> io::Result<()> {
+    file.seek(SeekFrom::Start(0))?;
+    io::copy(file, output)?;
     Ok(())
+}
+
+fn copy_raw(file: &mut std::fs::File, output: &mut impl Write, stream: &str) -> Result<(), String> {
+    rewind_and_copy(file, output)
+        .map_err(|error| format!("could not restore raw {stream}: {error}"))
+}
+
+fn emit_raw(
+    captured: &mut CapturedStream,
+    output: &mut impl Write,
+    stream: &str,
+) -> Result<(), String> {
+    let spool = captured
+        .raw
+        .as_mut()
+        .ok_or_else(|| format!("raw {stream} archive spool is missing"))?;
+    copy_raw(spool.as_file_mut(), output, stream)
 }
 
 fn unix_time_ms() -> i64 {
@@ -247,14 +392,14 @@ mod tests {
 
     #[test]
     fn leaves_short_output_unchanged() {
-        let captured = capture(Cursor::new(b"one\ntwo\n"), None).expect("capture");
+        let captured = capture(Cursor::new(b"one\ntwo\n"), None, io::sink()).expect("capture");
         assert_eq!(captured.bounded.render(), b"one\ntwo\n");
     }
 
     #[test]
     fn prunes_middle_lines() {
         let input = numbered_lines("line ", 250);
-        let captured = capture(Cursor::new(input), None).expect("capture");
+        let captured = capture(Cursor::new(input), None, io::sink()).expect("capture");
         let rendered = String::from_utf8(captured.bounded.render()).expect("UTF-8 output");
         assert!(rendered.starts_with("line 0\n"));
         assert!(rendered.contains("[yarp: omitted 50 lines]\n"));
@@ -265,7 +410,7 @@ mod tests {
     #[test]
     fn keeps_all_lines_at_the_boundary() {
         let input = numbered_lines("", 200);
-        let rendered = capture(Cursor::new(input.as_bytes()), None)
+        let rendered = capture(Cursor::new(input.as_bytes()), None, io::sink())
             .expect("capture")
             .bounded
             .render();
@@ -275,7 +420,7 @@ mod tests {
     #[test]
     fn truncates_one_very_long_line_without_growing_unbounded() {
         let input = vec![b'x'; MAX_LINE_BYTES * 2];
-        let rendered = capture(Cursor::new(input), None)
+        let rendered = capture(Cursor::new(input), None, io::sink())
             .expect("capture")
             .bounded
             .render();
@@ -286,14 +431,14 @@ mod tests {
     #[test]
     fn handles_empty_and_unterminated_output() {
         assert!(
-            capture(Cursor::new(Vec::<u8>::new()), None)
+            capture(Cursor::new(Vec::<u8>::new()), None, io::sink())
                 .expect("capture")
                 .bounded
                 .render()
                 .is_empty()
         );
         assert_eq!(
-            capture(Cursor::new(b"last line"), None)
+            capture(Cursor::new(b"last line"), None, io::sink())
                 .expect("capture")
                 .bounded
                 .render(),
@@ -304,8 +449,9 @@ mod tests {
     #[test]
     fn raw_spool_keeps_omitted_lines() {
         let input = numbered_lines("line ", 250);
-        let spool = NamedTempFile::new().expect("spool");
-        let mut captured = capture(Cursor::new(input.as_bytes()), Some(spool)).expect("capture");
+        let spool = RawSpool::new().expect("spool");
+        let mut captured =
+            capture(Cursor::new(input.as_bytes()), Some(spool), io::sink()).expect("capture");
         let mut raw = String::new();
         captured
             .raw
@@ -322,6 +468,23 @@ mod tests {
             .read_to_string(&mut raw)
             .expect("read");
         assert_eq!(raw, input);
+    }
+
+    #[test]
+    fn archive_spool_failure_emits_the_exact_raw_stream() {
+        let input = numbered_lines("raw ", 250);
+        let spool = RawSpool::failing_after(37).expect("spool");
+        let mut output = Vec::new();
+        let captured =
+            capture(Cursor::new(input.as_bytes()), Some(spool), &mut output).expect("capture");
+        assert_eq!(output, input.as_bytes());
+        assert!(captured.raw_emitted);
+        assert!(captured.raw.is_none());
+        assert!(
+            captured
+                .archive_error
+                .is_some_and(|error| error.contains("archive spool"))
+        );
     }
 
     #[test]

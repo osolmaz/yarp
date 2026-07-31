@@ -119,6 +119,24 @@ test("restarts once and reuses the request id after transport failure", async ()
   await client.close()
 })
 
+test("restarts after an asynchronous writer pipe error", async () => {
+  const processes: FakeProcess[] = []
+  const client = new ArchiveClient(() => {
+    const index = processes.length
+    const process = new FakeProcess((request, writer) => {
+      if (index === 0) {
+        queueMicrotask(() => writer.stdin.emit("error", new Error("broken pipe")))
+      } else writer.acknowledge(request)
+    })
+    processes.push(process)
+    return process
+  })
+
+  await client.beginCall(session, call, {}, {}, 2)
+  assert.equal(processes.length, 2)
+  await client.close()
+})
+
 test("rejects oversized requests before starting the writer", async () => {
   let starts = 0
   const client = new ArchiveClient(() => {
