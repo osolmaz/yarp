@@ -53,12 +53,16 @@ class MockPi implements ExtensionAPI {
   rewrite: ExecResult = result(3)
   restore: ExecResult = result(0, "raw output\n")
   failRewrite = false
+  failRestore = false
   rewriteArgs: string[] | null = null
 
   async exec(command: string, args: string[], _options?: ExecOptions): Promise<ExecResult> {
     assert.equal(command, "yarp")
     if (args[0] === "--version") return result(0, "yarp 0.1.0\n")
-    if (args[0] === "archive" && args[1] === "restore") return this.restore
+    if (args[0] === "archive" && args[1] === "restore") {
+      if (this.failRestore) throw new Error("restore spawn failed")
+      return this.restore
+    }
     this.rewriteArgs = args
     if (this.failRewrite) throw new Error("rewrite failed")
     return this.rewrite
@@ -342,6 +346,50 @@ test("restores raw shell output when result finalization fails", async () => {
     content: [{ type: "text", text: "raw stdout\nraw stderr\n" }],
     isError: false,
   })
+  assert.equal(sink.finishedResults.length, 0)
+})
+
+test("contains raw restore transport failures", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  sink.failFinish = true
+  pi.failRestore = true
+  pi.rewrite = result(0, "yarp run --archive-call 'call-restore-error' -- git status")
+  await start(pi, sink)
+  await call(pi, "call-restore-error", "bash", { command: "git status" })
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "call-restore-error",
+      toolName: "bash",
+      input: { command: "rewritten" },
+      content: [{ type: "text", text: "pruned" }],
+      details: undefined,
+      isError: false,
+    },
+    context,
+  )
+  assert.equal(patch, undefined)
+})
+
+test("reports preflight archive failures without rejecting the event", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  sink.failFinish = true
+  await start(pi, sink)
+  await call(pi, "preflight-archive-failure", "missing", {})
+  await pi.registry.emit(
+    "tool_execution_end",
+    {
+      type: "tool_execution_end",
+      toolCallId: "preflight-archive-failure",
+      toolName: "missing",
+      result: { content: [{ type: "text", text: "Tool not found" }] },
+      isError: true,
+    },
+    context,
+  )
   assert.equal(sink.finishedResults.length, 0)
 })
 

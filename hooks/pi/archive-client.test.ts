@@ -134,6 +134,21 @@ test("rejects oversized requests before starting the writer", async () => {
   await client.close()
 })
 
+test("restarts once and fails when acknowledgements time out", async () => {
+  let starts = 0
+  const client = new ArchiveClient(() => {
+    starts += 1
+    return new FakeProcess(() => undefined)
+  }, 1024, 10)
+
+  await assert.rejects(
+    client.beginCall(session, call, {}, {}, 2),
+    /acknowledgement timed out/,
+  )
+  assert.equal(starts, 2)
+  await client.close()
+})
+
 test("does not retry a rejected archive operation", async () => {
   let starts = 0
   const client = new ArchiveClient(() => {

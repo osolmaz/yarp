@@ -45,7 +45,7 @@ Add `yarp archive ingest`, a long-lived stdin reader used by the Pi extension. E
 
 The process acknowledges each committed operation with one JSON line. It rejects malformed frames, oversized frames, unknown operations, unsupported schema versions, and truncated input. It stops cleanly at EOF after flushing committed work.
 
-The extension will serialize requests through one queue. If the child exits, the extension restarts it once and retries the unacknowledged request. It must not retry a request that was acknowledged.
+The extension will serialize requests through one queue. An acknowledgement has a 30-second deadline. If the child exits or misses that deadline, the extension restarts it once and retries the unacknowledged request. It must not retry a request that was acknowledged.
 
 ### Pi call capture
 

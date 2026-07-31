@@ -7,6 +7,7 @@ const MAX_ACK_BUFFER_BYTES = 64 * 1024
 const CLOSE_TIMEOUT_MS = 2_000
 const INGEST_SCHEMA_VERSION = 1
 const MAX_FRAME_BYTES = 256 * 1024 * 1024
+const ACK_TIMEOUT_MS = 30_000
 
 export type ArchiveSession = {
   agent: string
@@ -85,6 +86,7 @@ export class ArchiveClient implements ArchiveSink {
   constructor(
     private readonly spawnWriter: SpawnWriter = defaultSpawnWriter,
     private readonly maxFrameBytes: number = MAX_FRAME_BYTES,
+    private readonly ackTimeoutMs: number = ACK_TIMEOUT_MS,
   ) {}
 
   beginCall(
@@ -196,7 +198,23 @@ export class ArchiveClient implements ArchiveSink {
     header.writeBigUInt64BE(BigInt(body.length), 0)
 
     const acknowledgement = new Promise<void>((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject })
+      const timer = setTimeout(() => {
+        const pending = this.pending.get(requestId)
+        if (pending === undefined) return
+        this.pending.delete(requestId)
+        pending.reject(new Error(`archive acknowledgement timed out after ${this.ackTimeoutMs} ms`))
+        if (this.child === child) child.kill("SIGTERM")
+      }, this.ackTimeoutMs)
+      this.pending.set(requestId, {
+        resolve: () => {
+          clearTimeout(timer)
+          resolve()
+        },
+        reject: (error) => {
+          clearTimeout(timer)
+          reject(error)
+        },
+      })
     })
     try {
       if (!child.stdin.write(header)) await once(child.stdin, "drain")

@@ -184,15 +184,20 @@ export async function installYarpExtension(
 
   pi.on("tool_execution_end", async (event) => {
     if (sink === null || session === null || !activeCalls.has(event.toolCallId)) return
-    await sink.finishCall(
-      session,
-      event.toolCallId,
-      executionEndSnapshot(event),
-      event.isError,
-      false,
-      Date.now(),
-    )
-    activeCalls.delete(event.toolCallId)
+    try {
+      await sink.finishCall(
+        session,
+        event.toolCallId,
+        executionEndSnapshot(event),
+        event.isError,
+        false,
+        Date.now(),
+      )
+    } catch (error) {
+      console.error(`[yarp] preflight result archive failed: ${errorMessage(error)}`)
+    } finally {
+      activeCalls.delete(event.toolCallId)
+    }
   })
 }
 
@@ -286,7 +291,13 @@ async function restoreRawResult(
     event.toolCallId,
   ]
   const options = signal === undefined ? undefined : { signal }
-  const result = await pi.exec("yarp", args, options)
+  let result: Awaited<ReturnType<ExtensionAPI["exec"]>>
+  try {
+    result = await pi.exec("yarp", args, options)
+  } catch (error) {
+    console.error(`[yarp] raw result restore failed: ${errorMessage(error)}`)
+    return undefined
+  }
   if (result.killed || result.code !== 0) {
     console.error(`[yarp] raw result restore failed: ${result.stderr.trim() || `exit ${result.code}`}`)
     return undefined
