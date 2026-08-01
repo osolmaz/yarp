@@ -134,7 +134,19 @@ fn contains_normalized_argument(argument: &str, required: &str) -> bool {
             && argument
                 .strip_prefix(required)
                 .is_some_and(|suffix| suffix.starts_with('=')))
-        || (required == "-o" && argument.starts_with("-o") && argument.len() > 2)
+        || contains_short_option(argument, required)
+}
+
+fn contains_short_option(argument: &str, required: &str) -> bool {
+    let required = required.as_bytes();
+    let argument = argument.as_bytes();
+    required.len() == 2
+        && required[0] == b'-'
+        && required[1] != b'-'
+        && argument.len() > 2
+        && argument[0] == b'-'
+        && argument[1] != b'-'
+        && argument[1..].contains(&required[1])
 }
 
 fn normalized_arguments<'a>(program: &str, arguments: &'a [String]) -> &'a [String] {
@@ -259,6 +271,13 @@ mod tests {
             argv_contains_all: vec!["-o".to_owned()],
         };
         assert!(short.matches(&arguments(&["kubectl", "get", "pods", "-ojson"])));
+
+        let bundled = CommandMatcher {
+            program: vec!["git".to_owned()],
+            argv_prefix: vec!["status".to_owned()],
+            argv_contains_all: vec!["-z".to_owned()],
+        };
+        assert!(bundled.matches(&arguments(&["git", "status", "-sbz"])));
     }
 
     #[test]

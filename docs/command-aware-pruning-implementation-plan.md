@@ -257,7 +257,7 @@ Most programs start `argv_prefix` at argument index 1. The engine first skips a 
 
 Options that take values are skipped only when the value is present. Unknown or incomplete options remain in place and prevent a false match.
 
-An empty prefix matches every normalized argument tail for the selected program. `argv_contains_all` checks complete normalized tokens and does not perform substring matching. Long option assignments normalize `--name=value` to include the exact `--name` option token. The reviewed short output option also normalizes `-oVALUE` to include `-o`. Rules cannot match the assigned value through this normalization.
+An empty prefix matches every normalized argument tail for the selected program. `argv_contains_all` checks complete normalized tokens and does not perform substring matching. Long option assignments normalize `--name=value` to include the exact `--name` option token. Reviewed one-letter short options normalize bundled forms such as `-sbz` and attached-value forms such as `-ojson` to include their exact option token. Rules cannot match the assigned value through this normalization.
 
 Multiple alternatives should use separate rules. Version 1 does not provide OR groups, negative matchers, regular expressions, shell fragments, or arbitrary boolean expressions in command matching.
 
