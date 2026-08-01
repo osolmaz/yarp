@@ -24,29 +24,31 @@ impl AnsiStripper {
         }
     }
 
-    pub fn push(&mut self, input: &[u8], output: &mut Vec<u8>) {
-        for byte in input {
-            match self.state {
-                AnsiState::Ground if *byte == 0x1b => self.state = AnsiState::Escape,
-                AnsiState::Ground => output.push(*byte),
-                AnsiState::Escape => {
-                    self.state = match *byte {
-                        b'[' => AnsiState::Csi,
-                        b']' => AnsiState::Osc,
-                        _ => AnsiState::Ground,
-                    };
-                }
-                AnsiState::Csi if (0x40..=0x7e).contains(byte) => {
-                    self.state = AnsiState::Ground;
-                }
-                AnsiState::Osc if *byte == 0x07 => self.state = AnsiState::Ground,
-                AnsiState::Osc if *byte == 0x1b => self.state = AnsiState::OscEscape,
-                AnsiState::Csi | AnsiState::Osc => {}
-                AnsiState::OscEscape if *byte == b'\\' => self.state = AnsiState::Ground,
-                AnsiState::OscEscape if *byte == 0x1b => {}
-                AnsiState::OscEscape => self.state = AnsiState::Osc,
-            }
+    pub fn push_byte(&mut self, byte: u8) -> Option<u8> {
+        if matches!(byte, b'\r' | b'\n') {
+            return Some(byte);
         }
+        match self.state {
+            AnsiState::Ground if byte == 0x1b => self.state = AnsiState::Escape,
+            AnsiState::Ground => return Some(byte),
+            AnsiState::Escape => {
+                self.state = match byte {
+                    b'[' => AnsiState::Csi,
+                    b']' => AnsiState::Osc,
+                    _ => AnsiState::Ground,
+                };
+            }
+            AnsiState::Csi if (0x40..=0x7e).contains(&byte) => {
+                self.state = AnsiState::Ground;
+            }
+            AnsiState::Osc if byte == 0x07 => self.state = AnsiState::Ground,
+            AnsiState::Osc if byte == 0x1b => self.state = AnsiState::OscEscape,
+            AnsiState::Csi | AnsiState::Osc => {}
+            AnsiState::OscEscape if byte == b'\\' => self.state = AnsiState::Ground,
+            AnsiState::OscEscape if byte == 0x1b => {}
+            AnsiState::OscEscape => self.state = AnsiState::Osc,
+        }
+        None
     }
 }
 
@@ -218,9 +220,11 @@ mod tests {
     #[test]
     fn strips_chunked_ansi_sequences() {
         let mut stripper = AnsiStripper::new();
-        let mut output = Vec::new();
-        stripper.push(b"before \x1b[3", &mut output);
-        stripper.push(b"1mred\x1b[0m after\n", &mut output);
+        let output = [b"before \x1b[3".as_slice(), b"1mred\x1b[0m after\n"]
+            .into_iter()
+            .flatten()
+            .filter_map(|byte| stripper.push_byte(*byte))
+            .collect::<Vec<_>>();
         assert_eq!(output, b"before red after\n");
     }
 

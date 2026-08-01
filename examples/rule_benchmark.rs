@@ -91,6 +91,7 @@ fn benchmark_external() -> Result<(Duration, Duration, usize), String> {
     let request = PackRequest {
         path: pack_path,
         expected_digest: Some(source.source_digest),
+        expected_compiled_digest: None,
     };
     let cold_started = Instant::now();
     let mut cold_registry = Registry::load(std::slice::from_ref(&request))?;

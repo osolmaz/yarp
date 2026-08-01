@@ -48,11 +48,12 @@ fn compile_pack(source_path: &Path, output_path: &Path) -> i32 {
 }
 
 fn verify(path: &Path) -> i32 {
-    match CompiledPack::open(path, None).and_then(|mut pack| {
+    match CompiledPack::open(path, None, None).and_then(|mut pack| {
         pack.verify_all()?;
         println!("pack: {}", pack.id);
         println!("rules: {}", pack.rules.len());
         println!("source_sha256: {}", digest_hex(&pack.source_digest));
+        println!("compiled_sha256: {}", digest_hex(&pack.compiled_digest));
         println!("rule_pack: ok");
         Ok(())
     }) {

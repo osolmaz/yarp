@@ -39,6 +39,7 @@ pub struct CompiledPack {
     pub path: PathBuf,
     pub id: String,
     pub source_digest: [u8; 32],
+    pub compiled_digest: [u8; 32],
     pub rules: Vec<RuleRecord>,
     pub programs: Vec<ProgramEntry>,
     records_offset: u64,
@@ -189,7 +190,11 @@ impl CompiledPack {
     /// # Errors
     ///
     /// Returns an error for an unsafe path, incompatible format, corrupt index, or digest mismatch.
-    pub fn open(path: &Path, expected_digest: Option<[u8; 32]>) -> Result<Self, String> {
+    pub fn open(
+        path: &Path,
+        expected_source_digest: Option<[u8; 32]>,
+        expected_compiled_digest: Option<[u8; 32]>,
+    ) -> Result<Self, String> {
         let metadata =
             fs::symlink_metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
         if metadata.file_type().is_symlink() {
@@ -208,11 +213,23 @@ impl CompiledPack {
             .map_err(|error| format!("could not resolve {}: {error}", path.display()))?;
         let mut file = File::open(&path)
             .map_err(|error| format!("could not open {}: {error}", path.display()))?;
+        let opened_metadata = file
+            .metadata()
+            .map_err(|error| format!("could not stat {}: {error}", path.display()))?;
+        if !opened_metadata.is_file() || opened_metadata.len() > MAX_COMPILED_BYTES {
+            return Err(format!("{}: invalid compiled pack file", path.display()));
+        }
+        let compiled_digest = file_digest(&mut file, &path)?;
+        if let Some(expected) = expected_compiled_digest
+            && expected != compiled_digest
+        {
+            return Err(format!("{}: compiled pack digest changed", path.display()));
+        }
         let mut header = [0_u8; HEADER_LEN];
         file.read_exact(&mut header)
             .map_err(|error| format!("{}: truncated header: {error}", path.display()))?;
-        let parsed = parse_header(&header, metadata.len())?;
-        if let Some(expected) = expected_digest
+        let parsed = parse_header(&header, opened_metadata.len())?;
+        if let Some(expected) = expected_source_digest
             && expected != parsed.source_digest
         {
             return Err(format!("{}: source digest changed", path.display()));
@@ -244,6 +261,7 @@ impl CompiledPack {
             path,
             id,
             source_digest: parsed.source_digest,
+            compiled_digest,
             rules,
             programs,
             records_offset,
@@ -541,6 +559,25 @@ fn validate_index(
     Ok(())
 }
 
+fn file_digest(file: &mut File, path: &Path) -> Result<[u8; 32], String> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("could not rewind {}: {error}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("could not hash {}: {error}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("could not rewind {}: {error}", path.display()))?;
+    Ok(hasher.finalize().into())
+}
+
 fn header_index_digest(header: &[u8; HEADER_LEN], pack_id: &[u8], index: &[u8]) -> [u8; 32] {
     let mut clean_header = *header;
     clean_header[DIGEST_OFFSET..DIGEST_OFFSET + DIGEST_LEN].fill(0);
@@ -734,11 +771,19 @@ mod tests {
         let mut file = NamedTempFile::new().expect("pack file");
         file.write_all(&first).expect("write pack");
         file.flush().expect("flush pack");
-        let mut pack = CompiledPack::open(file.path(), Some(source.source_digest)).expect("open");
+        let mut pack =
+            CompiledPack::open(file.path(), Some(source.source_digest), None).expect("open");
         assert_eq!(pack.id, "test-pack");
+        let expected_compiled_digest: [u8; 32] = Sha256::digest(&first).into();
+        assert_eq!(pack.compiled_digest, expected_compiled_digest);
         assert_eq!(pack.candidate_indices("tool"), &[0]);
         assert_eq!(pack.read_rule(0).expect("rule").id, "tests/run");
         pack.verify_all().expect("verify");
+        assert!(
+            CompiledPack::open(file.path(), None, Some([0_u8; 32]))
+                .expect_err("compiled digest mismatch")
+                .contains("compiled pack digest changed")
+        );
     }
 
     #[test]
@@ -752,7 +797,7 @@ mod tests {
             let mut file = NamedTempFile::new().expect("pack file");
             file.write_all(&corrupt).expect("write pack");
             file.flush().expect("flush pack");
-            let opened = CompiledPack::open(file.path(), None);
+            let opened = CompiledPack::open(file.path(), None, None);
             if offset == bytes.len() - 1 {
                 let mut pack = opened.expect("record corruption loads index");
                 assert!(pack.verify_all().is_err());

@@ -55,10 +55,13 @@ impl LineAccumulator {
         }
     }
 
-    pub fn push(&mut self, byte: u8) {
+    pub fn observe_source(&mut self, byte: u8) {
         self.total_bytes = self.total_bytes.saturating_add(1);
         self.previous_byte = self.last_byte;
         self.last_byte = Some(byte);
+    }
+
+    pub fn push_output(&mut self, byte: u8) {
         if self.prefix.len() < self.prefix_limit {
             self.prefix.push(byte);
         }
@@ -371,7 +374,8 @@ mod tests {
     fn preserves_the_ending_after_a_truncated_line() {
         let mut accumulator = LineAccumulator::new(256, 0);
         for byte in b"a".repeat(300).into_iter().chain([b'\n']) {
-            accumulator.push(byte);
+            accumulator.observe_source(byte);
+            accumulator.push_output(byte);
         }
         let line = accumulator.take();
         assert_eq!(line.line_ending, b"\n");
