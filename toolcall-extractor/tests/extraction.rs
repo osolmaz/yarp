@@ -412,15 +412,26 @@ fn command_line_extracts_streams_reports_and_benchmarks() {
             .success()
     );
 
-    fs::write(
-        sessions.join("session.jsonl"),
-        concat!(
-            "{\"type\":\"session\",\"version\":3,\"id\":\"s1\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"cwd\":\"/tmp\"}\n",
-            "{\"type\":\"message\",\"id\":\"m3\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"c2\",\"name\":\"bash\",\"arguments\":{\"command\":\"cargo check\"}}]}}\n",
-            "{\"type\":\"message\",\"id\":\"m4\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"c2\",\"content\":\"checked\",\"isError\":false}}\n"
-        ),
-    )
-    .expect("replace streamed session");
+    let session_path = sessions.join("session.jsonl");
+    let metadata = fs::metadata(&session_path).expect("session metadata");
+    let replacement_text = fs::read_to_string(&session_path)
+        .expect("read streamed session")
+        .replace("cargo test", "cargo lint");
+    assert_eq!(
+        replacement_text.len(),
+        usize::try_from(metadata.len()).expect("session length")
+    );
+    fs::write(&session_path, replacement_text).expect("replace streamed session");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&session_path)
+        .expect("open replaced session")
+        .set_times(
+            fs::FileTimes::new()
+                .set_accessed(metadata.accessed().expect("session access time"))
+                .set_modified(metadata.modified().expect("session modification time")),
+        )
+        .expect("restore session times");
     let replacement = extractor()
         .args([
             "stream",
@@ -505,6 +516,11 @@ fn command_line_extracts_streams_reports_and_benchmarks() {
     let stats = Database::stats(&streamed_database).expect("replacement stats");
     assert_eq!(stats.tool_calls, 1);
     assert_eq!(stats.tool_results, 1);
+    let connection = Database::open_read_only(&streamed_database).expect("replacement database");
+    let replacement_input: String = connection
+        .query_row("SELECT input_text FROM tool_calls", [], |row| row.get(0))
+        .expect("replacement call");
+    assert!(replacement_input.contains("cargo lint"));
 }
 
 #[test]
