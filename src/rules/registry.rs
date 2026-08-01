@@ -15,12 +15,14 @@ pub use generated::{BUILTIN_PACK_ID, BUILTIN_SOURCE_DIGEST};
 pub struct PackRequest {
     pub path: PathBuf,
     pub expected_digest: Option<[u8; 32]>,
+    pub expected_compiled_digest: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackReference {
     pub path: PathBuf,
     pub source_digest: [u8; 32],
+    pub compiled_digest: [u8; 32],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -82,7 +84,11 @@ impl Registry {
         let mut external = Vec::new();
         let mut seen_paths = BTreeSet::new();
         for request in requests {
-            let pack = CompiledPack::open(&request.path, request.expected_digest)?;
+            let pack = CompiledPack::open(
+                &request.path,
+                request.expected_digest,
+                request.expected_compiled_digest,
+            )?;
             if !seen_paths.insert(pack.path.clone()) {
                 continue;
             }
@@ -96,6 +102,7 @@ impl Registry {
             .map(|external| PackReference {
                 path: external.pack.path.clone(),
                 source_digest: external.pack.source_digest,
+                compiled_digest: external.pack.compiled_digest,
             })
             .collect();
         let diagnostics = disable_conflicts(&mut external);
@@ -211,6 +218,7 @@ pub fn requests_from_paths(paths: &[PathBuf]) -> Vec<PackRequest> {
         .map(|path| PackRequest {
             path: path.clone(),
             expected_digest: None,
+            expected_compiled_digest: None,
         })
         .collect()
 }
@@ -379,6 +387,12 @@ fn disable_conflicts(external: &mut [ExternalPack]) -> Vec<String> {
     }
     let mut disabled = BTreeSet::new();
     let mut diagnostics = BTreeSet::new();
+    if let Some(owners) = pack_owners.get(BUILTIN_PACK_ID) {
+        disabled.extend(owners.iter().copied());
+        diagnostics.insert(format!(
+            "external pack id conflicts with the built-in pack: {BUILTIN_PACK_ID}"
+        ));
+    }
     for (pack_id, owners) in pack_owners.iter().filter(|(_, owners)| owners.len() > 1) {
         disabled.extend(owners.iter().copied());
         diagnostics.insert(format!(

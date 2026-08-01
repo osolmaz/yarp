@@ -61,6 +61,7 @@ fn checks_compiles_verifies_lists_and_explains_external_rules() {
         "{}",
         String::from_utf8_lossy(&verify.stderr)
     );
+    assert!(String::from_utf8_lossy(&verify.stdout).contains("compiled_sha256:"));
     assert!(String::from_utf8_lossy(&verify.stdout).contains("rule_pack: ok"));
 
     let listed = yarp(&[
@@ -140,6 +141,42 @@ fn conflicting_external_rule_ids_disable_every_conflicting_pack() {
 }
 
 #[test]
+fn external_pack_cannot_claim_the_builtin_pack_id() {
+    let directory = TempDir::new().expect("source");
+    source_pack(&directory, "yarp-builtins", false);
+    let compiled = directory.path().join("custom.yrp");
+    assert!(
+        yarp(&[
+            "rules",
+            "compile",
+            directory.path().to_str().expect("path"),
+            "--output",
+            compiled.to_str().expect("path"),
+        ])
+        .status
+        .success()
+    );
+    let explained = yarp(&[
+        "rules",
+        "explain",
+        "--rule-pack",
+        compiled.to_str().expect("path"),
+        "--json",
+        "--",
+        "customcheck",
+    ]);
+    assert!(explained.status.success());
+    let value: Value = serde_json::from_slice(&explained.stdout).expect("explanation");
+    assert_eq!(value["outcome"], "unsupported");
+    assert!(value["diagnostics"].as_array().is_some_and(|items| {
+        items.iter().any(|item| {
+            item.as_str()
+                .is_some_and(|text| text.contains("conflicts with the built-in pack"))
+        })
+    }));
+}
+
+#[test]
 fn strict_validation_rejects_unknown_fields() {
     let directory = TempDir::new().expect("temp directory");
     source_pack(&directory, "custom-pack", true);
@@ -181,12 +218,19 @@ fn rewrite_binds_pack_digest_and_changed_pack_fails_open() {
     let wrapper = String::from_utf8(rewritten.stdout).expect("wrapper");
     assert!(wrapper.contains("--selected-pack 'custom-pack'"));
     assert!(wrapper.contains("--rule-pack-digest"));
+    assert!(wrapper.contains("--rule-pack-compiled-digest"));
 
     let digest = wrapper
         .split("--rule-pack-digest '")
         .nth(1)
         .and_then(|value| value.split('\'').next())
         .expect("digest")
+        .to_owned();
+    let compiled_digest = wrapper
+        .split("--rule-pack-compiled-digest '")
+        .nth(1)
+        .and_then(|value| value.split('\'').next())
+        .expect("compiled digest")
         .to_owned();
     let executable = directory.path().join("customcheck");
     fs::write(
@@ -214,6 +258,8 @@ fn rewrite_binds_pack_digest_and_changed_pack_fails_open() {
             compiled.to_str().expect("path"),
             "--rule-pack-digest",
             &digest,
+            "--rule-pack-compiled-digest",
+            &compiled_digest,
             "--",
             "customcheck",
         ])

@@ -17,7 +17,6 @@ pub struct StreamReducer {
     raw: ShortRaw,
     line: LineAccumulator,
     ansi: Option<AnsiStripper>,
-    scratch: Vec<u8>,
     diff: Option<GitDiffState>,
 }
 
@@ -82,28 +81,24 @@ impl StreamReducer {
             raw: ShortRaw::new(success_policy, failure_policy),
             line: LineAccumulator::new(max_line, tail_limit),
             ansi: strip_ansi.then(AnsiStripper::new),
-            scratch: Vec::with_capacity(8 * 1024),
             diff: matches!(kind, Reducer::GitDiff).then(GitDiffState::default),
         })
     }
 
     pub fn push(&mut self, chunk: &[u8]) {
         self.raw.push(chunk);
-        for piece in chunk.chunks(8 * 1024) {
-            self.scratch.clear();
-            if let Some(stripper) = &mut self.ansi {
-                stripper.push(piece, &mut self.scratch);
-            } else {
-                self.scratch.extend_from_slice(piece);
+        for byte in chunk {
+            self.line.observe_source(*byte);
+            let output = self
+                .ansi
+                .as_mut()
+                .map_or(Some(*byte), |stripper| stripper.push_byte(*byte));
+            if let Some(output) = output {
+                self.line.push_output(output);
             }
-            let length = self.scratch.len();
-            for index in 0..length {
-                let byte = self.scratch[index];
-                self.line.push(byte);
-                if byte == b'\n' {
-                    let line = self.line.take();
-                    self.process_line(line);
-                }
+            if *byte == b'\n' {
+                let line = self.line.take();
+                self.process_line(line);
             }
         }
     }
@@ -274,6 +269,24 @@ mod tests {
         assert!(!text.contains("Compiling"));
         assert!(text.contains("error: build failed"));
         assert!(text.contains("test result: FAILED"));
+    }
+
+    #[test]
+    fn applies_the_line_limit_before_stripping_ansi() {
+        let mut input = b"\x1b]".to_vec();
+        input.extend(std::iter::repeat_n(b'x', 400));
+        input.extend_from_slice(b"\x07visible\n");
+        input.extend_from_slice(numbered_lines("tail", 200).as_bytes());
+        let rule = rule(Reducer::LineFilter {
+            strip_ansi: true,
+            drop: Vec::new(),
+            keep: Vec::new(),
+        });
+        let output = reduce_bytes(&rule, &input, true).expect("reduction");
+        assert!(
+            String::from_utf8_lossy(&output).contains("line truncated"),
+            "raw source length must control line truncation"
+        );
     }
 
     #[test]

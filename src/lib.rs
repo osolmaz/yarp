@@ -198,6 +198,7 @@ fn parse_rewrite(
                 packs.push(rules::PackRequest {
                     path,
                     expected_digest: None,
+                    expected_compiled_digest: None,
                 });
             }
             "--archive-agent" if agent.is_none() => agent = Some(value.as_str()),
@@ -295,22 +296,9 @@ fn parse_run(arguments: &[String]) -> Result<ParsedRun<'_>, String> {
             "--archive-session" if session.is_none() => session = Some(value.clone()),
             "--archive-call" if call.is_none() => call = Some(value.clone()),
             "--rule-pack" => {
-                let mut expected_digest = None;
-                index += 2;
-                if arguments
-                    .get(index)
-                    .is_some_and(|value| value == "--rule-pack-digest")
-                {
-                    let digest = arguments
-                        .get(index + 1)
-                        .ok_or_else(|| "--rule-pack-digest requires a value".to_owned())?;
-                    expected_digest = Some(rules::parse_digest(digest)?);
-                    index += 2;
-                }
-                packs.push(rules::PackRequest {
-                    path: value.into(),
-                    expected_digest,
-                });
+                let (request, next_index) = parse_run_pack(arguments, index, value)?;
+                packs.push(request);
+                index = next_index;
                 continue;
             }
             value if value.starts_with("--") => {
@@ -360,6 +348,47 @@ fn parse_run(arguments: &[String]) -> Result<ParsedRun<'_>, String> {
         packs = environment;
     }
     Ok((archive_key, child, packs, expected))
+}
+
+fn parse_run_pack(
+    arguments: &[String],
+    mut index: usize,
+    path: &str,
+) -> Result<(rules::PackRequest, usize), String> {
+    let mut expected_digest = None;
+    let mut expected_compiled_digest = None;
+    index += 2;
+    if arguments
+        .get(index)
+        .is_some_and(|value| value == "--rule-pack-digest")
+    {
+        let digest = arguments
+            .get(index + 1)
+            .ok_or_else(|| "--rule-pack-digest requires a value".to_owned())?;
+        expected_digest = Some(rules::parse_digest(digest)?);
+        index += 2;
+    }
+    if arguments
+        .get(index)
+        .is_some_and(|value| value == "--rule-pack-compiled-digest")
+    {
+        let digest = arguments
+            .get(index + 1)
+            .ok_or_else(|| "--rule-pack-compiled-digest requires a value".to_owned())?;
+        expected_compiled_digest = Some(rules::parse_digest(digest)?);
+        index += 2;
+    }
+    if expected_digest.is_some() != expected_compiled_digest.is_some() {
+        return Err("rule pack source and compiled digests must be supplied together".to_owned());
+    }
+    Ok((
+        rules::PackRequest {
+            path: path.into(),
+            expected_digest,
+            expected_compiled_digest,
+        },
+        index,
+    ))
 }
 
 fn usage_error(error: &str) -> i32 {

@@ -209,9 +209,6 @@ fn measure(output: &str, pruned: &[u8]) -> PruningMetrics {
 }
 
 fn result_succeeded(is_error: Option<bool>, output_json: Option<&str>) -> Option<bool> {
-    if is_error == Some(true) {
-        return Some(false);
-    }
     if let Some(value) = output_json.and_then(|value| serde_json::from_str::<Value>(value).ok()) {
         let exit_code = ["exit_code", "exitCode"]
             .into_iter()
@@ -293,6 +290,10 @@ mod tests {
         assert_eq!(
             result_succeeded(Some(false), Some(r#"{"details":{"exitCode":2}}"#)),
             Some(false)
+        );
+        assert_eq!(
+            result_succeeded(Some(true), Some(r#"{"exitCode":0}"#)),
+            Some(true)
         );
         assert_eq!(
             result_succeeded(None, Some(r#"{"status":"failed"}"#)),

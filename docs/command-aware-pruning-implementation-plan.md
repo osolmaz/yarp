@@ -29,7 +29,7 @@ The command-aware benchmark reads an explicit stored exit code when one is avail
 
 A targeted review sampled the 100 largest results for six high-impact rules. The simple diagnostic-word check found that reduced output retained 1,926 of 1,959 Cargo-test diagnostic lines, 2,850 of 3,466 package-test diagnostic lines, 711 of 769 CI-run diagnostic lines, 940 of 1,097 grep diagnostic lines, and 680 of 1,044 ripgrep diagnostic lines. These are targeted structural checks, not corpus-wide semantic-quality rates. Large Git diffs continue to omit changed lines after their explicit budget and mark the omission, so exact object inspection remains protected by pass-through rules.
 
-The standalone performance harness measured built-in matching below one microsecond at p95. A warm 1,000-rule external pack opened and matched in 220 microseconds at p95; its first measured open and match took 382 microseconds. The streaming search reducer processed a 1 GiB synthetic input at 151.88 MB/s with a configured per-stream memory bound of 530,688 bytes. These results are well below the proposed 5 ms external-pack threshold, so a persistent rule process is not justified.
+The standalone performance harness measured built-in matching below one microsecond at p95. A warm 1,000-rule external pack opened and matched in 422 microseconds at p95; its first measured open and match took 688 microseconds. The streaming search reducer processed a 1 GiB synthetic input at 210.79 MB/s with a configured per-stream memory bound of 530,688 bytes. These results are well below the proposed 5 ms external-pack threshold, so a persistent rule process is not justified.
 
 The complete extractor database still verifies with zero orphan calls, results, or observations. Raw benchmark rows, paired outputs, and the private database remain outside Git.
 
@@ -493,7 +493,7 @@ The runtime uses binary search to locate one program bucket. It reads only that 
 
 A rule record contains the rule ID, action, matcher, reducer kind and settings, plus success and failure policies. Human descriptions and source paths do not enter runtime records.
 
-Each record has its own SHA-256 digest. The runtime verifies the header and index plus every selected record before use. `yarp rules verify` reads and verifies the whole pack.
+Each record has its own SHA-256 digest. The runtime also computes a SHA-256 digest over the complete compiled file for rewrite-and-run agreement. It verifies the header and index plus every selected record before use. `yarp rules verify` reads and verifies the whole pack.
 
 ### Limits
 
@@ -558,7 +558,7 @@ Pack IDs and rule IDs must be unique across all loaded packs. A conflicting exte
 
 `yarp rewrite` and `yarp run` are separate processes. A compiled pack could change between them.
 
-The rewritten command therefore carries each external pack path and source digest. Before spawning the child, `yarp run` reopens the packs, verifies those digests, and repeats rule selection against the child argv. A missing, changed, incompatible, or corrupt pack causes pass-through execution. It must never cause YARP to apply a different rule silently.
+The rewritten command therefore carries each external pack path, source digest, and complete compiled-file digest. Before spawning the child, `yarp run` reopens the packs, verifies those digests, and repeats rule selection against the child argv. A missing, changed, incompatible, or corrupt pack causes pass-through execution. It must never cause YARP to apply a different rule silently.
 
 The wrapper command must shell-quote pack paths, digests, archive identifiers, and every YARP-owned argument. The original command text remains unchanged after `--`.
 

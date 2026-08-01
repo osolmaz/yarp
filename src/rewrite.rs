@@ -64,6 +64,8 @@ pub fn rewrite_with_options(
         wrapper.push_str(&shell_quote(path));
         wrapper.push_str(" --rule-pack-digest ");
         wrapper.push_str(&shell_quote(&digest_hex(&reference.source_digest)));
+        wrapper.push_str(" --rule-pack-compiled-digest ");
+        wrapper.push_str(&shell_quote(&digest_hex(&reference.compiled_digest)));
     }
     if let Some(reference) = archive {
         wrapper.push_str(" --archive-agent ");
