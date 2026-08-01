@@ -1,0 +1,15 @@
+{
+  "id": "guards/git-branch-null",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "branch"
+    ],
+    "argv_contains_all": [
+      "--null"
+    ]
+  },
+  "action": "passthrough"
+}

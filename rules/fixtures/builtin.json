@@ -129,6 +129,115 @@
       "expected_action": "passthrough"
     },
     {
+      "id": "guards-ls-zero-match",
+      "rule_id": "guards/ls-zero",
+      "argv": [
+        "ls",
+        "--zero"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-du-null-match",
+      "rule_id": "guards/du-null",
+      "argv": [
+        "du",
+        "--null",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-du-zero-match",
+      "rule_id": "guards/du-zero",
+      "argv": [
+        "du",
+        "-0",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-grep-zero-match",
+      "rule_id": "guards/git-grep-zero",
+      "argv": [
+        "git",
+        "grep",
+        "-z"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-grep-null-match",
+      "rule_id": "guards/git-grep-null",
+      "argv": [
+        "git",
+        "grep",
+        "--null"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-diff-zero-match",
+      "rule_id": "guards/git-diff-zero",
+      "argv": [
+        "git",
+        "diff",
+        "-z"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-diff-null-match",
+      "rule_id": "guards/git-diff-null",
+      "argv": [
+        "git",
+        "diff",
+        "--null"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-branch-zero-match",
+      "rule_id": "guards/git-branch-zero",
+      "argv": [
+        "git",
+        "branch",
+        "-z"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-branch-null-match",
+      "rule_id": "guards/git-branch-null",
+      "argv": [
+        "git",
+        "branch",
+        "--null"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-log-zero-match",
+      "rule_id": "guards/git-log-zero",
+      "argv": [
+        "git",
+        "log",
+        "-z"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-log-null-match",
+      "rule_id": "guards/git-log-null",
+      "argv": [
+        "git",
+        "log",
+        "--null"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
       "id": "guards-grep-null-match",
       "rule_id": "guards/grep-null",
       "argv": [

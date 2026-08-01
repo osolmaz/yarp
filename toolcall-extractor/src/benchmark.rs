@@ -213,12 +213,16 @@ fn result_succeeded(is_error: Option<bool>, output_json: Option<&str>) -> Option
         return Some(false);
     }
     if let Some(value) = output_json.and_then(|value| serde_json::from_str::<Value>(value).ok()) {
-        let exit_code = value.get("exit_code").and_then(Value::as_i64).or_else(|| {
-            value
-                .get("details")
-                .and_then(|details| details.get("exit_code"))
-                .and_then(Value::as_i64)
-        });
+        let exit_code = ["exit_code", "exitCode"]
+            .into_iter()
+            .find_map(|key| value.get(key).and_then(Value::as_i64))
+            .or_else(|| {
+                value.get("details").and_then(|details| {
+                    ["exit_code", "exitCode"]
+                        .into_iter()
+                        .find_map(|key| details.get(key).and_then(Value::as_i64))
+                })
+            });
         if let Some(exit_code) = exit_code {
             return Some(exit_code == 0);
         }
@@ -285,6 +289,10 @@ mod tests {
         assert_eq!(
             result_succeeded(None, Some(r#"{"details":{"exit_code":0}}"#)),
             Some(true)
+        );
+        assert_eq!(
+            result_succeeded(Some(false), Some(r#"{"details":{"exitCode":2}}"#)),
+            Some(false)
         );
         assert_eq!(
             result_succeeded(None, Some(r#"{"status":"failed"}"#)),
