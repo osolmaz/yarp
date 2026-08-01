@@ -22,7 +22,7 @@ The production engine was evaluated on the same 371,241 stored shell results as 
 | --- | ---: | ---: | ---: |
 | Eligible results | 33,830 | 56,903 | +23,073 |
 | Changed results | 3,481 | 4,136 | +655 |
-| Characters removed | 61,814,796 | 67,524,245 | +5,709,449 |
+| Characters removed | 61,814,796 | 67,524,246 | +5,709,450 |
 | Share of all output removed | 3.18351% | 3.47755% | +0.29404 points |
 
 The command-aware benchmark reads an explicit stored exit code when one is available and otherwise falls back to the stored error flag. The older baseline used only the error flag. Because failure policies retain more context, the comparison is conservative but not an exact policy-for-policy timing comparison. The character reduction increased by 9.24%. The new result cleared a retrospective minimum worthwhile effect of five million additional removed characters and 0.25 percentage points of all output. Shipping still required every safety and semantic gate. Compression alone was not sufficient.
@@ -390,9 +390,9 @@ YARP keeps a short raw stream in a bounded pass-through buffer. The buffer may g
 max_output_bytes + min_savings_bytes
 ```
 
-At finish time, YARP emits the reduced form only when it saves at least `min_savings_bytes`. Otherwise it emits the exact buffered stream.
+At finish time, YARP emits the exact buffered stream only when that stream fits `max_output_bytes` and reduction would save less than `min_savings_bytes`. The hard output cap wins when the raw stream is larger.
 
-Once raw input exceeds that threshold, the raw pass-through buffer is discarded. A valid reducer must then produce output within `max_output_bytes`, which guarantees the required savings. Archive capture remains separate and may still hold the exact raw stream in its private spool.
+Once raw input exceeds the buffering threshold, the raw pass-through buffer is discarded. A valid reducer must then produce output within `max_output_bytes`, which guarantees bounded output. Archive capture remains separate and may still hold the exact raw stream in its private spool.
 
 This gate prevents markers and summaries from expanding short output.
 
