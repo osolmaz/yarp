@@ -1,0 +1,15 @@
+{
+  "id": "guards/ruff-show-settings",
+  "match": {
+    "program": [
+      "ruff"
+    ],
+    "argv_prefix": [
+      "check"
+    ],
+    "argv_contains_all": [
+      "--show-settings"
+    ]
+  },
+  "action": "passthrough"
+}

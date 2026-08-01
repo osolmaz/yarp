@@ -1,0 +1,16 @@
+{
+  "id": "guards/uv-pytest-json-report",
+  "match": {
+    "program": [
+      "uv"
+    ],
+    "argv_prefix": [
+      "run",
+      "pytest"
+    ],
+    "argv_contains_all": [
+      "--json-report"
+    ]
+  },
+  "action": "passthrough"
+}

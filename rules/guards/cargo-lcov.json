@@ -1,0 +1,12 @@
+{
+  "id": "guards/cargo-lcov",
+  "match": {
+    "program": [
+      "cargo"
+    ],
+    "argv_contains_all": [
+      "--lcov"
+    ]
+  },
+  "action": "passthrough"
+}

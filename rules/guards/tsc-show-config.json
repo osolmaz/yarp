@@ -1,0 +1,12 @@
+{
+  "id": "guards/tsc-show-config",
+  "match": {
+    "program": [
+      "tsc"
+    ],
+    "argv_contains_all": [
+      "--showConfig"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "guards/tsc-generate-trace",
+  "match": {
+    "program": [
+      "tsc"
+    ],
+    "argv_contains_all": [
+      "--generateTrace"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,17 @@
+{
+  "id": "guards/python-pytest-json-report",
+  "match": {
+    "program": [
+      "python",
+      "python3"
+    ],
+    "argv_prefix": [
+      "-m",
+      "pytest"
+    ],
+    "argv_contains_all": [
+      "--json-report"
+    ]
+  },
+  "action": "passthrough"
+}

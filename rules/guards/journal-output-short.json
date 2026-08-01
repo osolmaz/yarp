@@ -1,0 +1,12 @@
+{
+  "id": "guards/journal-output-short",
+  "match": {
+    "program": [
+      "journalctl"
+    ],
+    "argv_contains_all": [
+      "-o"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "guards/cargo-codecov",
+  "match": {
+    "program": [
+      "cargo"
+    ],
+    "argv_contains_all": [
+      "--codecov"
+    ]
+  },
+  "action": "passthrough"
+}

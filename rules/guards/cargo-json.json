@@ -1,0 +1,12 @@
+{
+  "id": "guards/cargo-json",
+  "match": {
+    "program": [
+      "cargo"
+    ],
+    "argv_contains_all": [
+      "--json"
+    ]
+  },
+  "action": "passthrough"
+}

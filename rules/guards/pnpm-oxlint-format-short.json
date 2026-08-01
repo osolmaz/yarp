@@ -1,0 +1,16 @@
+{
+  "id": "guards/pnpm-oxlint-format-short",
+  "match": {
+    "program": [
+      "pnpm"
+    ],
+    "argv_prefix": [
+      "exec",
+      "oxlint"
+    ],
+    "argv_contains_all": [
+      "-f"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "guards/mypy-short-output",
+  "match": {
+    "program": [
+      "mypy"
+    ],
+    "argv_contains_all": [
+      "-O"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "guards/npx-eslint-format-long",
+  "match": {
+    "program": [
+      "npx"
+    ],
+    "argv_prefix": [
+      "eslint"
+    ],
+    "argv_contains_all": [
+      "--format"
+    ]
+  },
+  "action": "passthrough"
+}

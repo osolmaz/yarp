@@ -1,0 +1,12 @@
+{
+  "id": "guards/systemctl-output-long",
+  "match": {
+    "program": [
+      "systemctl"
+    ],
+    "argv_contains_all": [
+      "--output"
+    ]
+  },
+  "action": "passthrough"
+}

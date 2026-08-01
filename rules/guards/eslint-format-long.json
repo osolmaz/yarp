@@ -1,0 +1,12 @@
+{
+  "id": "guards/eslint-format-long",
+  "match": {
+    "program": [
+      "eslint"
+    ],
+    "argv_contains_all": [
+      "--format"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "guards/ruff-output-format",
+  "match": {
+    "program": [
+      "ruff"
+    ],
+    "argv_prefix": [
+      "check"
+    ],
+    "argv_contains_all": [
+      "--output-format"
+    ]
+  },
+  "action": "passthrough"
+}
