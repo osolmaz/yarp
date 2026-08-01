@@ -1,5 +1,8 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::ops::Deref;
 use std::path::Path;
 
 use rusqlite::OpenFlags;
@@ -75,7 +78,7 @@ pub fn extract(
                     target,
                 )
             },
-            |target| flush_pending(&context, &mut file_state.borrow_mut(), target),
+            |target| flush_pending(entry.path(), &mut file_state.borrow_mut(), target),
         )?;
         if did_process {
             processed = processed.saturating_add(1);
@@ -191,21 +194,33 @@ impl CodexContext {
 #[derive(Default)]
 struct FileState {
     calls: HashMap<String, String>,
-    pending_results: BTreeMap<String, Vec<PendingResult>>,
+    pending_results: BTreeMap<String, Vec<PendingResultLocation>>,
 }
 
-struct PendingResult {
+struct PendingResultLocation {
     line_number: u64,
     byte_offset: u64,
     record_sha256: Vec<u8>,
     call_key: String,
     returned_at_ms: Option<i64>,
     is_error: Option<bool>,
-    output_text: Option<String>,
-    output_json: Option<String>,
     native_record_kind: String,
     source_item_key: String,
     record_kind: RecordKind,
+}
+
+struct PendingResult {
+    location: PendingResultLocation,
+    output_text: Option<String>,
+    output_json: Option<String>,
+}
+
+impl Deref for PendingResult {
+    type Target = PendingResultLocation;
+
+    fn deref(&self) -> &Self::Target {
+        &self.location
+    }
 }
 
 struct ResultPayload {
@@ -341,21 +356,17 @@ fn canonical_result(
     };
     let call_key = resolve_call(context, native_call_id, state, sink)?
         .unwrap_or_else(|| call_key(context, native_call_id));
-    let output = payload.get("output").or_else(|| payload.get("tools"));
-    let (output_text, output_json) = output_parts(output)?;
     state
         .pending_results
         .entry(native_call_id.to_owned())
         .or_default()
-        .push(PendingResult {
+        .push(PendingResultLocation {
             line_number: line.number,
             byte_offset: line.byte_offset,
             record_sha256: line.record_sha256.clone(),
             call_key,
             returned_at_ms: outer_timestamp(outer),
             is_error: payload.get("is_error").and_then(Value::as_bool),
-            output_text,
-            output_json,
             native_record_kind: kind.to_owned(),
             source_item_key: source_item_key.to_owned(),
             record_kind: RecordKind::Canonical,
@@ -413,20 +424,17 @@ fn projection_result(
         state.calls.insert(native_call_id.to_owned(), key.clone());
         key
     };
-    let (output_text, output_json) = projection_output(payload)?;
     state
         .pending_results
         .entry(native_call_id.to_owned())
         .or_default()
-        .push(PendingResult {
+        .push(PendingResultLocation {
             line_number: line.number,
             byte_offset: line.byte_offset,
             record_sha256: line.record_sha256.clone(),
             call_key,
             returned_at_ms: outer_timestamp(outer),
             is_error: projection_error(payload),
-            output_text,
-            output_json,
             native_record_kind: kind.to_owned(),
             source_item_key: source_item_key.to_owned(),
             record_kind: RecordKind::Projection,
@@ -434,12 +442,13 @@ fn projection_result(
     Ok(())
 }
 
-fn flush_pending(
-    _context: &CodexContext,
-    state: &mut FileState,
-    sink: &mut dyn Sink,
-) -> Result<()> {
-    for candidates in std::mem::take(&mut state.pending_results).into_values() {
+fn flush_pending(path: &Path, state: &mut FileState, sink: &mut dyn Sink) -> Result<()> {
+    let mut file = File::open(path).map_err(|error| Error::io(path, error))?;
+    for locations in std::mem::take(&mut state.pending_results).into_values() {
+        let candidates = locations
+            .into_iter()
+            .map(|location| load_pending_result(path, &mut file, location))
+            .collect::<Result<Vec<_>>>()?;
         if let Some(payload) = merge_result_payloads(&candidates)? {
             write_result(&candidates, payload, sink)?;
             continue;
@@ -455,6 +464,52 @@ fn flush_pending(
         }
     }
     Ok(())
+}
+
+fn load_pending_result(
+    path: &Path,
+    file: &mut File,
+    location: PendingResultLocation,
+) -> Result<PendingResult> {
+    file.seek(SeekFrom::Start(location.byte_offset))
+        .map_err(|error| Error::io(path, error))?;
+    let mut bytes = Vec::new();
+    BufReader::new(&mut *file)
+        .read_until(b'\n', &mut bytes)
+        .map_err(|error| Error::io(path, error))?;
+    if !bytes.ends_with(b"\n") || keys::sha256(&bytes) != location.record_sha256 {
+        return Err(Error::InvalidSource(format!(
+            "Codex result record changed while reading {}",
+            path.display()
+        )));
+    }
+    let outer: Value = serde_json::from_slice(&bytes)?;
+    let payload = outer
+        .get("payload")
+        .and_then(Value::as_object)
+        .ok_or_else(|| Error::InvalidSource("Codex result payload is missing".to_owned()))?;
+    if payload.get("type").and_then(Value::as_str) != Some(location.native_record_kind.as_str()) {
+        return Err(Error::InvalidSource(
+            "Codex result type changed while reading".to_owned(),
+        ));
+    }
+    let (output_text, output_json) = match location.record_kind {
+        RecordKind::Canonical => {
+            let output = payload.get("output").or_else(|| payload.get("tools"));
+            output_parts(output)?
+        }
+        RecordKind::Projection => projection_output(payload)?,
+        RecordKind::Validation => {
+            return Err(Error::InvalidSource(
+                "Codex result cannot be a validation record".to_owned(),
+            ));
+        }
+    };
+    Ok(PendingResult {
+        location,
+        output_text,
+        output_json,
+    })
 }
 
 fn merge_result_payloads(candidates: &[PendingResult]) -> Result<Option<ResultPayload>> {
