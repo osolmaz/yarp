@@ -91,6 +91,7 @@ fn pi_import_resumes_an_appended_result() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn codex_imports_calls_and_outputs() {
     let temp = tempfile::tempdir().expect("tempdir");
     let sessions = temp.path().join("sessions");
@@ -119,6 +120,9 @@ fn codex_imports_calls_and_outputs() {
         serde_json::json!({"type":"response_item","payload":{"type":"function_call","call_id":"c11","name":"exec_command","arguments":"{\"cmd\":\"printf canonical\"}"}}),
         serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c11","output":"canonical text"}}),
         serde_json::json!({"type":"event_msg","payload":{"type":"exec_command_end","call_id":"c11","output":"projection text","status":"completed","exit_code":0}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"function_call","call_id":"c12","name":"exec_command","arguments":"{\"cmd\":\"true\"}"}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c12","output":"text variant"}}),
+        serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c12","output":{"status":"structured variant"}}}),
         serde_json::json!({"type":"response_item","payload":{"type":"ignored"}}),
         serde_json::json!({"type":"event_msg","payload":{}}),
     ];
@@ -155,10 +159,10 @@ fn codex_imports_calls_and_outputs() {
     adapters::codex::extract("test", &sessions, Some(&state_path), &mut db).expect("extract");
     db.finish(true).expect("finish");
     let stats = Database::stats(&path).expect("stats");
-    assert_eq!(stats.tool_calls, 11);
-    assert_eq!(stats.tool_results, 12);
+    assert_eq!(stats.tool_calls, 12);
+    assert_eq!(stats.tool_results, 14);
     assert_eq!(stats.calls_without_results, 0);
-    assert_eq!(stats.calls_with_conflicting_results, 1);
+    assert_eq!(stats.calls_with_conflicting_results, 2);
     assert_eq!(stats.issues, 2);
 
     let connection = Database::open_read_only(&path).expect("read-only database");
@@ -233,6 +237,51 @@ fn codex_retains_a_result_until_an_appended_call_resolves_it() {
     let resolved = Database::verify(&path).expect("resolved verification");
     assert_eq!(resolved.orphan_results, 0);
     assert!(resolved.is_valid());
+}
+
+#[test]
+fn codex_reconciles_a_projection_appended_after_its_result() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let sessions = temp.path().join("sessions");
+    fs::create_dir(&sessions).expect("sessions");
+    let rollout = sessions.join("rollout.jsonl");
+    fs::write(
+        &rollout,
+        concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"exec_command\",\"arguments\":\"{}\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":\"canonical\"}}\n"
+        ),
+    )
+    .expect("initial rollout");
+    let path = temp.path().join("data/toolcalls.duckdb");
+    let mut db = database(&path, "codex");
+    adapters::codex::extract("test", &sessions, None, &mut db).expect("initial extract");
+    db.finish(true).expect("initial finish");
+    drop(db);
+
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&rollout)
+        .expect("open rollout")
+        .write_all(
+            b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"exec_command_end\",\"call_id\":\"c1\",\"output\":\"projection\",\"status\":\"completed\"}}\n",
+        )
+        .expect("append projection");
+    let mut db = database(&path, "codex");
+    adapters::codex::extract("test", &sessions, None, &mut db).expect("resume extract");
+    db.finish(true).expect("resume finish");
+    drop(db);
+
+    let stats = Database::stats(&path).expect("stats");
+    assert_eq!(stats.tool_calls, 1);
+    assert_eq!(stats.tool_results, 1);
+    assert_eq!(stats.calls_with_conflicting_results, 0);
+    let connection = Database::open_read_only(&path).expect("read-only database");
+    let output_json: String = connection
+        .query_row("SELECT output_json FROM tool_results", [], |row| row.get(0))
+        .expect("projection JSON");
+    assert!(output_json.contains("projection"));
 }
 
 #[test]
@@ -384,6 +433,50 @@ fn command_line_extracts_streams_reports_and_benchmarks() {
         .output()
         .expect("replacement stream");
     assert!(replacement.status.success());
+    let frames = replacement
+        .stdout
+        .split_inclusive(|byte| *byte == b'\n')
+        .collect::<Vec<_>>();
+    assert!(frames.len() >= 2);
+    let commit: toolcall_extractor::model::StreamRecord =
+        serde_json::from_slice(frames[frames.len() - 2]).expect("source commit frame");
+    assert!(matches!(
+        commit,
+        toolcall_extractor::model::StreamRecord::SourceCommit
+    ));
+    let truncated = frames[..frames.len() - 2].concat();
+    let mut truncated_ingest = extractor()
+        .args([
+            "ingest",
+            "--database",
+            streamed_database.to_str().expect("database"),
+            "--unix-user",
+            "test",
+            "--agent",
+            "pi",
+        ])
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("spawn truncated ingest");
+    truncated_ingest
+        .stdin
+        .take()
+        .expect("truncated ingest stdin")
+        .write_all(&truncated)
+        .expect("write truncated stream");
+    assert!(
+        !truncated_ingest
+            .wait()
+            .expect("truncated ingest status")
+            .success()
+    );
+    let connection = Database::open_read_only(&streamed_database).expect("preserved database");
+    let preserved_input: String = connection
+        .query_row("SELECT input_text FROM tool_calls", [], |row| row.get(0))
+        .expect("preserved call");
+    assert!(preserved_input.contains("cargo test"));
+    drop(connection);
+
     let mut replacement_ingest = extractor()
         .args([
             "ingest",

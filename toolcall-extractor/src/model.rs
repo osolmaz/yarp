@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const ADAPTER_VERSION: u32 = 3;
+pub const ADAPTER_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SourceRootRecord {
@@ -170,6 +170,11 @@ impl Severity {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "record", content = "value", rename_all = "snake_case")]
 pub enum StreamRecord {
+    StreamStart,
+    StreamEnd,
+    SourceStart,
+    SourceCommit,
+    SourceRollback,
     SourceRoot(SourceRootRecord),
     SourceItem(SourceItemRecord),
     ResetSource(String),

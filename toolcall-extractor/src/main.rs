@@ -143,8 +143,9 @@ fn extract(arguments: ExtractArgs) -> Result<()> {
 fn stream_source(arguments: &StreamArgs) -> Result<()> {
     let stdout = io::stdout();
     let mut sink = JsonlSink::new(stdout.lock());
+    sink.start_stream()?;
     run_source(&arguments.unix_user, &arguments.source, &mut sink)?;
-    Ok(())
+    sink.finish_stream()
 }
 
 fn ingest(arguments: IngestArgs) -> Result<()> {

@@ -32,8 +32,29 @@ pub fn first_json_value(path: &Path) -> Result<Option<serde_json::Value>> {
 
 pub fn process_jsonl(
     path: &Path,
+    source_item: SourceItemRecord,
+    sink: &mut impl Sink,
+    handle: impl FnMut(&JsonLine, &serde_json::Value, &mut dyn Sink) -> Result<()>,
+    finish: impl FnMut(&mut dyn Sink) -> Result<()>,
+) -> Result<bool> {
+    process_jsonl_mode(path, source_item, sink, true, handle, finish)
+}
+
+pub fn process_jsonl_from_start(
+    path: &Path,
+    source_item: SourceItemRecord,
+    sink: &mut impl Sink,
+    handle: impl FnMut(&JsonLine, &serde_json::Value, &mut dyn Sink) -> Result<()>,
+    finish: impl FnMut(&mut dyn Sink) -> Result<()>,
+) -> Result<bool> {
+    process_jsonl_mode(path, source_item, sink, false, handle, finish)
+}
+
+fn process_jsonl_mode(
+    path: &Path,
     mut source_item: SourceItemRecord,
     sink: &mut impl Sink,
+    allow_resume: bool,
     mut handle: impl FnMut(&JsonLine, &serde_json::Value, &mut dyn Sink) -> Result<()>,
     mut finish: impl FnMut(&mut dyn Sink) -> Result<()>,
 ) -> Result<bool> {
@@ -42,9 +63,16 @@ pub fn process_jsonl(
         return Ok(false);
     }
 
-    let (start, prefix_issue) = resume_offset(path, sink, &source_item.source_item_key, before)?;
+    let (start, prefix_issue, reset_source) = if allow_resume {
+        let (start, issue) = resume_offset(path, sink, &source_item.source_item_key, before)?;
+        let reset = issue.is_some();
+        (start, issue, reset)
+    } else {
+        let reset = sink.checkpoint(&source_item.source_item_key)?.is_some();
+        (0, None, reset)
+    };
     sink.begin_source()?;
-    if prefix_issue.is_some() {
+    if reset_source {
         sink.reset_source(&source_item.source_item_key)?;
     }
     source_item.device_id = Some(before.device_id);
