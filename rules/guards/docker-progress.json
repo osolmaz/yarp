@@ -1,0 +1,12 @@
+{
+  "id": "guards/docker-progress",
+  "match": {
+    "program": [
+      "docker"
+    ],
+    "argv_contains_all": [
+      "--progress"
+    ]
+  },
+  "action": "passthrough"
+}
