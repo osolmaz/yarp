@@ -1,6 +1,7 @@
 use rusqlite::blob::Blob;
 use rusqlite::{
-    Connection, MAIN_DB, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+    Connection, ErrorCode, MAIN_DB, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+    params,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -264,9 +265,7 @@ impl Archive {
         connection
             .pragma_update(None, "foreign_keys", "ON")
             .map_err(|error| format!("could not enable archive foreign keys: {error}"))?;
-        connection
-            .pragma_update(None, "journal_mode", "WAL")
-            .map_err(|error| format!("could not enable archive WAL mode: {error}"))?;
+        enable_wal_mode(&connection)?;
         connection
             .pragma_update(None, "synchronous", "FULL")
             .map_err(|error| format!("could not set archive sync mode: {error}"))?;
@@ -1194,6 +1193,28 @@ pub fn archive_path() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home).join(".local/share/yarp/tool-calls.sqlite3"))
 }
 
+fn enable_wal_mode(connection: &Connection) -> Result<(), String> {
+    const ATTEMPTS: usize = 100;
+    for attempt in 0..ATTEMPTS {
+        match connection.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => return Ok(()),
+            Err(error) if is_lock_error(&error) && attempt + 1 < ATTEMPTS => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(format!("could not enable archive WAL mode: {error}")),
+        }
+    }
+    unreachable!("WAL retry loop always returns")
+}
+
+fn is_lock_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(inner, _)
+            if matches!(inner.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+    )
+}
+
 fn initialize_schema(connection: &mut Connection) -> Result<(), String> {
     connection
         .pragma_update(None, "auto_vacuum", "INCREMENTAL")
@@ -1654,12 +1675,7 @@ fn prepare_path(path: &Path, repair_existing_directory: bool) -> Result<(), Stri
         .parent()
         .ok_or_else(|| format!("archive path {} has no parent", path.display()))?;
     let parent_existed = parent.exists();
-    fs::create_dir_all(parent).map_err(|error| {
-        format!(
-            "could not create archive directory {}: {error}",
-            parent.display()
-        )
-    })?;
+    create_archive_directory(parent)?;
     if !parent_existed || repair_existing_directory {
         set_file_mode(parent, 0o700)?;
     } else {
@@ -1676,6 +1692,22 @@ fn prepare_path(path: &Path, repair_existing_directory: bool) -> Result<(), Stri
         .open(path)
         .map_err(|error| format!("could not create archive {}: {error}", path.display()))?;
     set_file_mode(path, 0o600)
+}
+
+fn create_archive_directory(path: &Path) -> Result<(), String> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder.create(path).map_err(|error| {
+        format!(
+            "could not create archive directory {}: {error}",
+            path.display()
+        )
+    })
 }
 
 #[cfg(unix)]
