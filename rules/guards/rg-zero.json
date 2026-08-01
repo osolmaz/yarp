@@ -1,0 +1,12 @@
+{
+  "id": "guards/rg-zero",
+  "match": {
+    "program": [
+      "rg"
+    ],
+    "argv_contains_all": [
+      "-0"
+    ]
+  },
+  "action": "passthrough"
+}

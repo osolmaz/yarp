@@ -60,7 +60,10 @@ fn rewrite_has_clear_success_and_passthrough_statuses() {
     assert!(rewritten.status.success());
     assert_eq!(
         String::from_utf8_lossy(&rewritten.stdout),
-        "yarp run -- cargo test --workspace"
+        format!(
+            "yarp run --selected-pack 'yarp-builtins' --selected-rule 'rust/cargo-test' --selected-digest '{}' -- cargo test --workspace",
+            yarp_cli::rules::digest_hex(&yarp_cli::rules::BUILTIN_SOURCE_DIGEST)
+        )
     );
 
     let archived = yarp(&[
@@ -87,7 +90,7 @@ fn rewrite_has_clear_success_and_passthrough_statuses() {
 fn rejects_invalid_cli_and_disallowed_direct_execution() {
     let invalid = yarp(&["rewrite"]);
     assert_eq!(invalid.status.code(), Some(64));
-    assert!(String::from_utf8_lossy(&invalid.stderr).contains("invalid arguments"));
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("rewrite requires"));
 
     let disallowed = yarp(&["run", "--", "cat", ".env"]);
     assert_eq!(disallowed.status.code(), Some(64));
@@ -229,6 +232,81 @@ fn archives_raw_and_pruned_shell_streams() {
         )
         .expect("stdout hashes");
     assert_eq!(distinct_stdout, 2);
+}
+
+#[test]
+fn rewrite_disagreement_archives_and_emits_exact_passthrough_streams() {
+    let directory = TempDir::new().expect("temp directory");
+    let database = directory.path().join("archive/tool-calls.sqlite3");
+    let left = directory.path().join("left");
+    let right = directory.path().join("right");
+    let left_text = numbered_lines("left", 260);
+    let right_text = numbered_lines("right", 260);
+    std::fs::write(&left, &left_text).expect("write left");
+    std::fs::write(&right, &right_text).expect("write right");
+
+    let mut archive = Archive::open_path(database.clone()).expect("archive");
+    archive
+        .begin_call(
+            &session(),
+            &call("call-passthrough", "exec_command"),
+            &json!({}),
+            &json!({}),
+            20,
+        )
+        .expect("begin call");
+    drop(archive);
+
+    let selected_digest = yarp_cli::rules::digest_hex(&yarp_cli::rules::BUILTIN_SOURCE_DIGEST);
+    let output = Command::new(env!("CARGO_BIN_EXE_yarp"))
+        .args([
+            "run",
+            "--selected-pack",
+            "yarp-builtins",
+            "--selected-rule",
+            "different-rule",
+            "--selected-digest",
+        ])
+        .arg(selected_digest)
+        .args([
+            "--archive-agent",
+            "pi",
+            "--archive-account",
+            "test",
+            "--archive-session",
+            "session-1",
+            "--archive-call",
+            "call-passthrough",
+            "--",
+            "git",
+            "diff",
+            "--no-index",
+        ])
+        .arg(&left)
+        .arg(&right)
+        .env("YARP_ARCHIVE_PATH", &database)
+        .output()
+        .expect("passthrough diff");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("[yarp:"));
+
+    let connection = Connection::open(database).expect("sqlite");
+    let snapshots: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM snapshots WHERE subject = 'stdout'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("stdout snapshots");
+    let distinct: i64 = connection
+        .query_row(
+            "SELECT count(DISTINCT hex(payload_sha256)) FROM snapshots WHERE subject = 'stdout'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("stdout hashes");
+    assert_eq!(snapshots, 2);
+    assert_eq!(distinct, 1);
 }
 
 #[test]

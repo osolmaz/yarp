@@ -1,0 +1,29 @@
+{
+  "id": "go/build",
+  "match": {
+    "program": [
+      "go"
+    ],
+    "argv_prefix": [
+      "build"
+    ]
+  },
+  "action": "reduce",
+  "reducer": {
+    "kind": "head_tail"
+  },
+  "success": {
+    "head_lines": 48,
+    "tail_lines": 32,
+    "max_line_bytes": 16384,
+    "max_output_bytes": 65536,
+    "min_savings_bytes": 256
+  },
+  "failure": {
+    "head_lines": 180,
+    "tail_lines": 80,
+    "max_line_bytes": 32768,
+    "max_output_bytes": 163840,
+    "min_savings_bytes": 256
+  }
+}

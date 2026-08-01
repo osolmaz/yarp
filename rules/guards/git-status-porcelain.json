@@ -1,0 +1,15 @@
+{
+  "id": "guards/git-status-porcelain",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "status"
+    ],
+    "argv_contains_all": [
+      "--porcelain"
+    ]
+  },
+  "action": "passthrough"
+}

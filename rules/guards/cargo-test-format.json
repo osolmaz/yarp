@@ -1,0 +1,15 @@
+{
+  "id": "guards/cargo-test-format",
+  "match": {
+    "program": [
+      "cargo"
+    ],
+    "argv_prefix": [
+      "test"
+    ],
+    "argv_contains_all": [
+      "--format"
+    ]
+  },
+  "action": "passthrough"
+}

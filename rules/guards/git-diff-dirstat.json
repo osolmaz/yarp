@@ -1,0 +1,15 @@
+{
+  "id": "guards/git-diff-dirstat",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "diff"
+    ],
+    "argv_contains_all": [
+      "--dirstat"
+    ]
+  },
+  "action": "passthrough"
+}

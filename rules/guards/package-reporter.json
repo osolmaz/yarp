@@ -1,0 +1,16 @@
+{
+  "id": "guards/package-reporter",
+  "match": {
+    "program": [
+      "npm",
+      "pnpm",
+      "yarn",
+      "bun",
+      "npx"
+    ],
+    "argv_contains_all": [
+      "--reporter"
+    ]
+  },
+  "action": "passthrough"
+}

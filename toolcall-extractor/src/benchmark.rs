@@ -28,6 +28,10 @@ pub struct BenchmarkReport {
     pub evaluated_output_characters: u64,
     pub shell_results: u64,
     pub eligible_results: u64,
+    pub passthrough_results: u64,
+    pub ambiguous_results: u64,
+    pub unsupported_results: u64,
+    pub unknown_status_results: u64,
     pub affected_results: u64,
     pub affected_percent_of_eligible: f64,
     pub eligible_original_characters: u64,
@@ -45,12 +49,14 @@ pub struct BenchmarkReport {
     pub processed_megabytes_per_second: f64,
     pub by_agent: BTreeMap<String, PruningMetrics>,
     pub by_tool: BTreeMap<String, PruningMetrics>,
+    pub by_rule: BTreeMap<String, PruningMetrics>,
 }
 
 pub fn run(path: &Path) -> Result<BenchmarkReport> {
     let connection = Database::open_read_only(path)?;
     let mut statement = connection.prepare(
-        "SELECT s.agent, c.tool_name, c.input_format, c.input_text, r.output_text
+        "SELECT s.agent, c.tool_name, c.input_format, c.input_text, r.output_text, r.is_error,
+                r.output_json
          FROM tool_calls c
          JOIN sessions s ON s.session_key = c.session_key
          JOIN tool_results r ON r.call_key = c.call_key
@@ -61,15 +67,22 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
     let mut evaluated_results = 0_u64;
     let mut evaluated_output_characters = 0_u64;
     let mut shell_results = 0_u64;
+    let mut passthrough_results = 0_u64;
+    let mut ambiguous_results = 0_u64;
+    let mut unsupported_results = 0_u64;
+    let mut unknown_status_results = 0_u64;
     let mut total = PruningMetrics::default();
     let mut by_agent = BTreeMap::<String, PruningMetrics>::new();
     let mut by_tool = BTreeMap::<String, PruningMetrics>::new();
+    let mut by_rule = BTreeMap::<String, PruningMetrics>::new();
     while let Some(row) = rows.next()? {
         let agent: String = row.get(0)?;
         let tool: String = row.get(1)?;
         let input_format: String = row.get(2)?;
         let input: String = row.get(3)?;
         let output: String = row.get(4)?;
+        let is_error: Option<bool> = row.get(5)?;
+        let output_json: Option<String> = row.get(6)?;
         evaluated_results = evaluated_results.saturating_add(1);
         evaluated_output_characters = evaluated_output_characters
             .saturating_add(u64::try_from(output.chars().count()).unwrap_or(u64::MAX));
@@ -77,14 +90,43 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
             continue;
         };
         shell_results = shell_results.saturating_add(1);
-        if yarp_cli::rewrite::rewrite(&command).is_none() {
+        let Ok((_, selection)) = yarp_cli::rewrite::select_builtin_command(&command) else {
+            unsupported_results = unsupported_results.saturating_add(1);
             continue;
+        };
+        let selected = match selection {
+            yarp_cli::rules::Selection::Reduce(selected) => selected,
+            yarp_cli::rules::Selection::Passthrough(_) => {
+                passthrough_results = passthrough_results.saturating_add(1);
+                continue;
+            }
+            yarp_cli::rules::Selection::Ambiguous(_) => {
+                ambiguous_results = ambiguous_results.saturating_add(1);
+                continue;
+            }
+            yarp_cli::rules::Selection::Unsupported => {
+                unsupported_results = unsupported_results.saturating_add(1);
+                continue;
+            }
+        };
+        let succeeded = result_succeeded(is_error, output_json.as_deref());
+        if succeeded.is_none() {
+            unknown_status_results = unknown_status_results.saturating_add(1);
         }
-        let pruned = yarp_cli::runner::prune_bytes(output.as_bytes());
+        let pruned = yarp_cli::reducers::reduce_bytes(
+            &selected.rule,
+            output.as_bytes(),
+            succeeded.unwrap_or(false),
+        )
+        .unwrap_or_else(|_| output.as_bytes().to_vec());
         let metrics = measure(&output, &pruned);
         total.add(&metrics);
         by_agent.entry(agent).or_default().add(&metrics);
         by_tool.entry(tool).or_default().add(&metrics);
+        by_rule
+            .entry(format!("{}/{}", selected.pack_id, selected.rule.id))
+            .or_default()
+            .add(&metrics);
     }
     let elapsed = started.elapsed();
     let seconds = elapsed.as_secs_f64();
@@ -93,6 +135,10 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
         evaluated_output_characters,
         shell_results,
         eligible_results: total.results,
+        passthrough_results,
+        ambiguous_results,
+        unsupported_results,
+        unknown_status_results,
         affected_results: total.affected_results,
         affected_percent_of_eligible: percent(total.affected_results, total.results),
         eligible_original_characters: total.original_characters,
@@ -117,6 +163,7 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
         },
         by_agent,
         by_tool,
+        by_rule,
     })
 }
 
@@ -159,6 +206,27 @@ fn measure(output: &str, pruned: &[u8]) -> PruningMetrics {
         original_lines: line_count(output.as_bytes()),
         pruned_lines: line_count(pruned),
     }
+}
+
+fn result_succeeded(is_error: Option<bool>, output_json: Option<&str>) -> Option<bool> {
+    if is_error == Some(true) {
+        return Some(false);
+    }
+    if let Some(value) = output_json.and_then(|value| serde_json::from_str::<Value>(value).ok()) {
+        let exit_code = value.get("exit_code").and_then(Value::as_i64).or_else(|| {
+            value
+                .get("details")
+                .and_then(|details| details.get("exit_code"))
+                .and_then(Value::as_i64)
+        });
+        if let Some(exit_code) = exit_code {
+            return Some(exit_code == 0);
+        }
+        if value.get("status").and_then(Value::as_str) == Some("failed") {
+            return Some(false);
+        }
+    }
+    is_error.map(|value| !value)
 }
 
 fn shell_command(tool: &str, input_format: &str, input: &str) -> Option<String> {
@@ -209,9 +277,32 @@ mod tests {
     }
 
     #[test]
+    fn prefers_explicit_exit_status() {
+        assert_eq!(
+            result_succeeded(Some(false), Some(r#"{"exit_code":1}"#)),
+            Some(false)
+        );
+        assert_eq!(
+            result_succeeded(None, Some(r#"{"details":{"exit_code":0}}"#)),
+            Some(true)
+        );
+        assert_eq!(
+            result_succeeded(None, Some(r#"{"status":"failed"}"#)),
+            Some(false)
+        );
+        assert_eq!(result_succeeded(None, None), None);
+    }
+
+    #[test]
     fn measures_removed_output() {
         let output = (0..250).map(|line| format!("{line}\n")).collect::<String>();
-        let pruned = yarp_cli::runner::prune_bytes(output.as_bytes());
+        let (_, selection) =
+            yarp_cli::rewrite::select_builtin_command("cargo test").expect("selection");
+        let yarp_cli::rules::Selection::Reduce(selected) = selection else {
+            panic!("expected reduction rule");
+        };
+        let pruned = yarp_cli::reducers::reduce_bytes(&selected.rule, output.as_bytes(), true)
+            .expect("reduction");
         let metrics = measure(&output, &pruned);
         assert_eq!(metrics.affected_results, 1);
         assert!(metrics.removed_characters > 0);

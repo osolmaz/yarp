@@ -1,0 +1,15 @@
+{
+  "id": "guards/git-status-nul",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "status"
+    ],
+    "argv_contains_all": [
+      "-z"
+    ]
+  },
+  "action": "passthrough"
+}

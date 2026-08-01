@@ -1,4 +1,7 @@
 import assert from "node:assert/strict"
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import test from "node:test"
 import type {
   ExecOptions,
@@ -13,7 +16,11 @@ import type {
   ArchiveSession,
   ArchiveSink,
 } from "./archive-client.js"
-import { commandBinding, installYarpExtension } from "./yarp.js"
+import {
+  commandBinding,
+  installYarpExtension,
+  trustedProjectRulePack,
+} from "./yarp.js"
 
 type EventName = keyof ExtensionEventMap
 type Handler<K extends EventName> = (
@@ -159,6 +166,7 @@ class MemorySink implements ArchiveSink {
 const context: ExtensionContext = {
   signal: new AbortController().signal,
   cwd: "/repo",
+  isProjectTrusted: () => false,
   sessionManager: { getSessionId: () => "session-1" },
   model: { provider: "openai", id: "gpt" },
 }
@@ -167,12 +175,16 @@ function result(code: number, stdout = ""): ExecResult {
   return { code, stdout, stderr: "", killed: false }
 }
 
-async function start(pi: MockPi, sink: MemorySink): Promise<void> {
+async function start(
+  pi: MockPi,
+  sink: MemorySink,
+  currentContext: ExtensionContext = context,
+): Promise<void> {
   await installYarpExtension(pi, () => sink)
   await pi.registry.emit(
     "session_start",
     { type: "session_start", reason: "startup" },
-    context,
+    currentContext,
   )
 }
 
@@ -181,16 +193,17 @@ async function call(
   toolCallId: string,
   toolName: string,
   input: Record<string, unknown>,
+  currentContext: ExtensionContext = context,
 ): Promise<void> {
   await pi.registry.emit(
     "tool_execution_start",
     { type: "tool_execution_start", toolCallId, toolName, args: structuredClone(input) },
-    context,
+    currentContext,
   )
   await pi.registry.emit(
     "tool_call",
     { type: "tool_call", toolCallId, toolName, input },
-    context,
+    currentContext,
   )
 }
 
@@ -206,6 +219,54 @@ test("finds bash and exec_command inputs", () => {
   assert.equal(commandBinding("read", { path: "file" }), null)
   assert.equal(commandBinding("bash", { command: 4 }), null)
   assert.equal(commandBinding("bash", null), null)
+})
+
+test("uses a compiled project pack only for a trusted regular file", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "yarp-project-rules-"))
+  try {
+    const ruleDirectory = join(directory, ".yarp")
+    const rulePack = join(ruleDirectory, "rules.yrp")
+    await mkdir(ruleDirectory)
+    await writeFile(rulePack, "compiled")
+    const trusted = { cwd: directory, isProjectTrusted: () => true }
+    const untrusted = { cwd: directory, isProjectTrusted: () => false }
+    assert.equal(await trustedProjectRulePack(trusted), rulePack)
+    assert.equal(await trustedProjectRulePack(untrusted), null)
+
+    await rm(rulePack)
+    await symlink("../outside.yrp", rulePack)
+    assert.equal(await trustedProjectRulePack(trusted), null)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("passes a trusted project pack to command rewriting", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "yarp-project-rewrite-"))
+  try {
+    const ruleDirectory = join(directory, ".yarp")
+    const rulePack = join(ruleDirectory, "rules.yrp")
+    await mkdir(ruleDirectory)
+    await writeFile(rulePack, "compiled")
+    const trustedContext: ExtensionContext = {
+      ...context,
+      cwd: directory,
+      isProjectTrusted: () => true,
+    }
+    const pi = new MockPi()
+    const sink = new MemorySink()
+    await start(pi, sink, trustedContext)
+    await call(pi, "project-rules", "bash", { command: "git status" }, trustedContext)
+    assert.deepEqual(pi.rewriteArgs?.slice(0, 5), [
+      "rewrite",
+      "--project-root",
+      directory,
+      "--rule-pack",
+      rulePack,
+    ])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test("archives and rewrites supported shell calls", async () => {

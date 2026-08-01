@@ -12,6 +12,27 @@ The complete local corpus contains 371,241 shell results. The current policy cha
 
 Command-Aware Pruning will improve coverage and reduction while retaining the current safety gates. Compression volume is an optimization metric. It does not authorize a rule to ship when the rule loses information needed to understand a result.
 
+## Implemented result
+
+The implementation now uses 117 independently authored built-in rules. Built-ins compile into indexed Rust data during the build. External source packs use strict JSON, compile explicitly into one indexed `.yrp` file, and load without a server or cache. The runtime has bounded byte-stream reducers for head-and-tail retention, literal line filtering, Cargo tests, Git diffs, Git status, and search output.
+
+The production engine was evaluated on the same 371,241 stored shell results as the baseline:
+
+| Metric | Baseline | Command-aware | Absolute change |
+| --- | ---: | ---: | ---: |
+| Eligible results | 33,830 | 58,732 | +24,902 |
+| Changed results | 3,481 | 4,190 | +709 |
+| Characters removed | 61,814,796 | 68,291,647 | +6,476,851 |
+| Share of all output removed | 3.18351% | 3.51707% | +0.33356 points |
+
+The command-aware benchmark reads an explicit stored exit code when one is available and otherwise falls back to the stored error flag. The older baseline used only the error flag. Because failure policies retain more context, the comparison is conservative but not an exact policy-for-policy timing comparison. The character reduction increased by 10.48%. The new result cleared a retrospective minimum worthwhile effect of five million additional removed characters and 0.25 percentage points of all output. Shipping still required every safety and semantic gate. Compression alone was not sufficient.
+
+A targeted review sampled the 100 largest results for six high-impact rules. The simple diagnostic-word check found that reduced output retained 1,926 of 1,959 Cargo-test diagnostic lines, 2,850 of 3,466 package-test diagnostic lines, 711 of 769 CI-run diagnostic lines, 940 of 1,097 grep diagnostic lines, and 680 of 1,044 ripgrep diagnostic lines. These are targeted structural checks, not corpus-wide semantic-quality rates. Large Git diffs continue to omit changed lines after their explicit budget and mark the omission, so exact object inspection remains protected by pass-through rules.
+
+The standalone performance harness measured built-in matching below one microsecond at p95. A warm 1,000-rule external pack opened and matched in 223 microseconds at p95; its first measured open and match took 270 microseconds. The streaming search reducer processed a 1 GiB synthetic input at 244.79 MB/s with a configured per-stream memory bound of 499,968 bytes. These results are well below the proposed 5 ms external-pack threshold, so a persistent rule process is not justified.
+
+The complete extractor database still verifies with zero orphan calls, results, or observations. Raw benchmark rows, paired outputs, and the private database remain outside Git.
+
 ## Outcome
 
 The completed feature must provide all of the following:
@@ -210,8 +231,8 @@ Rules match parsed arguments. They never search unparsed shell source text for a
 | Field | Required | Default | Meaning |
 | --- | --- | --- | --- |
 | `program` | Yes | None | Accepted executable names. |
-| `argv_prefix` | No | `[]` | Exact argument sequence after the executable. |
-| `argv_contains_all` | No | `[]` | Tokens that must all appear after the executable. |
+| `argv_prefix` | No | `[]` | Exact argument sequence after reviewed program-level options. |
+| `argv_contains_all` | No | `[]` | Tokens that must all appear in the normalized argument tail. |
 
 Unknown matcher fields are errors.
 
@@ -225,7 +246,18 @@ Matching is exact and case-sensitive. Version 1 does not reduce commands invoked
 
 Each argument condition contains at most 64 unique tokens. A token may contain up to 1,024 Unicode scalar values and must not contain a NUL byte.
 
-`argv_prefix` starts at argument index 1. An empty prefix matches every argument list for the selected program. `argv_contains_all` checks complete tokens after the executable and does not perform substring matching.
+Most programs start `argv_prefix` at argument index 1. The engine first skips a closed set of reviewed program-level options for commands that commonly select a working tree or project before their subcommand. Version 1 recognizes these options:
+
+- Git `-C`, `-c`, `--git-dir`, `--work-tree`, and pager/pathspec switches
+- npm `--prefix`
+- pnpm, Yarn, or Bun `-C` and `--dir`
+- uv `--project`
+- GitHub CLI `-R` and `--repo`
+- Cargo `+toolchain`
+
+Options that take values are skipped only when the value is present. Unknown or incomplete options remain in place and prevent a false match.
+
+An empty prefix matches every normalized argument tail for the selected program. `argv_contains_all` checks complete normalized tokens and does not perform substring matching. Long option assignments normalize `--name=value` to include the exact `--name` option token. The reviewed short output option also normalizes `-oVALUE` to include `-o`. Rules cannot match the assigned value through this normalization.
 
 Multiple alternatives should use separate rules. Version 1 does not provide OR groups, negative matchers, regular expressions, shell fragments, or arbitrary boolean expressions in command matching.
 
@@ -851,6 +883,13 @@ The implementation should use this layout:
 
 ```text
 yarp/
+├── rule-pack/
+│   └── src/
+│       ├── compiled.rs
+│       ├── model.rs
+│       ├── source.rs
+│       ├── strict_json.rs
+│       └── validation.rs
 ├── rules/
 │   ├── pack.json
 │   ├── schema/
@@ -888,7 +927,7 @@ yarp/
     └── command-aware-pruning-implementation-plan.md
 ```
 
-The root `yarp-cli` library remains the only live pruning implementation. `toolcall-extractor` depends on that library for benchmarking. A separate rule-engine crate should be added only if another production consumer needs an independent release boundary.
+The root `yarp-cli` library remains the only live pruning implementation. The internal `yarp-rule-pack` crate holds the shared source model, validation, strict JSON decoder, and compiled-pack reader so the build script and runtime cannot drift. It contains no command execution or output reducers. `toolcall-extractor` depends on `yarp-cli` for benchmarking.
 
 ## Implementation stages
 

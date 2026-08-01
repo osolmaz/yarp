@@ -1,56 +1,28 @@
-use std::collections::VecDeque;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::process::{Command, Stdio};
+
 use tempfile::NamedTempFile;
 
-const HEAD_LINES: usize = 160;
-const TAIL_LINES: usize = 40;
-const MAX_LINE_BYTES: usize = 16 * 1024;
+use crate::reducers::StreamReducer;
+use crate::rules::{PackRequest, Registry, SelectedRule, Selection};
 
-#[derive(Debug, Default)]
-struct Captured {
-    head: Vec<Vec<u8>>,
-    tail: VecDeque<Vec<u8>>,
-    total_lines: usize,
-}
-
-impl Captured {
-    fn push_line(&mut self, line: Vec<u8>) {
-        self.total_lines += 1;
-        if self.head.len() < HEAD_LINES {
-            self.head.push(line);
-            return;
-        }
-        if self.tail.len() == TAIL_LINES {
-            self.tail.pop_front();
-        }
-        self.tail.push_back(line);
-    }
-
-    fn render(self) -> Vec<u8> {
-        let omitted = self
-            .total_lines
-            .saturating_sub(self.head.len() + self.tail.len());
-        let mut output = Vec::new();
-        for line in self.head {
-            output.extend(line);
-        }
-        if omitted > 0 {
-            ensure_newline(&mut output);
-            output.extend(format!("[yarp: omitted {omitted} lines]\n").as_bytes());
-        }
-        for line in self.tail {
-            output.extend(line);
-        }
-        output
-    }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpectedSelection {
+    pub pack_id: String,
+    pub rule_id: String,
+    pub source_digest: [u8; 32],
 }
 
 struct CapturedStream {
-    bounded: Captured,
+    output: CapturedOutput,
     raw: Option<RawSpool>,
     archive_error: Option<String>,
     raw_emitted: bool,
+}
+
+enum CapturedOutput {
+    Reduced(Box<StreamReducer>),
+    Passthrough,
 }
 
 struct RawSpool {
@@ -129,25 +101,38 @@ impl RawSpool {
     }
 }
 
-/// Prune one captured output stream with the same limits used for child processes.
-#[must_use]
-pub fn prune_bytes(input: &[u8]) -> Vec<u8> {
-    capture(std::io::Cursor::new(input), None, io::sink())
-        .map_or_else(|_| input.to_vec(), |captured| captured.bounded.render())
-}
-
-/// Run one allowlisted command, prune its two output streams, and return its exit code.
+/// Run one command selected by the built-in rule registry.
 ///
 /// # Errors
 ///
-/// Returns an error when the command is not allowed, cannot run, or its output cannot be read.
+/// Returns an error when the command is not selected, cannot run, or its output cannot be read.
 pub fn run(
     arguments: &[String],
     archive_key: Option<&crate::archive::ArchiveKey>,
 ) -> Result<i32, String> {
-    if !crate::rewrite::is_allowed_argv(arguments) {
-        return Err("command is not on the YARP allowlist".to_owned());
+    run_with_rules(arguments, archive_key, &[], None)
+}
+
+/// Run one command with explicit rule packs and optional rewrite-process agreement metadata.
+///
+/// A changed or unavailable pack after rewrite selects exact pass-through output. Direct invocations
+/// without agreement metadata still reject unsupported commands.
+///
+/// # Errors
+///
+/// Returns an error when direct execution is not selected, the child cannot run, or output cannot
+/// be read or written.
+pub fn run_with_rules(
+    arguments: &[String],
+    archive_key: Option<&crate::archive::ArchiveKey>,
+    packs: &[PackRequest],
+    expected: Option<&ExpectedSelection>,
+) -> Result<i32, String> {
+    if arguments.is_empty() {
+        return Err("child command is missing".to_owned());
     }
+    let selected = select_rule(arguments, packs, expected)?;
+    let passthrough = selected.is_none();
 
     let (stdout_spool, stderr_spool) = if archive_key.is_some() {
         (
@@ -163,6 +148,15 @@ pub fn run(
     } else {
         (None, None)
     };
+
+    let stdout_output = selected
+        .as_ref()
+        .map(|selected| StreamReducer::new(&selected.rule))
+        .transpose()?;
+    let stderr_output = selected
+        .as_ref()
+        .map(|selected| StreamReducer::new(&selected.rule))
+        .transpose()?;
 
     let mut child = Command::new(&arguments[0])
         .args(&arguments[1..])
@@ -181,18 +175,99 @@ pub fn run(
         .take()
         .ok_or_else(|| "could not capture child stderr".to_owned())?;
 
-    let stdout_thread = std::thread::spawn(move || capture(stdout, stdout_spool, io::stdout()));
-    let stderr_thread = std::thread::spawn(move || capture(stderr, stderr_spool, io::stderr()));
+    let stdout_thread = std::thread::spawn(move || {
+        capture(
+            stdout,
+            stdout_spool,
+            io::stdout(),
+            stdout_output.map_or(CapturedOutput::Passthrough, |reducer| {
+                CapturedOutput::Reduced(Box::new(reducer))
+            }),
+        )
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        capture(
+            stderr,
+            stderr_spool,
+            io::stderr(),
+            stderr_output.map_or(CapturedOutput::Passthrough, |reducer| {
+                CapturedOutput::Reduced(Box::new(reducer))
+            }),
+        )
+    });
     let status = child
         .wait()
         .map_err(|error| format!("could not wait for child: {error}"))?;
+    finish_run(
+        status,
+        stdout_thread,
+        stderr_thread,
+        archive_key,
+        passthrough,
+    )
+}
 
+type CaptureThread = std::thread::JoinHandle<io::Result<CapturedStream>>;
+
+fn finish_run(
+    status: std::process::ExitStatus,
+    stdout_thread: CaptureThread,
+    stderr_thread: CaptureThread,
+    archive_key: Option<&crate::archive::ArchiveKey>,
+    passthrough: bool,
+) -> Result<i32, String> {
     let mut stdout = join_capture(stdout_thread, "stdout")?;
     let mut stderr = join_capture(stderr_thread, "stderr")?;
-    let stdout_after = std::mem::take(&mut stdout.bounded).render();
-    let stderr_after = std::mem::take(&mut stderr.bounded).render();
+    let succeeded = status.success();
+    let stdout_after = finish_output(
+        std::mem::replace(&mut stdout.output, CapturedOutput::Passthrough),
+        succeeded,
+    );
+    let stderr_after = finish_output(
+        std::mem::replace(&mut stderr.output, CapturedOutput::Passthrough),
+        succeeded,
+    );
+    let capture_errors = capture_errors(&stdout, &stderr);
+    if !capture_errors.is_empty() {
+        restore_after_capture_error(&mut stdout, &mut stderr, passthrough)?;
+        eprintln!(
+            "yarp: archive failed after command execution: {}",
+            capture_errors.join("; ")
+        );
+        return Ok(exit_code(status));
+    }
+    if let Some(key) = archive_key
+        && let Err(error) = archive_captures(
+            key,
+            &mut stdout,
+            &mut stderr,
+            stdout_after.as_deref(),
+            stderr_after.as_deref(),
+            passthrough,
+        )
+    {
+        if !passthrough {
+            emit_raw(&mut stdout, &mut io::stdout(), "stdout")?;
+            emit_raw(&mut stderr, &mut io::stderr(), "stderr")?;
+        }
+        eprintln!("yarp: archive failed after command execution: {error}");
+        return Ok(exit_code(status));
+    }
+    if let Some(stdout_after) = stdout_after {
+        io::stdout()
+            .write_all(&stdout_after)
+            .map_err(|error| format!("could not write stdout: {error}"))?;
+    }
+    if let Some(stderr_after) = stderr_after {
+        io::stderr()
+            .write_all(&stderr_after)
+            .map_err(|error| format!("could not write stderr: {error}"))?;
+    }
+    Ok(exit_code(status))
+}
 
-    let capture_errors = [
+fn capture_errors(stdout: &CapturedStream, stderr: &CapturedStream) -> Vec<String> {
+    [
         stdout
             .archive_error
             .as_ref()
@@ -204,68 +279,104 @@ pub fn run(
     ]
     .into_iter()
     .flatten()
-    .collect::<Vec<_>>();
-    if !capture_errors.is_empty() {
-        if !stdout.raw_emitted {
-            emit_raw(&mut stdout, &mut io::stdout(), "stdout")?;
-        }
-        if !stderr.raw_emitted {
-            emit_raw(&mut stderr, &mut io::stderr(), "stderr")?;
-        }
-        eprintln!(
-            "yarp: archive failed after command execution: {}",
-            capture_errors.join("; ")
-        );
-        return Ok(exit_code(status));
+    .collect()
+}
+
+fn restore_after_capture_error(
+    stdout: &mut CapturedStream,
+    stderr: &mut CapturedStream,
+    passthrough: bool,
+) -> Result<(), String> {
+    if !passthrough && !stdout.raw_emitted {
+        emit_raw(stdout, &mut io::stdout(), "stdout")?;
     }
-
-    if let Some(key) = archive_key {
-        let stdout_raw = stdout
-            .raw
-            .as_mut()
-            .ok_or_else(|| "stdout archive spool is missing".to_owned())?;
-        let stderr_raw = stderr
-            .raw
-            .as_mut()
-            .ok_or_else(|| "stderr archive spool is missing".to_owned())?;
-        let archived = crate::archive::Archive::open().and_then(|mut archive| {
-            archive.capture_streams(
-                key,
-                unix_time_ms(),
-                stdout_raw.as_file_mut(),
-                stderr_raw.as_file_mut(),
-                &stdout_after,
-                &stderr_after,
-            )
-        });
-        if let Err(error) = archived {
-            copy_raw(stdout_raw.as_file_mut(), &mut io::stdout(), "stdout")?;
-            copy_raw(stderr_raw.as_file_mut(), &mut io::stderr(), "stderr")?;
-            eprintln!("yarp: archive failed after command execution: {error}");
-            return Ok(exit_code(status));
-        }
+    if !passthrough && !stderr.raw_emitted {
+        emit_raw(stderr, &mut io::stderr(), "stderr")?;
     }
+    Ok(())
+}
 
-    io::stdout()
-        .write_all(&stdout_after)
-        .map_err(|error| format!("could not write stdout: {error}"))?;
-    io::stderr()
-        .write_all(&stderr_after)
-        .map_err(|error| format!("could not write stderr: {error}"))?;
+fn archive_captures(
+    key: &crate::archive::ArchiveKey,
+    stdout: &mut CapturedStream,
+    stderr: &mut CapturedStream,
+    stdout_after: Option<&[u8]>,
+    stderr_after: Option<&[u8]>,
+    passthrough: bool,
+) -> Result<(), String> {
+    let stdout_raw = stdout
+        .raw
+        .as_mut()
+        .ok_or_else(|| "stdout archive spool is missing".to_owned())?;
+    let stderr_raw = stderr
+        .raw
+        .as_mut()
+        .ok_or_else(|| "stderr archive spool is missing".to_owned())?;
+    let mut archive = crate::archive::Archive::open()?;
+    if passthrough {
+        archive.capture_passthrough_streams(
+            key,
+            unix_time_ms(),
+            stdout_raw.as_file_mut(),
+            stderr_raw.as_file_mut(),
+        )
+    } else {
+        archive.capture_streams(
+            key,
+            unix_time_ms(),
+            stdout_raw.as_file_mut(),
+            stderr_raw.as_file_mut(),
+            stdout_after.unwrap_or_default(),
+            stderr_after.unwrap_or_default(),
+        )
+    }
+}
 
-    Ok(exit_code(status))
+fn select_rule(
+    arguments: &[String],
+    packs: &[PackRequest],
+    expected: Option<&ExpectedSelection>,
+) -> Result<Option<SelectedRule>, String> {
+    let mut registry = match Registry::load(packs) {
+        Ok(registry) => registry,
+        Err(_) if expected.is_some() => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let selection = match registry.select(arguments) {
+        Ok(selection) => selection,
+        Err(_) if expected.is_some() => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    match (selection, expected) {
+        (Selection::Reduce(selected), Some(expected))
+            if selected.pack_id == expected.pack_id
+                && selected.rule.id == expected.rule_id
+                && selected.source_digest == expected.source_digest =>
+        {
+            Ok(Some(selected))
+        }
+        (Selection::Reduce(selected), None) => Ok(Some(selected)),
+        (_, Some(_)) => Ok(None),
+        (Selection::Unsupported, None) => Err("command is not on the YARP allowlist".to_owned()),
+        (Selection::Passthrough(_), None) => {
+            Err("command is protected by a YARP pass-through rule".to_owned())
+        }
+        (Selection::Ambiguous(ids), None) => Err(format!(
+            "command matches multiple YARP reduction rules: {}",
+            ids.join(", ")
+        )),
+    }
 }
 
 fn capture(
     mut reader: impl Read,
     mut raw: Option<RawSpool>,
     mut fallback: impl Write,
+    mut output: CapturedOutput,
 ) -> io::Result<CapturedStream> {
-    let mut captured = Captured::default();
-    let mut line = Vec::new();
-    let mut line_was_truncated = false;
+    let passthrough = matches!(output, CapturedOutput::Passthrough);
     let mut archive_error = None;
-    let mut raw_emitted = false;
+    let mut raw_emitted = passthrough;
     let mut buffer = [0_u8; 8 * 1024];
 
     loop {
@@ -273,36 +384,34 @@ fn capture(
         if count == 0 {
             break;
         }
-        if raw_emitted {
-            fallback.write_all(&buffer[..count])?;
+        let chunk = &buffer[..count];
+        if passthrough {
+            fallback.write_all(chunk)?;
+        }
+        if !passthrough && raw_emitted {
+            fallback.write_all(chunk)?;
         } else if let Some(spool) = &mut raw
-            && let Err(error) = spool.write_chunk(&buffer[..count])
+            && let Err(error) = spool.write_chunk(chunk)
         {
-            rewind_and_copy(spool.as_file_mut(), &mut fallback)?;
-            fallback.write_all(&buffer[error.bytes_written..count])?;
+            if !passthrough {
+                rewind_and_copy(spool.as_file_mut(), &mut fallback)?;
+                fallback.write_all(&chunk[error.bytes_written..])?;
+            }
             archive_error = Some(format!("could not write archive spool: {}", error.source));
             raw = None;
             raw_emitted = true;
         }
-        for &byte in &buffer[..count] {
-            if line.len() < MAX_LINE_BYTES {
-                line.push(byte);
-            } else {
-                line_was_truncated = true;
-            }
-            if byte == b'\n' {
-                finish_line(&mut captured, &mut line, &mut line_was_truncated);
-            }
+        if let CapturedOutput::Reduced(reducer) = &mut output {
+            reducer.push(chunk);
         }
     }
 
-    if !line.is_empty() || line_was_truncated {
-        finish_line(&mut captured, &mut line, &mut line_was_truncated);
-    }
     if let Some(spool) = &mut raw
         && let Err(error) = spool.file.flush()
     {
-        rewind_and_copy(spool.as_file_mut(), &mut fallback)?;
+        if !passthrough {
+            rewind_and_copy(spool.as_file_mut(), &mut fallback)?;
+        }
         archive_error = Some(format!("could not flush archive spool: {error}"));
         raw = None;
         raw_emitted = true;
@@ -311,25 +420,17 @@ fn capture(
         fallback.flush()?;
     }
     Ok(CapturedStream {
-        bounded: captured,
+        output,
         raw,
         archive_error,
         raw_emitted,
     })
 }
 
-fn finish_line(captured: &mut Captured, line: &mut Vec<u8>, was_truncated: &mut bool) {
-    if *was_truncated {
-        ensure_newline(line);
-        line.extend(b"[yarp: line truncated]\n");
-    }
-    captured.push_line(std::mem::take(line));
-    *was_truncated = false;
-}
-
-fn ensure_newline(output: &mut Vec<u8>) {
-    if !output.is_empty() && !output.ends_with(b"\n") {
-        output.push(b'\n');
+fn finish_output(output: CapturedOutput, success: bool) -> Option<Vec<u8>> {
+    match output {
+        CapturedOutput::Reduced(reducer) => Some((*reducer).finish(success)),
+        CapturedOutput::Passthrough => None,
     }
 }
 
@@ -394,98 +495,67 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fmt::Write as _;
     use std::io::Cursor;
 
-    #[test]
-    fn leaves_short_output_unchanged() {
-        let captured = capture(Cursor::new(b"one\ntwo\n"), None, io::sink()).expect("capture");
-        assert_eq!(captured.bounded.render(), b"one\ntwo\n");
-        assert_eq!(prune_bytes(b"one\ntwo\n"), b"one\ntwo\n");
+    fn selected_rule(arguments: &[&str]) -> SelectedRule {
+        let mut registry = Registry::builtins_only();
+        let arguments = arguments
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let Selection::Reduce(selected) = registry.select(&arguments).expect("selection") else {
+            panic!("expected reduction rule");
+        };
+        selected
     }
 
     #[test]
-    fn prunes_middle_lines() {
-        let input = numbered_lines("line ", 250);
-        let captured = capture(Cursor::new(input), None, io::sink()).expect("capture");
-        let rendered = String::from_utf8(captured.bounded.render()).expect("UTF-8 output");
-        assert!(rendered.starts_with("line 0\n"));
-        assert!(rendered.contains("[yarp: omitted 50 lines]\n"));
-        assert!(rendered.ends_with("line 249\n"));
-        assert!(!rendered.contains("line 180\n"));
+    fn capture_reduces_with_the_selected_rule() {
+        let selected = selected_rule(&["cargo", "test"]);
+        let input = "   Compiling crate\n".repeat(400);
+        let reducer = StreamReducer::new(&selected.rule).expect("reducer");
+        let captured = capture(
+            Cursor::new(input.as_bytes()),
+            None,
+            io::sink(),
+            CapturedOutput::Reduced(Box::new(reducer)),
+        )
+        .expect("capture");
+        let output = finish_output(captured.output, true).expect("reduced output");
+        assert!(output.len() < input.len());
     }
 
     #[test]
-    fn keeps_all_lines_at_the_boundary() {
-        let input = numbered_lines("", 200);
-        let rendered = capture(Cursor::new(input.as_bytes()), None, io::sink())
-            .expect("capture")
-            .bounded
-            .render();
-        assert_eq!(rendered, input.as_bytes());
-    }
-
-    #[test]
-    fn truncates_one_very_long_line_without_growing_unbounded() {
-        let input = vec![b'x'; MAX_LINE_BYTES * 2];
-        let rendered = capture(Cursor::new(input), None, io::sink())
-            .expect("capture")
-            .bounded
-            .render();
-        assert!(rendered.len() < MAX_LINE_BYTES + 64);
-        assert!(rendered.ends_with(b"[yarp: line truncated]\n"));
-    }
-
-    #[test]
-    fn handles_empty_and_unterminated_output() {
-        assert!(
-            capture(Cursor::new(Vec::<u8>::new()), None, io::sink())
-                .expect("capture")
-                .bounded
-                .render()
-                .is_empty()
-        );
-        assert_eq!(
-            capture(Cursor::new(b"last line"), None, io::sink())
-                .expect("capture")
-                .bounded
-                .render(),
-            b"last line"
-        );
-    }
-
-    #[test]
-    fn raw_spool_keeps_omitted_lines() {
-        let input = numbered_lines("line ", 250);
-        let spool = RawSpool::new().expect("spool");
-        let mut captured =
-            capture(Cursor::new(input.as_bytes()), Some(spool), io::sink()).expect("capture");
-        let mut raw = String::new();
-        captured
-            .raw
-            .as_mut()
-            .expect("raw spool")
-            .as_file_mut()
-            .seek(SeekFrom::Start(0))
-            .expect("seek");
-        captured
-            .raw
-            .as_mut()
-            .expect("raw spool")
-            .as_file_mut()
-            .read_to_string(&mut raw)
-            .expect("read");
-        assert_eq!(raw, input);
+    fn passthrough_capture_emits_exact_bytes() {
+        let input = b"exact\xffbytes\n";
+        let mut output = Vec::new();
+        let captured = capture(
+            Cursor::new(input),
+            None,
+            &mut output,
+            CapturedOutput::Passthrough,
+        )
+        .expect("capture");
+        assert_eq!(output, input);
+        assert!(finish_output(captured.output, true).is_none());
     }
 
     #[test]
     fn archive_spool_failure_emits_the_exact_raw_stream() {
-        let input = numbered_lines("raw ", 250);
-        let spool = RawSpool::failing_after(37).expect("spool");
+        let input = b"raw output that exceeds the simulated limit\n";
+        let selected = selected_rule(&["git", "status"]);
+        let spool = RawSpool::failing_after(7).expect("spool");
         let mut output = Vec::new();
-        let captured =
-            capture(Cursor::new(input.as_bytes()), Some(spool), &mut output).expect("capture");
-        assert_eq!(output, input.as_bytes());
+        let captured = capture(
+            Cursor::new(input),
+            Some(spool),
+            &mut output,
+            CapturedOutput::Reduced(Box::new(
+                StreamReducer::new(&selected.rule).expect("reducer"),
+            )),
+        )
+        .expect("capture");
+        assert_eq!(output, input);
         assert!(captured.raw_emitted);
         assert!(captured.raw.is_none());
         assert!(
@@ -496,7 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_disallowed_children() {
+    fn rejects_unselected_direct_children() {
         let result = run(&["cat".to_owned(), ".env".to_owned()], None);
         assert_eq!(
             result,
@@ -504,11 +574,19 @@ mod tests {
         );
     }
 
-    fn numbered_lines(prefix: &str, count: usize) -> String {
-        let mut output = String::new();
-        for line in 0..count {
-            writeln!(&mut output, "{prefix}{line}").expect("write to string");
-        }
-        output
+    #[test]
+    fn rewrite_disagreement_fails_open() {
+        let expected = ExpectedSelection {
+            pack_id: "yarp-builtins".to_owned(),
+            rule_id: "git/status".to_owned(),
+            source_digest: [0_u8; 32],
+        };
+        let selected = select_rule(
+            &["git".to_owned(), "status".to_owned()],
+            &[],
+            Some(&expected),
+        )
+        .expect("selection");
+        assert!(selected.is_none());
     }
 }

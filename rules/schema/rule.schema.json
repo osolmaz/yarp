@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/osolmaz/yarp/blob/main/rules/schema/rule.schema.json",
+  "title": "YARP command pruning rule",
+  "oneOf": [
+    { "$ref": "#/$defs/reduceRule" },
+    { "$ref": "#/$defs/passthroughRule" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9]|[._/-](?=[a-z0-9]))*[a-z0-9]$|^[a-z0-9]$"
+    },
+    "token": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[^\\u0000]*$"
+    },
+    "matcher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["program"],
+      "properties": {
+        "program": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[^\\s/\\\\|&;<>\\(\\)`$#\\u0000]+$"
+          }
+        },
+        "argv_prefix": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/token" }
+        },
+        "argv_contains_all": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/token" }
+        }
+      }
+    },
+    "pattern": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": { "enum": ["exact", "prefix", "suffix", "contains"] },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\u0000]+$"
+        },
+        "case": { "enum": ["sensitive", "ascii_insensitive"] },
+        "trim": { "enum": ["none", "start", "both"] }
+      }
+    },
+    "headTail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": { "kind": { "const": "head_tail" } }
+    },
+    "lineFilter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "const": "line_filter" },
+        "strip_ansi": { "type": "boolean" },
+        "drop": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/pattern" }
+        },
+        "keep": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/pattern" }
+        }
+      }
+    },
+    "typedReducer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": ["cargo_test", "git_diff", "git_status", "search"]
+        }
+      }
+    },
+    "reducer": {
+      "oneOf": [
+        { "$ref": "#/$defs/headTail" },
+        { "$ref": "#/$defs/lineFilter" },
+        { "$ref": "#/$defs/typedReducer" }
+      ]
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "head_lines",
+        "tail_lines",
+        "max_line_bytes",
+        "max_output_bytes",
+        "min_savings_bytes"
+      ],
+      "properties": {
+        "head_lines": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "tail_lines": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "max_line_bytes": { "type": "integer", "minimum": 256, "maximum": 1048576 },
+        "max_output_bytes": { "type": "integer", "minimum": 1024, "maximum": 16777216 },
+        "min_savings_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 }
+      }
+    },
+    "reduceRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "match", "action", "reducer", "success", "failure"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "match": { "$ref": "#/$defs/matcher" },
+        "action": { "const": "reduce" },
+        "reducer": { "$ref": "#/$defs/reducer" },
+        "success": { "$ref": "#/$defs/policy" },
+        "failure": { "$ref": "#/$defs/policy" }
+      }
+    },
+    "passthroughRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "match", "action"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "match": { "$ref": "#/$defs/matcher" },
+        "action": { "const": "passthrough" }
+      }
+    }
+  }
+}

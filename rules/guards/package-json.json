@@ -1,0 +1,15 @@
+{
+  "id": "guards/package-json",
+  "match": {
+    "program": [
+      "npm",
+      "pnpm",
+      "yarn",
+      "bun"
+    ],
+    "argv_contains_all": [
+      "--json"
+    ]
+  },
+  "action": "passthrough"
+}

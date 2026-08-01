@@ -629,6 +629,63 @@ impl Archive {
             .map_err(|error| format!("could not commit shell streams: {error}"))
     }
 
+    /// Store exact shell streams when a wrapper deliberately passed output through unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a stream cannot be read or the transaction cannot commit.
+    pub fn capture_passthrough_streams(
+        &mut self,
+        key: &ArchiveKey,
+        captured_at_ms: i64,
+        stdout: &mut (impl Read + Seek),
+        stderr: &mut (impl Read + Seek),
+    ) -> Result<(), String> {
+        let transaction = self.transaction()?;
+        let call_id = find_call(&transaction, &key.session, &key.source_call_id)?;
+        let stdout_type = stream_media_type(stdout)?;
+        insert_snapshot_reader(
+            &transaction,
+            call_id,
+            "stdout",
+            "before",
+            stdout_type,
+            captured_at_ms,
+            stdout,
+        )?;
+        insert_snapshot_reader(
+            &transaction,
+            call_id,
+            "stdout",
+            "after",
+            stdout_type,
+            captured_at_ms,
+            stdout,
+        )?;
+        let stderr_type = stream_media_type(stderr)?;
+        insert_snapshot_reader(
+            &transaction,
+            call_id,
+            "stderr",
+            "before",
+            stderr_type,
+            captured_at_ms,
+            stderr,
+        )?;
+        insert_snapshot_reader(
+            &transaction,
+            call_id,
+            "stderr",
+            "after",
+            stderr_type,
+            captured_at_ms,
+            stderr,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("could not commit passthrough shell streams: {error}"))
+    }
+
     /// Restore the exact pre-pruning shell streams for one call.
     ///
     /// # Errors
