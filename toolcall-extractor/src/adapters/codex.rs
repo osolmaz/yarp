@@ -6,7 +6,7 @@ use rusqlite::OpenFlags;
 use serde_json::{Map, Value};
 use walkdir::WalkDir;
 
-use super::common::{JsonLine, first_json_value, process_jsonl};
+use super::common::{JsonLine, first_json_value, process_jsonl_from_start};
 use super::{register_root, reject_source_item, source_item};
 use crate::error::{Error, Result};
 use crate::keys;
@@ -61,7 +61,7 @@ pub fn extract(
             }
         };
         let file_state = RefCell::new(FileState::default());
-        let did_process = process_jsonl(
+        let did_process = process_jsonl_from_start(
             entry.path(),
             source.clone(),
             sink,
@@ -466,7 +466,7 @@ fn merge_result_payloads(candidates: &[PendingResult]) -> Result<Option<ResultPa
         let all = candidates.iter().collect::<Vec<_>>();
         return merge_compatible_payloads(&all);
     }
-    let Some(mut payload) = merge_compatible_payloads(&canonical)? else {
+    let Some(mut payload) = merge_canonical_payloads(&canonical) else {
         return Ok(None);
     };
     let projections = candidates
@@ -475,6 +475,26 @@ fn merge_result_payloads(candidates: &[PendingResult]) -> Result<Option<ResultPa
         .collect::<Vec<_>>();
     merge_projections(&mut payload, &projections)?;
     Ok(Some(payload))
+}
+
+fn merge_canonical_payloads(candidates: &[&PendingResult]) -> Option<ResultPayload> {
+    let first = candidates.first()?;
+    if candidates.iter().any(|candidate| {
+        candidate.is_error != first.is_error
+            || candidate.output_text != first.output_text
+            || candidate.output_json != first.output_json
+    }) {
+        return None;
+    }
+    Some(ResultPayload {
+        returned_at_ms: candidates
+            .iter()
+            .filter_map(|candidate| candidate.returned_at_ms)
+            .max(),
+        is_error: first.is_error,
+        output_text: first.output_text.clone(),
+        output_json: first.output_json.clone(),
+    })
 }
 
 fn merge_compatible_payloads(candidates: &[&PendingResult]) -> Result<Option<ResultPayload>> {

@@ -6,7 +6,7 @@ The extractor will never run from the Pi extension or the `yarp` pruning command
 
 ## Implementation status
 
-As of July 31, 2026, the package, schema, CLI, stable JSONL reader, private writer, framed cross-user path, YARP benchmark, and all four adapters are implemented. Synthetic tests cover Pi resume and source replacement, Codex canonical and projection results, Claude cross-file pairing, Cursor SQLite/protobuf extraction with transcript validation, orphan quarantine, and changed-source reconciliation through framed ingestion.
+As of July 31, 2026, the package, schema, CLI, stable JSONL reader, private writer, framed cross-user path, YARP benchmark, and all four adapters are implemented. Synthetic tests cover Pi resume and source replacement, Codex canonical and projection results across incremental imports, Claude cross-file pairing, Cursor SQLite/protobuf extraction with transcript validation, orphan quarantine, changed-source reconciliation through framed ingestion, and rollback when a framed source is truncated.
 
 The complete local dataset contains:
 
