@@ -1,0 +1,15 @@
+{
+  "id": "guards/git-diff-patch-with-raw",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "diff"
+    ],
+    "argv_contains_all": [
+      "--patch-with-raw"
+    ]
+  },
+  "action": "passthrough"
+}

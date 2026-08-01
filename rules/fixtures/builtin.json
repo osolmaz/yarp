@@ -428,6 +428,69 @@
       "expected_action": "passthrough"
     },
     {
+      "id": "guards-git-branch-format-match",
+      "rule_id": "guards/git-branch-format",
+      "argv": [
+        "git",
+        "branch",
+        "--list",
+        "--format=%(refname)"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-log-format-match",
+      "rule_id": "guards/git-log-format",
+      "argv": [
+        "git",
+        "log",
+        "--oneline",
+        "--format=%H"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-log-pretty-match",
+      "rule_id": "guards/git-log-pretty",
+      "argv": [
+        "git",
+        "log",
+        "--oneline",
+        "--pretty=format:%H"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-diff-binary-match",
+      "rule_id": "guards/git-diff-binary",
+      "argv": [
+        "git",
+        "diff",
+        "--binary"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-diff-patch-with-raw-match",
+      "rule_id": "guards/git-diff-patch-with-raw",
+      "argv": [
+        "git",
+        "diff",
+        "--patch-with-raw"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-diff-word-diff-match",
+      "rule_id": "guards/git-diff-word-diff",
+      "argv": [
+        "git",
+        "diff",
+        "--word-diff=porcelain"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
       "id": "guards-git-diff-raw-match",
       "rule_id": "guards/git-diff-raw",
       "argv": [
