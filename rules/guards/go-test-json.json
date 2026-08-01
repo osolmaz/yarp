@@ -1,0 +1,15 @@
+{
+  "id": "guards/go-test-json",
+  "match": {
+    "program": [
+      "go"
+    ],
+    "argv_prefix": [
+      "test"
+    ],
+    "argv_contains_all": [
+      "-json"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -4,13 +4,11 @@ rust:
   complexity:
     cognitive_max: 8
   targets:
-    - src
-    - toolcall-extractor/src
+    - .
   dry:
     max_findings: 0
     paths:
-      - src
-      - toolcall-extractor/src
+      - .
     copied_blocks:
       enabled: true
       min_tokens: 100
@@ -19,9 +17,13 @@ rust:
   mutation:
     targets:
       - src
+      - rule-pack/src
       - toolcall-extractor/src
   dependency_boundaries:
     - from: .
+      allow:
+        - rule-pack
+    - from: rule-pack
       allow: []
     - from: toolcall-extractor
       allow:

@@ -1,0 +1,12 @@
+{
+  "id": "guards/gh-template",
+  "match": {
+    "program": [
+      "gh"
+    ],
+    "argv_contains_all": [
+      "--template"
+    ]
+  },
+  "action": "passthrough"
+}

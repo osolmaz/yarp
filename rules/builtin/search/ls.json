@@ -1,0 +1,26 @@
+{
+  "id": "search/ls",
+  "match": {
+    "program": [
+      "ls"
+    ]
+  },
+  "action": "reduce",
+  "reducer": {
+    "kind": "search"
+  },
+  "success": {
+    "head_lines": 160,
+    "tail_lines": 40,
+    "max_line_bytes": 32768,
+    "max_output_bytes": 98304,
+    "min_savings_bytes": 256
+  },
+  "failure": {
+    "head_lines": 200,
+    "tail_lines": 80,
+    "max_line_bytes": 32768,
+    "max_output_bytes": 131072,
+    "min_savings_bytes": 256
+  }
+}

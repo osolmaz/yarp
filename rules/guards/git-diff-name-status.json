@@ -1,0 +1,15 @@
+{
+  "id": "guards/git-diff-name-status",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "diff"
+    ],
+    "argv_contains_all": [
+      "--name-status"
+    ]
+  },
+  "action": "passthrough"
+}

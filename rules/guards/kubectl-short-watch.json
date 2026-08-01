@@ -1,0 +1,12 @@
+{
+  "id": "guards/kubectl-short-watch",
+  "match": {
+    "program": [
+      "kubectl"
+    ],
+    "argv_contains_all": [
+      "-w"
+    ]
+  },
+  "action": "passthrough"
+}

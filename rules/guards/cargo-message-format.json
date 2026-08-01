@@ -1,0 +1,12 @@
+{
+  "id": "guards/cargo-message-format",
+  "match": {
+    "program": [
+      "cargo"
+    ],
+    "argv_contains_all": [
+      "--message-format"
+    ]
+  },
+  "action": "passthrough"
+}

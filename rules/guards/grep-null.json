@@ -1,0 +1,12 @@
+{
+  "id": "guards/grep-null",
+  "match": {
+    "program": [
+      "grep"
+    ],
+    "argv_contains_all": [
+      "--null"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,29 @@
+{
+  "id": "ops/kubectl-logs",
+  "match": {
+    "program": [
+      "kubectl"
+    ],
+    "argv_prefix": [
+      "logs"
+    ]
+  },
+  "action": "reduce",
+  "reducer": {
+    "kind": "head_tail"
+  },
+  "success": {
+    "head_lines": 80,
+    "tail_lines": 200,
+    "max_line_bytes": 32768,
+    "max_output_bytes": 196608,
+    "min_savings_bytes": 512
+  },
+  "failure": {
+    "head_lines": 100,
+    "tail_lines": 260,
+    "max_line_bytes": 32768,
+    "max_output_bytes": 262144,
+    "min_savings_bytes": 512
+  }
+}

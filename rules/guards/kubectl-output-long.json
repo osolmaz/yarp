@@ -1,0 +1,12 @@
+{
+  "id": "guards/kubectl-output-long",
+  "match": {
+    "program": [
+      "kubectl"
+    ],
+    "argv_contains_all": [
+      "--output"
+    ]
+  },
+  "action": "passthrough"
+}

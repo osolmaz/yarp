@@ -1,0 +1,33 @@
+{
+  "id": "js/run-lint",
+  "match": {
+    "program": [
+      "npm",
+      "pnpm",
+      "yarn",
+      "bun"
+    ],
+    "argv_prefix": [
+      "run",
+      "lint"
+    ]
+  },
+  "action": "reduce",
+  "reducer": {
+    "kind": "head_tail"
+  },
+  "success": {
+    "head_lines": 64,
+    "tail_lines": 40,
+    "max_line_bytes": 16384,
+    "max_output_bytes": 65536,
+    "min_savings_bytes": 256
+  },
+  "failure": {
+    "head_lines": 240,
+    "tail_lines": 100,
+    "max_line_bytes": 32768,
+    "max_output_bytes": 196608,
+    "min_savings_bytes": 256
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "id": "guards/git-diff-shortstat",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "diff"
+    ],
+    "argv_contains_all": [
+      "--shortstat"
+    ]
+  },
+  "action": "passthrough"
+}

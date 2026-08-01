@@ -1,3 +1,5 @@
+use crate::rules::{PackRequest, Registry, Selection, digest_hex};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Quote {
     None,
@@ -14,62 +16,92 @@ pub struct ArchiveCommandRef<'a> {
     pub call_id: &'a str,
 }
 
-/// Return a wrapper command only for simple shell commands on the allowlist.
+/// Return a wrapper command only for a simple shell command selected by a built-in rule.
 #[must_use]
 pub fn rewrite(command: &str) -> Option<String> {
     rewrite_with_archive(command, None)
 }
 
-/// Return an archived wrapper command for an allowlisted shell command.
+/// Return an archived wrapper command for a command selected by a built-in rule.
 #[must_use]
 pub fn rewrite_with_archive(
     command: &str,
     archive: Option<ArchiveCommandRef<'_>>,
 ) -> Option<String> {
+    rewrite_with_options(command, archive, &[]).ok().flatten()
+}
+
+/// Return a wrapper command using built-in and explicitly supplied compiled rule packs.
+///
+/// # Errors
+///
+/// Returns an error when a configured pack cannot be loaded or a selected pack path cannot be
+/// represented in a shell wrapper.
+pub fn rewrite_with_options(
+    command: &str,
+    archive: Option<ArchiveCommandRef<'_>>,
+    packs: &[PackRequest],
+) -> Result<Option<String>, String> {
     let command = command.trim();
-    let words = parse_words(command)?;
-    is_allowed_words(&words).then(|| match archive {
-        Some(reference) => format!(
-            "yarp run --archive-agent {} --archive-account {} --archive-session {} --archive-call {} -- {command}",
-            shell_quote(reference.agent),
-            shell_quote(reference.account),
-            shell_quote(reference.session_id),
-            shell_quote(reference.call_id),
-        ),
-        None => format!("yarp run -- {command}"),
-    })
+    let words = parse_words(command).ok_or_else(|| "unsupported shell syntax".to_owned())?;
+    let mut registry = Registry::load(packs)?;
+    let Selection::Reduce(selected) = registry.select(&words)? else {
+        return Ok(None);
+    };
+
+    let mut wrapper = format!(
+        "yarp run --selected-pack {} --selected-rule {} --selected-digest {}",
+        shell_quote(&selected.pack_id),
+        shell_quote(&selected.rule.id),
+        shell_quote(&digest_hex(&selected.source_digest)),
+    );
+    for reference in registry.references() {
+        let path = reference
+            .path
+            .to_str()
+            .ok_or_else(|| "rule pack path is not valid UTF-8".to_owned())?;
+        wrapper.push_str(" --rule-pack ");
+        wrapper.push_str(&shell_quote(path));
+        wrapper.push_str(" --rule-pack-digest ");
+        wrapper.push_str(&shell_quote(&digest_hex(&reference.source_digest)));
+    }
+    if let Some(reference) = archive {
+        wrapper.push_str(" --archive-agent ");
+        wrapper.push_str(&shell_quote(reference.agent));
+        wrapper.push_str(" --archive-account ");
+        wrapper.push_str(&shell_quote(reference.account));
+        wrapper.push_str(" --archive-session ");
+        wrapper.push_str(&shell_quote(reference.session_id));
+        wrapper.push_str(" --archive-call ");
+        wrapper.push_str(&shell_quote(reference.call_id));
+    }
+    wrapper.push_str(" -- ");
+    wrapper.push_str(command);
+    Ok(Some(wrapper))
 }
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-/// Check an already parsed argument list before running a child process.
-pub fn is_allowed_argv(arguments: &[String]) -> bool {
-    let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
-    is_allowed_words(&words)
+/// Parse one conservative shell command and select it using built-in rules.
+///
+/// # Errors
+///
+/// Returns an error when the shell source is unsupported or rule selection fails.
+pub fn select_builtin_command(command: &str) -> Result<(Vec<String>, Selection), String> {
+    let words = parse_words(command).ok_or_else(|| "unsupported shell syntax".to_owned())?;
+    let selection = Registry::builtins_only().select(&words)?;
+    Ok((words, selection))
 }
 
-fn is_allowed_words<T: AsRef<str>>(words: &[T]) -> bool {
-    let word = |index: usize| words.get(index).map(AsRef::as_ref);
-
-    matches!(
-        (word(0), word(1), word(2)),
-        (Some("git"), Some("status" | "diff" | "log" | "show"), _)
-            | (
-                Some("cargo"),
-                Some("build" | "check" | "clippy" | "test"),
-                _
-            )
-            | (Some("go" | "npm" | "pnpm" | "yarn"), Some("test"), _)
-            | (Some("dotnet"), Some("build" | "test"), _)
-            | (Some("pytest"), _, _)
-            | (
-                Some("npm" | "pnpm" | "yarn"),
-                Some("run"),
-                Some("build" | "check" | "lint" | "test" | "typecheck"),
-            )
-    )
+/// Select a command from an already parsed argument list using built-in rules.
+///
+/// # Errors
+///
+/// Returns an error only when the embedded registry cannot read a selected record.
+pub fn select_builtin_argv(arguments: &[String]) -> Result<Selection, String> {
+    Registry::builtins_only().select(arguments)
 }
 
 fn parse_words(command: &str) -> Option<Vec<String>> {
@@ -131,7 +163,7 @@ fn parse_words(command: &str) -> Option<Vec<String>> {
         return None;
     }
     finish_word(&mut words, &mut word, &mut started);
-    Some(words)
+    (!words.is_empty()).then_some(words)
 }
 
 fn finish_word(words: &mut Vec<String>, word: &mut String, started: &mut bool) {
@@ -146,19 +178,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rewrites_allowlisted_commands_without_changing_the_original_text() {
+    fn rewrites_selected_commands_without_changing_the_original_text() {
+        let expected = format!(
+            "yarp run --selected-pack 'yarp-builtins' --selected-rule 'git/diff' --selected-digest '{}' -- git diff -- 'file name'",
+            digest_hex(&crate::rules::BUILTIN_SOURCE_DIGEST)
+        );
         assert_eq!(
             rewrite("  git diff -- 'file name'  ").as_deref(),
-            Some("yarp run -- git diff -- 'file name'")
+            Some(expected.as_str())
         );
-        assert_eq!(
-            rewrite("npm run lint -- --fix").as_deref(),
-            Some("yarp run -- npm run lint -- --fix")
+        assert!(
+            rewrite("npm run lint -- --fix")
+                .is_some_and(|value| value.ends_with("-- npm run lint -- --fix"))
         );
-        assert_eq!(
-            rewrite("pytest -q").as_deref(),
-            Some("yarp run -- pytest -q")
-        );
+        assert!(rewrite("pytest -q").is_some());
+        assert!(rewrite("rg -n needle .").is_some());
+        assert!(rewrite("git -C /repo diff --check").is_some());
+        assert!(rewrite("pnpm -C frontend test").is_some());
     }
 
     #[test]
@@ -175,18 +211,29 @@ mod tests {
         .expect("rewrite");
         assert_eq!(
             rewritten,
-            "yarp run --archive-agent 'pi' --archive-account 'o'\\''nur' --archive-session 'session-1' --archive-call 'call-1' -- git status --short"
+            format!(
+                "yarp run --selected-pack 'yarp-builtins' --selected-rule 'git/status' --selected-digest '{}' --archive-agent 'pi' --archive-account 'o'\\''nur' --archive-session 'session-1' --archive-call 'call-1' -- git status --short",
+                digest_hex(&crate::rules::BUILTIN_SOURCE_DIGEST)
+            )
         );
     }
 
     #[test]
-    fn rejects_commands_outside_the_allowlist() {
+    fn leaves_unknown_and_guarded_commands_unchanged() {
         for command in [
             "",
             "cat .env",
             "curl https://example.com",
             "git push",
             "npm install",
+            "git show HEAD:file",
+            "rg --json needle .",
+            "go test -json ./...",
+            "cargo test --message-format=json",
+            "gh pr view 1 --json=number,title",
+            "git diff --stat",
+            "kubectl get pods -ojson",
+            "npm test -- --reporter=json",
             "yarp run -- git status",
         ] {
             assert_eq!(rewrite(command), None, "accepted {command:?}");
@@ -222,12 +269,22 @@ mod tests {
 
     #[test]
     fn validates_parsed_child_arguments() {
-        assert!(is_allowed_argv(&strings(&["cargo", "test", "--workspace"])));
-        assert!(is_allowed_argv(&strings(&["go", "test", "./..."])));
-        assert!(is_allowed_argv(&strings(&["dotnet", "build"])));
-        assert!(is_allowed_argv(&strings(&["pnpm", "run", "typecheck"])));
-        assert!(!is_allowed_argv(&strings(&["git", "push"])));
-        assert!(!is_allowed_argv(&[]));
+        assert!(matches!(
+            select_builtin_argv(&strings(&["cargo", "test", "--workspace"])),
+            Ok(Selection::Reduce(_))
+        ));
+        assert!(matches!(
+            select_builtin_argv(&strings(&["go", "test", "./..."])),
+            Ok(Selection::Reduce(_))
+        ));
+        assert!(matches!(
+            select_builtin_argv(&strings(&["git", "show", "HEAD:file"])),
+            Ok(Selection::Passthrough(_))
+        ));
+        assert_eq!(
+            select_builtin_argv(&strings(&["git", "push"])),
+            Ok(Selection::Unsupported)
+        );
     }
 
     fn strings(values: &[&str]) -> Vec<String> {

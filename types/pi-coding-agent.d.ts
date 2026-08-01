@@ -23,6 +23,7 @@ declare module "@earendil-works/pi-coding-agent" {
   export type ExtensionContext = {
     signal?: AbortSignal
     cwd: string
+    isProjectTrusted(): boolean
     sessionManager: SessionManagerView
     model?: ModelView
   }

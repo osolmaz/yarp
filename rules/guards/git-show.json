@@ -1,0 +1,12 @@
+{
+  "id": "guards/git-show",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "show"
+    ]
+  },
+  "action": "passthrough"
+}

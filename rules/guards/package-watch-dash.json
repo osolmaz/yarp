@@ -1,0 +1,16 @@
+{
+  "id": "guards/package-watch-dash",
+  "match": {
+    "program": [
+      "npm",
+      "pnpm",
+      "yarn",
+      "bun",
+      "npx"
+    ],
+    "argv_contains_all": [
+      "--watch-all"
+    ]
+  },
+  "action": "passthrough"
+}

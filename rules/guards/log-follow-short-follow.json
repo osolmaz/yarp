@@ -1,0 +1,14 @@
+{
+  "id": "guards/log-follow-short-follow",
+  "match": {
+    "program": [
+      "journalctl",
+      "docker",
+      "kubectl"
+    ],
+    "argv_contains_all": [
+      "-f"
+    ]
+  },
+  "action": "passthrough"
+}

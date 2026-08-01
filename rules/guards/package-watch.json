@@ -1,0 +1,16 @@
+{
+  "id": "guards/package-watch",
+  "match": {
+    "program": [
+      "npm",
+      "pnpm",
+      "yarn",
+      "bun",
+      "npx"
+    ],
+    "argv_contains_all": [
+      "--watch"
+    ]
+  },
+  "action": "passthrough"
+}

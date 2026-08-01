@@ -1,8 +1,8 @@
 # YARP
 
-YARP is a command-output pruner and local tool-call archive for Pi. It wraps a strict allowlist of developer commands, removes the middle of very long output before that output enters Pi's context, and stores every Pi tool call before and after YARP processing.
+YARP is a command-output pruner and local tool-call archive for Pi. It applies a bounded reducer chosen for each supported command before output enters Pi's context, and it stores every Pi tool call before and after YARP processing.
 
-YARP leaves unsupported commands, shell pipelines, redirects, substitutions, or compound commands unchanged. It preserves the wrapped command's exit code and keeps stdout and stderr separate.
+YARP leaves unknown or ambiguous commands unchanged. Structured-output and exact-inspection commands also stay unchanged. Shell pipelines and commands with redirects, substitutions, or compound syntax pass through. Wrapped commands keep their exit codes, and stdout never mixes with stderr.
 
 ## Install
 
@@ -22,12 +22,7 @@ Both commands install from the public GitHub repository.
 
 ## Use
 
-The Pi extension handles supported `bash` and `exec_command` calls automatically. Supported command families include:
-
-- Git status, diff, log, or show commands
-- Cargo build, check, clippy, or test commands
-- Go tests and pytest, plus .NET build or test commands
-- test, build, lint, check, or type-check scripts run through npm, pnpm, or Yarn
+The Pi extension handles supported `bash` and `exec_command` calls automatically. Built-in rules cover common repository inspection, search, test, build, lint, and package-script commands. They also cover CI inspection plus container and cluster commands. Exact-output forms such as structured JSON, NUL-delimited output, and Git object inspection stay untouched.
 
 Run a supported command directly when needed:
 
@@ -44,6 +39,61 @@ yarp rewrite "git status --short"
 An unsupported command exits with status 3 and prints nothing. The Pi extension treats that result as a request to run the original command.
 
 Set `YARP_DISABLED=1` to turn off automatic rewriting while keeping the archive active.
+
+## Rules
+
+Built-in rules are validated during the Rust build and embedded in the binary. Inspect the selected action without running a command:
+
+```sh
+yarp rules explain -- cargo test --workspace
+yarp rules list
+```
+
+Create an external source pack when a project has another repetitive command. A minimal pack contains `pack.json` and one listed rule:
+
+```json
+{
+  "schema_version": 1,
+  "id": "example-rules",
+  "rules": ["rules/check.json"]
+}
+```
+
+```json
+{
+  "id": "example/check",
+  "match": { "program": ["example-check"] },
+  "action": "reduce",
+  "reducer": { "kind": "head_tail" },
+  "success": {
+    "head_lines": 20,
+    "tail_lines": 10,
+    "max_line_bytes": 16384,
+    "max_output_bytes": 32768,
+    "min_savings_bytes": 256
+  },
+  "failure": {
+    "head_lines": 80,
+    "tail_lines": 60,
+    "max_line_bytes": 32768,
+    "max_output_bytes": 131072,
+    "min_savings_bytes": 256
+  }
+}
+```
+
+Validate and compile it explicitly:
+
+```sh
+yarp rules check ./example-rules
+yarp rules compile ./example-rules --output ./example-rules.yrp
+yarp rules verify ./example-rules.yrp
+yarp rewrite --rule-pack ./example-rules.yrp "example-check"
+```
+
+Set `YARP_RULE_PACKS` to an operating-system path list for global packs. A trusted Pi project may instead keep a compiled pack at `.yarp/rules.yrp`; the extension ignores that path until Pi reports the project as trusted. YARP does not scan for source packs, compile them automatically, download rules, or execute code from a rule.
+
+See the [command-aware pruning plan](docs/command-aware-pruning-implementation-plan.md) for the complete source schema, limits, matching rules, and fail-open behavior.
 
 ## Archive
 
@@ -109,10 +159,10 @@ This sends framed normalized records through the pipe and creates no intermediat
 
 The default database is `~/.local/share/toolcall-extractor/toolcalls.duckdb`. Tool inputs and outputs can contain secrets, so its directory and files are private. The extractor reads agent state without modifying it, has no network code, and stops before its files reach 10,000,000,000 bytes. See [the implementation plan](docs/toolcall-extractor-implementation-plan.md) for supported formats and privacy boundaries.
 
-A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. YARP removed 61,814,796 characters from the stored outputs. This is 52.3739% of eligible output and 3.18351% overall. The generated database and transcripts are not included in the repository.
+A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The command-aware rules removed 68,291,647 characters from stored shell outputs. This is 24.7271% of eligible output and 3.51707% of all rendered output. The eligible set is broader than the earlier generic policy because more commands now have explicit rules. The generated database and transcripts are not included in the repository.
 
 ## Limits
 
-YARP keeps the first 160 and last 40 lines of each output stream. It marks omitted lines in the middle. A single line is limited to 16 KiB.
+Each rule has separate success and failure limits for head lines, tail lines, one line, total output, and minimum useful savings. Processing is streaming and bounded. Short output remains byte-for-byte exact when compacting it would not save enough space.
 
 YARP does not collect usage data or access the network. Archive capture is local and enabled by default. The offline extractor writes only when invoked explicitly.

@@ -1,0 +1,1148 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "guards-git-show-match",
+      "rule_id": "guards/git-show",
+      "argv": [
+        "git",
+        "show",
+        "HEAD:file"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-status-nul-match",
+      "rule_id": "guards/git-status-nul",
+      "argv": [
+        "git",
+        "status",
+        "-z"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-status-porcelain-match",
+      "rule_id": "guards/git-status-porcelain",
+      "argv": [
+        "git",
+        "status",
+        "--porcelain"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-diff-raw-match",
+      "rule_id": "guards/git-diff-raw",
+      "argv": [
+        "git",
+        "diff",
+        "--raw"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-diff-numstat-match",
+      "rule_id": "guards/git-diff-numstat",
+      "argv": [
+        "git",
+        "diff",
+        "--numstat"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-diff-name-only-match",
+      "rule_id": "guards/git-diff-name-only",
+      "argv": [
+        "git",
+        "diff",
+        "--name-only"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-diff-name-status-match",
+      "rule_id": "guards/git-diff-name-status",
+      "argv": [
+        "git",
+        "diff",
+        "--name-status"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-diff-stat-match",
+      "rule_id": "guards/git-diff-stat",
+      "argv": [
+        "git",
+        "diff",
+        "--stat"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-diff-shortstat-match",
+      "rule_id": "guards/git-diff-shortstat",
+      "argv": [
+        "git",
+        "diff",
+        "--shortstat"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-diff-dirstat-match",
+      "rule_id": "guards/git-diff-dirstat",
+      "argv": [
+        "git",
+        "diff",
+        "--dirstat"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-rg-json-match",
+      "rule_id": "guards/rg-json",
+      "argv": [
+        "rg",
+        "--json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-rg-null-match",
+      "rule_id": "guards/rg-null",
+      "argv": [
+        "rg",
+        "--null"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-rg-zero-match",
+      "rule_id": "guards/rg-zero",
+      "argv": [
+        "rg",
+        "-0"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-grep-null-match",
+      "rule_id": "guards/grep-null",
+      "argv": [
+        "grep",
+        "--null"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-grep-capital-z-match",
+      "rule_id": "guards/grep-capital-z",
+      "argv": [
+        "grep",
+        "-Z"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-grep-zero-data-match",
+      "rule_id": "guards/grep-zero-data",
+      "argv": [
+        "grep",
+        "-z"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-grep-null-data-match",
+      "rule_id": "guards/grep-null-data",
+      "argv": [
+        "grep",
+        "--null-data"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cargo-message-format-match",
+      "rule_id": "guards/cargo-message-format",
+      "argv": [
+        "cargo",
+        "test",
+        "--message-format=json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cargo-test-format-match",
+      "rule_id": "guards/cargo-test-format",
+      "argv": [
+        "cargo",
+        "test",
+        "--",
+        "--format=json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-go-test-json-match",
+      "rule_id": "guards/go-test-json",
+      "argv": [
+        "go",
+        "test",
+        "-json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-package-json-match",
+      "rule_id": "guards/package-json",
+      "argv": [
+        "npm",
+        "test",
+        "--",
+        "--json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-package-reporter-match",
+      "rule_id": "guards/package-reporter",
+      "argv": [
+        "npm",
+        "test",
+        "--",
+        "--reporter=json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-package-watch-match",
+      "rule_id": "guards/package-watch",
+      "argv": [
+        "npm",
+        "test",
+        "--",
+        "--watch"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-package-watch-all-match",
+      "rule_id": "guards/package-watch-all",
+      "argv": [
+        "npm",
+        "test",
+        "--",
+        "--watchAll"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-package-watch-dash-match",
+      "rule_id": "guards/package-watch-dash",
+      "argv": [
+        "npm",
+        "test",
+        "--",
+        "--watch-all"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-gh-json-match",
+      "rule_id": "guards/gh-json",
+      "argv": [
+        "gh",
+        "pr",
+        "view",
+        "--json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-gh-template-match",
+      "rule_id": "guards/gh-template",
+      "argv": [
+        "gh",
+        "pr",
+        "view",
+        "--template"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-log-follow-short-follow-match",
+      "rule_id": "guards/log-follow-short-follow",
+      "argv": [
+        "journalctl",
+        "-f"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-log-follow-follow-match",
+      "rule_id": "guards/log-follow-follow",
+      "argv": [
+        "journalctl",
+        "--follow"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-kubectl-short-watch-match",
+      "rule_id": "guards/kubectl-short-watch",
+      "argv": [
+        "kubectl",
+        "get",
+        "pods",
+        "-w"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-kubectl-watch-match",
+      "rule_id": "guards/kubectl-watch",
+      "argv": [
+        "kubectl",
+        "get",
+        "pods",
+        "--watch"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-docker-format-match",
+      "rule_id": "guards/docker-format",
+      "argv": [
+        "docker",
+        "stats",
+        "--no-stream",
+        "--format",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-kubectl-output-short-match",
+      "rule_id": "guards/kubectl-output-short",
+      "argv": [
+        "kubectl",
+        "get",
+        "pods",
+        "-ojson"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-kubectl-output-long-match",
+      "rule_id": "guards/kubectl-output-long",
+      "argv": [
+        "kubectl",
+        "get",
+        "pods",
+        "--output=json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "search-rg-match",
+      "rule_id": "search/rg",
+      "argv": [
+        "rg",
+        "-n",
+        "needle",
+        "."
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "search-grep-match",
+      "rule_id": "search/grep",
+      "argv": [
+        "grep",
+        "-R",
+        "needle",
+        "."
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "search-git-grep-match",
+      "rule_id": "search/git-grep",
+      "argv": [
+        "git",
+        "grep",
+        "needle"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "search-ls-match",
+      "rule_id": "search/ls",
+      "argv": [
+        "ls",
+        "-la"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "search-du-match",
+      "rule_id": "search/du",
+      "argv": [
+        "du",
+        "-sh",
+        "."
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "git-status-match",
+      "rule_id": "git/status",
+      "argv": [
+        "git",
+        "status"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "git-diff-match",
+      "rule_id": "git/diff",
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "git-log-oneline-match",
+      "rule_id": "git/log-oneline",
+      "argv": [
+        "git",
+        "log",
+        "--oneline"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "git-branch-list-match",
+      "rule_id": "git/branch-list",
+      "argv": [
+        "git",
+        "branch",
+        "--list"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "git-branch-all-match",
+      "rule_id": "git/branch-all",
+      "argv": [
+        "git",
+        "branch",
+        "-a"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "git-branch-verbose-match",
+      "rule_id": "git/branch-verbose",
+      "argv": [
+        "git",
+        "branch",
+        "-vv"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "rust-cargo-test-match",
+      "rule_id": "rust/cargo-test",
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "rust-cargo-build-match",
+      "rule_id": "rust/cargo-build",
+      "argv": [
+        "cargo",
+        "build"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "rust-cargo-check-match",
+      "rule_id": "rust/cargo-check",
+      "argv": [
+        "cargo",
+        "check"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "rust-cargo-clippy-match",
+      "rule_id": "rust/cargo-clippy",
+      "argv": [
+        "cargo",
+        "clippy"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "rust-cargo-audit-match",
+      "rule_id": "rust/cargo-audit",
+      "argv": [
+        "cargo",
+        "audit"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "rust-cargo-coverage-match",
+      "rule_id": "rust/cargo-coverage",
+      "argv": [
+        "cargo",
+        "llvm-cov"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "go-test-match",
+      "rule_id": "go/test",
+      "argv": [
+        "go",
+        "test",
+        "./..."
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "go-vet-match",
+      "rule_id": "go/vet",
+      "argv": [
+        "go",
+        "vet",
+        "./..."
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "go-build-match",
+      "rule_id": "go/build",
+      "argv": [
+        "go",
+        "build",
+        "./..."
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "python-pytest-match",
+      "rule_id": "python/pytest",
+      "argv": [
+        "pytest",
+        "-q"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "python-module-pytest-match",
+      "rule_id": "python/module-pytest",
+      "argv": [
+        "python3",
+        "-m",
+        "pytest",
+        "-q"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "python-uv-pytest-match",
+      "rule_id": "python/uv-pytest",
+      "argv": [
+        "uv",
+        "run",
+        "pytest"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "python-ruff-match",
+      "rule_id": "python/ruff",
+      "argv": [
+        "ruff",
+        "check"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "python-uv-ruff-match",
+      "rule_id": "python/uv-ruff",
+      "argv": [
+        "uv",
+        "run",
+        "ruff"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "python-mypy-match",
+      "rule_id": "python/mypy",
+      "argv": [
+        "mypy",
+        "."
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "python-pyright-match",
+      "rule_id": "python/pyright",
+      "argv": [
+        "pyright"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-test-match",
+      "rule_id": "js/test",
+      "argv": [
+        "npm",
+        "test"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-run-test-match",
+      "rule_id": "js/run-test",
+      "argv": [
+        "npm",
+        "run",
+        "test"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-run-check-match",
+      "rule_id": "js/run-check",
+      "argv": [
+        "npm",
+        "run",
+        "check"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-run-build-match",
+      "rule_id": "js/run-build",
+      "argv": [
+        "npm",
+        "run",
+        "build"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-run-lint-match",
+      "rule_id": "js/run-lint",
+      "argv": [
+        "npm",
+        "run",
+        "lint"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-run-typecheck-match",
+      "rule_id": "js/run-typecheck",
+      "argv": [
+        "npm",
+        "run",
+        "typecheck"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-run-coverage-match",
+      "rule_id": "js/run-coverage",
+      "argv": [
+        "npm",
+        "run",
+        "coverage"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-run-format-check-match",
+      "rule_id": "js/run-format-check",
+      "argv": [
+        "npm",
+        "run",
+        "format:check"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-run-slophammer-match",
+      "rule_id": "js/run-slophammer",
+      "argv": [
+        "npm",
+        "run",
+        "slophammer"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-run-docs-check-match",
+      "rule_id": "js/run-docs-check",
+      "argv": [
+        "npm",
+        "run",
+        "docs:check"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-pnpm-vitest-match",
+      "rule_id": "js/pnpm-vitest",
+      "argv": [
+        "pnpm",
+        "exec",
+        "vitest"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-npx-vitest-match",
+      "rule_id": "js/npx-vitest",
+      "argv": [
+        "npx",
+        "vitest"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-pnpm-oxlint-match",
+      "rule_id": "js/pnpm-oxlint",
+      "argv": [
+        "pnpm",
+        "exec",
+        "oxlint"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-npx-eslint-match",
+      "rule_id": "js/npx-eslint",
+      "argv": [
+        "npx",
+        "eslint"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-npx-prettier-check-match",
+      "rule_id": "js/npx-prettier-check",
+      "argv": [
+        "npx",
+        "prettier",
+        "--check"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-pnpm-prettier-check-match",
+      "rule_id": "js/pnpm-prettier-check",
+      "argv": [
+        "pnpm",
+        "exec",
+        "prettier",
+        "--check"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-eslint-match",
+      "rule_id": "js/eslint",
+      "argv": [
+        "eslint",
+        "."
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-tsc-match",
+      "rule_id": "js/tsc",
+      "argv": [
+        "tsc",
+        "--noEmit"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-pr-checks-match",
+      "rule_id": "gh/pr-checks",
+      "argv": [
+        "gh",
+        "pr",
+        "checks"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-pr-view-match",
+      "rule_id": "gh/pr-view",
+      "argv": [
+        "gh",
+        "pr",
+        "view"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-pr-list-match",
+      "rule_id": "gh/pr-list",
+      "argv": [
+        "gh",
+        "pr",
+        "list"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-pr-diff-match",
+      "rule_id": "gh/pr-diff",
+      "argv": [
+        "gh",
+        "pr",
+        "diff"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-run-view-match",
+      "rule_id": "gh/run-view",
+      "argv": [
+        "gh",
+        "run",
+        "view"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-run-list-match",
+      "rule_id": "gh/run-list",
+      "argv": [
+        "gh",
+        "run",
+        "list"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-run-watch-match",
+      "rule_id": "gh/run-watch",
+      "argv": [
+        "gh",
+        "run",
+        "watch"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-issue-view-match",
+      "rule_id": "gh/issue-view",
+      "argv": [
+        "gh",
+        "issue",
+        "view"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-issue-list-match",
+      "rule_id": "gh/issue-list",
+      "argv": [
+        "gh",
+        "issue",
+        "list"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-release-view-match",
+      "rule_id": "gh/release-view",
+      "argv": [
+        "gh",
+        "release",
+        "view"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-search-prs-match",
+      "rule_id": "gh/search-prs",
+      "argv": [
+        "gh",
+        "search",
+        "prs"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-search-issues-match",
+      "rule_id": "gh/search-issues",
+      "argv": [
+        "gh",
+        "search",
+        "issues"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-search-code-match",
+      "rule_id": "gh/search-code",
+      "argv": [
+        "gh",
+        "search",
+        "code"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-search-repos-match",
+      "rule_id": "gh/search-repos",
+      "argv": [
+        "gh",
+        "search",
+        "repos"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-task-test-match",
+      "rule_id": "build/task-test",
+      "argv": [
+        "make",
+        "test"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-task-check-match",
+      "rule_id": "build/task-check",
+      "argv": [
+        "make",
+        "check"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-task-build-match",
+      "rule_id": "build/task-build",
+      "argv": [
+        "make",
+        "build"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-task-lint-match",
+      "rule_id": "build/task-lint",
+      "argv": [
+        "make",
+        "lint"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-ninja-match",
+      "rule_id": "build/ninja",
+      "argv": [
+        "ninja"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-cmake-match",
+      "rule_id": "build/cmake",
+      "argv": [
+        "cmake",
+        "--build",
+        "."
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-maven-test-match",
+      "rule_id": "build/maven-test",
+      "argv": [
+        "mvn",
+        "test"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-maven-verify-match",
+      "rule_id": "build/maven-verify",
+      "argv": [
+        "mvn",
+        "verify"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-maven-package-match",
+      "rule_id": "build/maven-package",
+      "argv": [
+        "mvn",
+        "package"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-gradle-test-match",
+      "rule_id": "build/gradle-test",
+      "argv": [
+        "gradle",
+        "test"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-gradle-build-match",
+      "rule_id": "build/gradle-build",
+      "argv": [
+        "gradle",
+        "build"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-gradle-check-match",
+      "rule_id": "build/gradle-check",
+      "argv": [
+        "gradle",
+        "check"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "dotnet-build-match",
+      "rule_id": "dotnet/build",
+      "argv": [
+        "dotnet",
+        "build"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "dotnet-test-match",
+      "rule_id": "dotnet/test",
+      "argv": [
+        "dotnet",
+        "test"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "ops-docker-logs-match",
+      "rule_id": "ops/docker-logs",
+      "argv": [
+        "docker",
+        "logs"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "ops-docker-build-match",
+      "rule_id": "ops/docker-build",
+      "argv": [
+        "docker",
+        "build"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "ops-docker-buildx-match",
+      "rule_id": "ops/docker-buildx",
+      "argv": [
+        "docker",
+        "buildx",
+        "build"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "ops-docker-stats-match",
+      "rule_id": "ops/docker-stats",
+      "argv": [
+        "docker",
+        "stats",
+        "--no-stream"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "ops-kubectl-logs-match",
+      "rule_id": "ops/kubectl-logs",
+      "argv": [
+        "kubectl",
+        "logs"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "ops-kubectl-get-match",
+      "rule_id": "ops/kubectl-get",
+      "argv": [
+        "kubectl",
+        "get"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "ops-kubectl-describe-match",
+      "rule_id": "ops/kubectl-describe",
+      "argv": [
+        "kubectl",
+        "describe"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "ops-journalctl-match",
+      "rule_id": "ops/journalctl",
+      "argv": [
+        "journalctl",
+        "--user",
+        "-n",
+        "1000"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "ops-systemctl-status-match",
+      "rule_id": "ops/systemctl-status",
+      "argv": [
+        "systemctl",
+        "status"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "ops-systemctl-user-status-match",
+      "rule_id": "ops/systemctl-user-status",
+      "argv": [
+        "systemctl",
+        "--user",
+        "status"
+      ],
+      "expected_action": "reduce"
+    }
+  ]
+}

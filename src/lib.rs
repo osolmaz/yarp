@@ -1,7 +1,10 @@
 #![forbid(unsafe_code)]
 
 pub mod archive;
+pub mod reducers;
 pub mod rewrite;
+pub mod rules;
+mod rules_cli;
 pub mod runner;
 
 use rewrite::ArchiveCommandRef;
@@ -9,7 +12,7 @@ use std::io;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-const HELP: &str = "YARP prunes developer command output and archives Pi tool calls.\n\nUsage:\n  yarp rewrite <shell-command>\n  yarp run -- <command> [arguments...]\n  yarp archive stats\n  yarp archive verify\n  yarp archive prune --before <UTC timestamp>\n  yarp archive ingest\n  yarp --help\n  yarp --version\n";
+const HELP: &str = "YARP prunes developer command output and archives Pi tool calls.\n\nUsage:\n  yarp rewrite [--rule-pack <path>]... <shell-command>\n  yarp run [--rule-pack <path>]... -- <command> [arguments...]\n  yarp rules check <source-pack>\n  yarp rules compile <source-pack> --output <compiled-pack>\n  yarp rules verify <compiled-pack>\n  yarp rules list [--rule-pack <path>]... [--json]\n  yarp rules explain [--rule-pack <path>]... [--json] -- <command> [arguments...]\n  yarp archive stats\n  yarp archive verify\n  yarp archive prune --before <UTC timestamp>\n  yarp archive ingest\n  yarp --help\n  yarp --version\n";
 
 /// Run the command-line interface and return the process exit code.
 #[must_use]
@@ -27,18 +30,20 @@ pub fn run_cli(arguments: &[String]) -> i32 {
             println!("yarp {}", env!("CARGO_PKG_VERSION"));
             0
         }
-        [command, shell_command] if command == "rewrite" => rewrite(shell_command, None),
-        [command, rest @ ..] if command == "rewrite" => match parse_archive_rewrite(rest) {
-            Ok((reference, shell_command)) => rewrite(shell_command, Some(reference)),
-            Err(_) => usage_error("invalid arguments"),
-        },
-        [command, rest @ ..] if command == "run" => match parse_run(rest) {
-            Ok((key, child)) => match runner::run(child, key.as_ref()) {
-                Ok(code) => code,
-                Err(error) => usage_error(&error),
-            },
+        [command, rest @ ..] if command == "rewrite" => match parse_rewrite(rest) {
+            Ok((packs, reference, shell_command)) => rewrite(shell_command, reference, &packs),
             Err(error) => usage_error(&error),
         },
+        [command, rest @ ..] if command == "run" => match parse_run(rest) {
+            Ok((key, child, packs, expected)) => {
+                match runner::run_with_rules(child, key.as_ref(), &packs, expected.as_ref()) {
+                    Ok(code) => code,
+                    Err(error) => usage_error(&error),
+                }
+            }
+            Err(error) => usage_error(&error),
+        },
+        [command, rest @ ..] if command == "rules" => rules_cli::run(rest),
         [command, subcommand] if command == "archive" && subcommand == "stats" => archive_stats(),
         [command, subcommand] if command == "archive" && subcommand == "verify" => archive_verify(),
         [command, subcommand] if command == "archive" && subcommand == "ingest" => {
@@ -62,12 +67,21 @@ pub fn run_cli(arguments: &[String]) -> i32 {
     }
 }
 
-fn rewrite(shell_command: &str, reference: Option<ArchiveCommandRef<'_>>) -> i32 {
-    if let Some(rewritten) = rewrite::rewrite_with_archive(shell_command, reference) {
-        print!("{rewritten}");
-        0
-    } else {
-        3
+fn rewrite(
+    shell_command: &str,
+    reference: Option<ArchiveCommandRef<'_>>,
+    packs: &[rules::PackRequest],
+) -> i32 {
+    match rewrite::rewrite_with_options(shell_command, reference, packs) {
+        Ok(Some(rewritten)) => {
+            print!("{rewritten}");
+            0
+        }
+        Ok(None) => 3,
+        Err(error) => {
+            eprintln!("yarp: {error}");
+            3
+        }
     }
 }
 
@@ -155,37 +169,65 @@ fn archive_prune(timestamp: &str) -> i32 {
     }
 }
 
-fn parse_archive_rewrite(arguments: &[String]) -> Result<(ArchiveCommandRef<'_>, &str), String> {
-    let [
-        agent_flag,
-        agent,
-        account_flag,
-        account,
-        session_flag,
-        session,
-        call_flag,
-        call,
-        shell,
-    ] = arguments
-    else {
-        return Err("invalid archived rewrite arguments".to_owned());
-    };
-    if agent_flag != "--archive-agent"
-        || account_flag != "--archive-account"
-        || session_flag != "--archive-session"
-        || call_flag != "--archive-call"
-    {
-        return Err("invalid archived rewrite options".to_owned());
+fn parse_rewrite(
+    arguments: &[String],
+) -> Result<(Vec<rules::PackRequest>, Option<ArchiveCommandRef<'_>>, &str), String> {
+    let mut packs = rules::requests_from_environment()?;
+    let mut project_root = None;
+    let mut project_pack_seen = false;
+    let mut agent = None;
+    let mut account = None;
+    let mut session = None;
+    let mut call = None;
+    let mut index = 0;
+    while index + 1 < arguments.len() {
+        let value = arguments
+            .get(index + 1)
+            .ok_or_else(|| format!("{} requires a value", arguments[index]))?;
+        match arguments[index].as_str() {
+            "--project-root" if project_root.is_none() => {
+                project_root = Some(std::path::PathBuf::from(value));
+            }
+            "--rule-pack" => {
+                let path = if let Some(root) = &project_root {
+                    project_pack_seen = true;
+                    rules::canonical_project_pack(root, std::path::Path::new(value))?
+                } else {
+                    value.into()
+                };
+                packs.push(rules::PackRequest {
+                    path,
+                    expected_digest: None,
+                });
+            }
+            "--archive-agent" if agent.is_none() => agent = Some(value.as_str()),
+            "--archive-account" if account.is_none() => account = Some(value.as_str()),
+            "--archive-session" if session.is_none() => session = Some(value.as_str()),
+            "--archive-call" if call.is_none() => call = Some(value.as_str()),
+            value if value.starts_with("--") => {
+                return Err(format!("unknown or duplicate rewrite option: {value}"));
+            }
+            _ => break,
+        }
+        index += 2;
     }
-    Ok((
-        ArchiveCommandRef {
+    let [shell_command] = &arguments[index..] else {
+        return Err("rewrite requires one shell command".to_owned());
+    };
+    if project_root.is_some() && !project_pack_seen {
+        return Err("--project-root requires a following --rule-pack".to_owned());
+    }
+    let reference = match (agent, account, session, call) {
+        (None, None, None, None) => None,
+        (Some(agent), Some(account), Some(session_id), Some(call_id)) => Some(ArchiveCommandRef {
             agent,
             account,
-            session_id: session,
-            call_id: call,
-        },
-        shell,
-    ))
+            session_id,
+            call_id,
+        }),
+        _ => return Err("archived rewrite requires every archive identifier".to_owned()),
+    };
+    Ok((packs, reference, shell_command))
 }
 
 fn parse_archive_key(arguments: &[String]) -> Result<archive::ArchiveKey, String> {
@@ -220,49 +262,104 @@ fn parse_archive_key(arguments: &[String]) -> Result<archive::ArchiveKey, String
     })
 }
 
-fn parse_run(arguments: &[String]) -> Result<(Option<archive::ArchiveKey>, &[String]), String> {
-    if let [separator, child @ ..] = arguments
-        && separator == "--"
-        && !child.is_empty()
-    {
-        return Ok((None, child));
+type ParsedRun<'a> = (
+    Option<archive::ArchiveKey>,
+    &'a [String],
+    Vec<rules::PackRequest>,
+    Option<runner::ExpectedSelection>,
+);
+
+fn parse_run(arguments: &[String]) -> Result<ParsedRun<'_>, String> {
+    let mut packs = Vec::new();
+    let mut selected_pack = None;
+    let mut selected_rule = None;
+    let mut selected_digest = None;
+    let mut agent = None;
+    let mut account = None;
+    let mut session = None;
+    let mut call = None;
+    let mut index = 0;
+    while index < arguments.len() && arguments[index] != "--" {
+        let option = arguments[index].as_str();
+        let value = arguments
+            .get(index + 1)
+            .ok_or_else(|| format!("{option} requires a value"))?;
+        match option {
+            "--selected-pack" if selected_pack.is_none() => selected_pack = Some(value.clone()),
+            "--selected-rule" if selected_rule.is_none() => selected_rule = Some(value.clone()),
+            "--selected-digest" if selected_digest.is_none() => {
+                selected_digest = Some(rules::parse_digest(value)?);
+            }
+            "--archive-agent" if agent.is_none() => agent = Some(value.clone()),
+            "--archive-account" if account.is_none() => account = Some(value.clone()),
+            "--archive-session" if session.is_none() => session = Some(value.clone()),
+            "--archive-call" if call.is_none() => call = Some(value.clone()),
+            "--rule-pack" => {
+                let mut expected_digest = None;
+                index += 2;
+                if arguments
+                    .get(index)
+                    .is_some_and(|value| value == "--rule-pack-digest")
+                {
+                    let digest = arguments
+                        .get(index + 1)
+                        .ok_or_else(|| "--rule-pack-digest requires a value".to_owned())?;
+                    expected_digest = Some(rules::parse_digest(digest)?);
+                    index += 2;
+                }
+                packs.push(rules::PackRequest {
+                    path: value.into(),
+                    expected_digest,
+                });
+                continue;
+            }
+            value if value.starts_with("--") => {
+                return Err(format!("unknown or duplicate run option: {value}"));
+            }
+            _ => return Err(format!("invalid run option: {option}")),
+        }
+        index += 2;
     }
-    let [
-        agent_flag,
-        agent,
-        account_flag,
-        account,
-        session_flag,
-        session,
-        call_flag,
-        call,
-        separator,
-        child @ ..,
-    ] = arguments
-    else {
-        return Err("invalid run arguments".to_owned());
+    let Some(separator) = arguments.get(index) else {
+        return Err("run requires -- and a child command".to_owned());
     };
-    if agent_flag != "--archive-agent"
-        || account_flag != "--archive-account"
-        || session_flag != "--archive-session"
-        || call_flag != "--archive-call"
-        || separator != "--"
-        || child.is_empty()
-    {
-        return Err("invalid archived run options".to_owned());
+    if separator != "--" || index + 1 >= arguments.len() {
+        return Err("run requires -- and a child command".to_owned());
     }
-    Ok((
-        Some(archive::ArchiveKey {
+    let child = &arguments[index + 1..];
+    let expected = match (selected_pack, selected_rule, selected_digest) {
+        (None, None, None) => None,
+        (Some(pack_id), Some(rule_id), Some(source_digest)) => Some(runner::ExpectedSelection {
+            pack_id,
+            rule_id,
+            source_digest,
+        }),
+        _ => {
+            return Err(
+                "run requires selected pack, selected rule, and selected digest together"
+                    .to_owned(),
+            );
+        }
+    };
+    let archive_key = match (agent, account, session, call) {
+        (None, None, None, None) => None,
+        (Some(agent), Some(account), Some(session), Some(call)) => Some(archive::ArchiveKey {
             session: archive::SessionIdentity {
-                agent: agent.clone(),
-                account: account.clone(),
-                source_session_id: session.clone(),
+                agent,
+                account,
+                source_session_id: session,
                 started_at_ms: None,
             },
-            source_call_id: call.clone(),
+            source_call_id: call,
         }),
-        child,
-    ))
+        _ => return Err("archived run requires every archive identifier".to_owned()),
+    };
+    if expected.is_none() {
+        let mut environment = rules::requests_from_environment()?;
+        environment.extend(packs);
+        packs = environment;
+    }
+    Ok((archive_key, child, packs, expected))
 }
 
 fn usage_error(error: &str) -> i32 {
@@ -301,10 +398,12 @@ mod tests {
             "git".into(),
             "status".into(),
         ];
-        let (key, child) = parse_run(&arguments).expect("parse");
+        let (key, child, packs, expected) = parse_run(&arguments).expect("parse");
         let key = key.expect("archive key");
         assert_eq!(key.session.agent, "pi");
         assert_eq!(key.source_call_id, "call");
         assert_eq!(child, &["git".to_owned(), "status".to_owned()]);
+        assert!(packs.is_empty());
+        assert!(expected.is_none());
     }
 }

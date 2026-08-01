@@ -1,4 +1,6 @@
+import { lstat, realpath } from "node:fs/promises"
 import { userInfo } from "node:os"
+import { relative, resolve } from "node:path"
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -63,22 +65,27 @@ async function rewriteCommand(
   command: string,
   session: ArchiveSession | null,
   toolCallId: string,
+  rulePack: string | null,
+  projectRoot: string,
   signal?: AbortSignal,
 ): Promise<string | null> {
-  const args = session === null
-    ? ["rewrite", command]
-    : [
-        "rewrite",
-        "--archive-agent",
-        session.agent,
-        "--archive-account",
-        session.account,
-        "--archive-session",
-        session.sourceSessionId,
-        "--archive-call",
-        toolCallId,
-        command,
-      ]
+  const args = ["rewrite"]
+  if (rulePack !== null) {
+    args.push("--project-root", projectRoot, "--rule-pack", rulePack)
+  }
+  if (session !== null) {
+    args.push(
+      "--archive-agent",
+      session.agent,
+      "--archive-account",
+      session.account,
+      "--archive-session",
+      session.sourceSessionId,
+      "--archive-call",
+      toolCallId,
+    )
+  }
+  args.push(command)
   const options = signal === undefined
     ? { timeout: REWRITE_TIMEOUT_MS }
     : { timeout: REWRITE_TIMEOUT_MS, signal }
@@ -99,11 +106,13 @@ export async function installYarpExtension(
 
   let sink: ArchiveSink | null = null
   let session: ArchiveSession | null = null
+  let projectRulePack: string | null = null
   const activeCalls = new Map<string, { requiresStreams: boolean; staged: boolean }>()
   const pendingCalls = new Map<string, PendingCall>()
   const restoredFinalResults = new Map<string, ResultPatch>()
 
   pi.on("session_start", async (_event, context) => {
+    projectRulePack = await trustedProjectRulePack(context)
     if (archiveDisabled()) return
     await sink?.close()
     sink = createSink()
@@ -117,6 +126,7 @@ export async function installYarpExtension(
     const current = sink
     sink = null
     session = null
+    projectRulePack = null
     activeCalls.clear()
     pendingCalls.clear()
     restoredFinalResults.clear()
@@ -150,6 +160,8 @@ export async function installYarpExtension(
           binding.command,
           archive?.session ?? null,
           event.toolCallId,
+          projectRulePack,
+          context.cwd,
           context.signal,
         )
       } catch {
@@ -387,6 +399,29 @@ async function restoreRawStreams(
     content: [{ type: "text", text: `${result.stdout}${result.stderr}` }],
     isError,
   }
+}
+
+export async function trustedProjectRulePack(
+  context: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
+): Promise<string | null> {
+  if (!context.isProjectTrusted()) return null
+  const root = await realpath(context.cwd).catch(() => null)
+  if (root === null) return null
+  const ruleDirectory = resolve(root, ".yarp")
+  const directoryMetadata = await lstat(ruleDirectory).catch(() => null)
+  if (directoryMetadata === null || !directoryMetadata.isDirectory() || directoryMetadata.isSymbolicLink()) {
+    return null
+  }
+  const candidate = resolve(ruleDirectory, "rules.yrp")
+  const metadata = await lstat(candidate).catch(() => null)
+  if (metadata === null || !metadata.isFile() || metadata.isSymbolicLink()) return null
+  const resolved = await realpath(candidate).catch(() => null)
+  if (resolved === null) return null
+  const fromRoot = relative(root, resolved)
+  if (fromRoot === "" || fromRoot === ".." || fromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+    return null
+  }
+  return resolved
 }
 
 function archiveDisabled(): boolean {
