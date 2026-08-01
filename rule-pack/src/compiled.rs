@@ -264,7 +264,7 @@ impl CompiledPack {
             .and_then(|value| value.checked_add(parsed.pack_id_len as u64))
             .and_then(|value| value.checked_add(parsed.index_len as u64))
             .ok_or_else(|| "compiled record offset overflowed".to_owned())?;
-        Ok(Self {
+        let mut pack = Self {
             path,
             id,
             source_digest: parsed.source_digest,
@@ -274,7 +274,9 @@ impl CompiledPack {
             records_offset,
             records_len: parsed.records_len,
             file,
-        })
+        };
+        pack.verify_compiled_digest()?;
+        Ok(pack)
     }
 
     #[must_use]
@@ -326,6 +328,22 @@ impl CompiledPack {
         Ok(rule)
     }
 
+    /// Rehash the open file and require the bytes to match those observed before parsing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file changed after it was opened.
+    pub fn verify_compiled_digest(&mut self) -> Result<(), String> {
+        let digest = file_digest(&mut self.file, &self.path)?;
+        if digest != self.compiled_digest {
+            return Err(format!(
+                "{}: compiled pack changed while loading",
+                self.path.display()
+            ));
+        }
+        Ok(())
+    }
+
     /// Verify every record and every program-to-rule reference in the pack.
     ///
     /// # Errors
@@ -367,7 +385,7 @@ impl CompiledPack {
                 }
             }
         }
-        Ok(())
+        self.verify_compiled_digest()
     }
 
     #[must_use]
@@ -790,6 +808,32 @@ mod tests {
             CompiledPack::open(file.path(), None, Some([0_u8; 32]))
                 .expect_err("compiled digest mismatch")
                 .contains("compiled pack digest changed")
+        );
+    }
+
+    #[test]
+    fn detects_changes_after_the_pack_was_opened() {
+        let directory = source_pack();
+        let source = SourcePack::load(directory.path()).expect("source");
+        let bytes = compile(&source).expect("compile");
+        let mut file = NamedTempFile::new().expect("pack file");
+        file.write_all(&bytes).expect("write pack");
+        file.flush().expect("flush pack");
+        let mut pack = CompiledPack::open(file.path(), None, None).expect("open");
+
+        file.as_file_mut()
+            .seek(SeekFrom::Start(
+                u64::try_from(bytes.len() - 1).expect("offset"),
+            ))
+            .expect("seek");
+        file.write_all(&[bytes[bytes.len() - 1] ^ 1])
+            .expect("modify pack");
+        file.flush().expect("flush modification");
+
+        assert!(
+            pack.verify_compiled_digest()
+                .expect_err("changed pack")
+                .contains("changed while loading")
         );
     }
 

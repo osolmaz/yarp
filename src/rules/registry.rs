@@ -66,6 +66,7 @@ pub struct RuleSummary {
 struct ExternalPack {
     pack: CompiledPack,
     disabled: bool,
+    recheck_digest_after_selection: bool,
 }
 
 pub struct Registry {
@@ -81,7 +82,7 @@ impl Registry {
     ///
     /// Returns an error when a requested pack cannot be opened or validated.
     pub fn load(requests: &[PackRequest]) -> Result<Self, String> {
-        let mut external = Vec::new();
+        let mut external = Vec::<ExternalPack>::new();
         let mut seen_paths = BTreeSet::new();
         for request in requests {
             let pack = CompiledPack::open(
@@ -90,11 +91,19 @@ impl Registry {
                 request.expected_compiled_digest,
             )?;
             if !seen_paths.insert(pack.path.clone()) {
+                if request.expected_compiled_digest.is_some()
+                    && let Some(existing) = external
+                        .iter_mut()
+                        .find(|existing| existing.pack.path == pack.path)
+                {
+                    existing.recheck_digest_after_selection = true;
+                }
                 continue;
             }
             external.push(ExternalPack {
                 pack,
                 disabled: false,
+                recheck_digest_after_selection: request.expected_compiled_digest.is_some(),
             });
         }
         let references = external
@@ -160,6 +169,9 @@ impl Registry {
                         rule: SelectedRuleData::External(Box::new(rule)),
                     });
                 }
+            }
+            if external.recheck_digest_after_selection {
+                external.pack.verify_compiled_digest()?;
             }
         }
         Ok(resolve(matches))
@@ -420,7 +432,12 @@ fn disable_conflicts(external: &mut [ExternalPack]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+
     use serde::Deserialize;
+    use sha2::{Digest as _, Sha256};
+    use tempfile::TempDir;
+    use yarp_rule_pack::SourcePack;
 
     use super::*;
 
@@ -492,6 +509,48 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn expected_pack_digest_is_rechecked_after_selection() {
+        let directory = TempDir::new().expect("temp directory");
+        std::fs::create_dir(directory.path().join("rules")).expect("rules directory");
+        std::fs::write(
+            directory.path().join("pack.json"),
+            r#"{"schema_version":1,"id":"external-pack","rules":["rules/test.json"]}"#,
+        )
+        .expect("manifest");
+        std::fs::write(
+            directory.path().join("rules/test.json"),
+            r#"{"id":"tests/external","match":{"program":["external-tool"],"argv_prefix":["run"]},"action":"reduce","reducer":{"kind":"head_tail"},"success":{"head_lines":10,"tail_lines":10,"max_line_bytes":16384,"max_output_bytes":32768,"min_savings_bytes":120},"failure":{"head_lines":20,"tail_lines":20,"max_line_bytes":16384,"max_output_bytes":65536,"min_savings_bytes":120}}"#,
+        )
+        .expect("rule");
+        let source = SourcePack::load(directory.path()).expect("source pack");
+        let compiled = yarp_rule_pack::compile(&source).expect("compiled pack");
+        let compiled_digest = Sha256::digest(&compiled).into();
+        let pack_path = directory.path().join("pack.yrp");
+        std::fs::write(&pack_path, &compiled).expect("write pack");
+        let mut registry = Registry::load(&[PackRequest {
+            path: pack_path.clone(),
+            expected_digest: Some(source.source_digest),
+            expected_compiled_digest: Some(compiled_digest),
+        }])
+        .expect("registry");
+
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(pack_path)
+            .expect("open pack for mutation");
+        file.seek(SeekFrom::Start(0)).expect("seek");
+        file.write_all(&[compiled[0] ^ 1]).expect("mutate header");
+        file.flush().expect("flush mutation");
+
+        assert!(
+            registry
+                .select(&strings(&["external-tool", "run"]))
+                .expect_err("changed pack")
+                .contains("changed while loading")
+        );
+    }
+
     #[test]
     fn project_pack_rejects_symlinked_path_components() {
         use std::os::unix::fs::symlink;
