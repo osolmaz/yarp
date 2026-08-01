@@ -2,6 +2,402 @@
   "schema_version": 1,
   "cases": [
     {
+      "id": "guards-journal-output-long-match",
+      "rule_id": "guards/journal-output-long",
+      "argv": [
+        "journalctl",
+        "--output=json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-journal-output-short-match",
+      "rule_id": "guards/journal-output-short",
+      "argv": [
+        "journalctl",
+        "-o",
+        "export"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-journal-output-fields-match",
+      "rule_id": "guards/journal-output-fields",
+      "argv": [
+        "journalctl",
+        "--output-fields=MESSAGE"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-systemctl-output-long-match",
+      "rule_id": "guards/systemctl-output-long",
+      "argv": [
+        "systemctl",
+        "status",
+        "--output=json",
+        "sshd"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-systemctl-output-short-match",
+      "rule_id": "guards/systemctl-output-short",
+      "argv": [
+        "systemctl",
+        "status",
+        "-o",
+        "json",
+        "sshd"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-ninja-tool-match",
+      "rule_id": "guards/ninja-tool",
+      "argv": [
+        "ninja",
+        "-t",
+        "compdb"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-tsc-show-config-match",
+      "rule_id": "guards/tsc-show-config",
+      "argv": [
+        "tsc",
+        "--showConfig"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-tsc-list-files-match",
+      "rule_id": "guards/tsc-list-files",
+      "argv": [
+        "tsc",
+        "--listFiles"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-tsc-list-files-only-match",
+      "rule_id": "guards/tsc-list-files-only",
+      "argv": [
+        "tsc",
+        "--listFilesOnly"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-tsc-explain-files-match",
+      "rule_id": "guards/tsc-explain-files",
+      "argv": [
+        "tsc",
+        "--explainFiles"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-tsc-trace-resolution-match",
+      "rule_id": "guards/tsc-trace-resolution",
+      "argv": [
+        "tsc",
+        "--traceResolution"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-tsc-generate-trace-match",
+      "rule_id": "guards/tsc-generate-trace",
+      "argv": [
+        "tsc",
+        "--generateTrace"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-eslint-format-long-match",
+      "rule_id": "guards/eslint-format-long",
+      "argv": [
+        "eslint",
+        "--format",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-eslint-format-short-match",
+      "rule_id": "guards/eslint-format-short",
+      "argv": [
+        "eslint",
+        "-f",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-eslint-print-config-match",
+      "rule_id": "guards/eslint-print-config",
+      "argv": [
+        "eslint",
+        "--print-config",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-eslint-inspect-config-match",
+      "rule_id": "guards/eslint-inspect-config",
+      "argv": [
+        "eslint",
+        "--inspect-config",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-npx-eslint-format-long-match",
+      "rule_id": "guards/npx-eslint-format-long",
+      "argv": [
+        "npx",
+        "eslint",
+        "--format",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-npx-eslint-format-short-match",
+      "rule_id": "guards/npx-eslint-format-short",
+      "argv": [
+        "npx",
+        "eslint",
+        "-f",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-npx-eslint-print-config-match",
+      "rule_id": "guards/npx-eslint-print-config",
+      "argv": [
+        "npx",
+        "eslint",
+        "--print-config",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-npx-eslint-inspect-config-match",
+      "rule_id": "guards/npx-eslint-inspect-config",
+      "argv": [
+        "npx",
+        "eslint",
+        "--inspect-config",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-pyright-json-match",
+      "rule_id": "guards/pyright-json",
+      "argv": [
+        "pyright",
+        "--outputjson"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-pnpm-oxlint-format-long-match",
+      "rule_id": "guards/pnpm-oxlint-format-long",
+      "argv": [
+        "pnpm",
+        "exec",
+        "oxlint",
+        "--format",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-pnpm-oxlint-format-short-match",
+      "rule_id": "guards/pnpm-oxlint-format-short",
+      "argv": [
+        "pnpm",
+        "exec",
+        "oxlint",
+        "-f",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-ruff-output-format-match",
+      "rule_id": "guards/ruff-output-format",
+      "argv": [
+        "ruff",
+        "check",
+        "--output-format",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-ruff-show-files-match",
+      "rule_id": "guards/ruff-show-files",
+      "argv": [
+        "ruff",
+        "check",
+        "--show-files",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-ruff-show-settings-match",
+      "rule_id": "guards/ruff-show-settings",
+      "argv": [
+        "ruff",
+        "check",
+        "--show-settings",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-uv-ruff-output-format-match",
+      "rule_id": "guards/uv-ruff-output-format",
+      "argv": [
+        "uv",
+        "run",
+        "ruff",
+        "--output-format",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-uv-ruff-show-files-match",
+      "rule_id": "guards/uv-ruff-show-files",
+      "argv": [
+        "uv",
+        "run",
+        "ruff",
+        "--show-files",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-uv-ruff-show-settings-match",
+      "rule_id": "guards/uv-ruff-show-settings",
+      "argv": [
+        "uv",
+        "run",
+        "ruff",
+        "--show-settings",
+        "json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-go-json-match",
+      "rule_id": "guards/go-json",
+      "argv": [
+        "go",
+        "vet",
+        "-json",
+        "./..."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-mypy-output-match",
+      "rule_id": "guards/mypy-output",
+      "argv": [
+        "mypy",
+        "--output",
+        "json",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-mypy-short-output-match",
+      "rule_id": "guards/mypy-short-output",
+      "argv": [
+        "mypy",
+        "-O",
+        "json",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-pytest-json-report-match",
+      "rule_id": "guards/pytest-json-report",
+      "argv": [
+        "pytest",
+        "--json-report"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-pytest-collect-only-match",
+      "rule_id": "guards/pytest-collect-only",
+      "argv": [
+        "pytest",
+        "--collect-only"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-python-pytest-json-report-match",
+      "rule_id": "guards/python-pytest-json-report",
+      "argv": [
+        "python3",
+        "-m",
+        "pytest",
+        "--json-report"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-python-pytest-collect-only-match",
+      "rule_id": "guards/python-pytest-collect-only",
+      "argv": [
+        "python3",
+        "-m",
+        "pytest",
+        "--collect-only"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-uv-pytest-json-report-match",
+      "rule_id": "guards/uv-pytest-json-report",
+      "argv": [
+        "uv",
+        "run",
+        "pytest",
+        "--json-report"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-uv-pytest-collect-only-match",
+      "rule_id": "guards/uv-pytest-collect-only",
+      "argv": [
+        "uv",
+        "run",
+        "pytest",
+        "--collect-only"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
       "id": "guards-git-show-match",
       "rule_id": "guards/git-show",
       "argv": [
@@ -482,6 +878,46 @@
         "cargo",
         "test",
         "--message-format=json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cargo-json-match",
+      "rule_id": "guards/cargo-json",
+      "argv": [
+        "cargo",
+        "llvm-cov",
+        "--json"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cargo-lcov-match",
+      "rule_id": "guards/cargo-lcov",
+      "argv": [
+        "cargo",
+        "llvm-cov",
+        "--lcov"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cargo-cobertura-match",
+      "rule_id": "guards/cargo-cobertura",
+      "argv": [
+        "cargo",
+        "llvm-cov",
+        "--cobertura"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cargo-codecov-match",
+      "rule_id": "guards/cargo-codecov",
+      "argv": [
+        "cargo",
+        "llvm-cov",
+        "--codecov"
       ],
       "expected_action": "passthrough"
     },

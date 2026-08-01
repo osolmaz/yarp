@@ -1,0 +1,12 @@
+{
+  "id": "guards/cargo-cobertura",
+  "match": {
+    "program": [
+      "cargo"
+    ],
+    "argv_contains_all": [
+      "--cobertura"
+    ]
+  },
+  "action": "passthrough"
+}

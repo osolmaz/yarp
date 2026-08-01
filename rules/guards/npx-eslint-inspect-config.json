@@ -1,0 +1,15 @@
+{
+  "id": "guards/npx-eslint-inspect-config",
+  "match": {
+    "program": [
+      "npx"
+    ],
+    "argv_prefix": [
+      "eslint"
+    ],
+    "argv_contains_all": [
+      "--inspect-config"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "guards/ninja-tool",
+  "match": {
+    "program": [
+      "ninja"
+    ],
+    "argv_contains_all": [
+      "-t"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "guards/pyright-json",
+  "match": {
+    "program": [
+      "pyright"
+    ],
+    "argv_contains_all": [
+      "--outputjson"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,16 @@
+{
+  "id": "guards/uv-ruff-show-files",
+  "match": {
+    "program": [
+      "uv"
+    ],
+    "argv_prefix": [
+      "run",
+      "ruff"
+    ],
+    "argv_contains_all": [
+      "--show-files"
+    ]
+  },
+  "action": "passthrough"
+}

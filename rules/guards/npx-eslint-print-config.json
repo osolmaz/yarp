@@ -1,0 +1,15 @@
+{
+  "id": "guards/npx-eslint-print-config",
+  "match": {
+    "program": [
+      "npx"
+    ],
+    "argv_prefix": [
+      "eslint"
+    ],
+    "argv_contains_all": [
+      "--print-config"
+    ]
+  },
+  "action": "passthrough"
+}

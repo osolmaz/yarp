@@ -1,0 +1,12 @@
+{
+  "id": "guards/tsc-trace-resolution",
+  "match": {
+    "program": [
+      "tsc"
+    ],
+    "argv_contains_all": [
+      "--traceResolution"
+    ]
+  },
+  "action": "passthrough"
+}

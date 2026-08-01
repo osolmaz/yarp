@@ -1,0 +1,12 @@
+{
+  "id": "guards/eslint-inspect-config",
+  "match": {
+    "program": [
+      "eslint"
+    ],
+    "argv_contains_all": [
+      "--inspect-config"
+    ]
+  },
+  "action": "passthrough"
+}

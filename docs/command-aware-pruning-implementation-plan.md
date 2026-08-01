@@ -14,13 +14,13 @@ Command-Aware Pruning will improve coverage and reduction while retaining the cu
 
 ## Implemented result
 
-The implementation now uses 144 independently authored built-in rules. Built-ins compile into indexed Rust data during the build. External source packs use strict JSON, compile explicitly into one indexed `.yrp` file, and load without a server or cache. The runtime has bounded byte-stream reducers for head-and-tail retention, literal line filtering, Cargo tests, Git diffs, Git status, and search output.
+The implementation now uses 186 independently authored built-in rules. Built-ins compile into indexed Rust data during the build. External source packs use strict JSON, compile explicitly into one indexed `.yrp` file, and load without a server or cache. The runtime has bounded byte-stream reducers for head-and-tail retention, literal line filtering, Cargo tests, Git diffs, Git status, and search output.
 
 The production engine was evaluated on the same 371,241 stored shell results as the baseline:
 
 | Metric | Baseline | Command-aware | Absolute change |
 | --- | ---: | ---: | ---: |
-| Eligible results | 33,830 | 56,946 | +23,116 |
+| Eligible results | 33,830 | 56,903 | +23,073 |
 | Changed results | 3,481 | 4,136 | +655 |
 | Characters removed | 61,814,796 | 67,524,245 | +5,709,449 |
 | Share of all output removed | 3.18351% | 3.47755% | +0.29404 points |

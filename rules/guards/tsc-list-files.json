@@ -1,0 +1,12 @@
+{
+  "id": "guards/tsc-list-files",
+  "match": {
+    "program": [
+      "tsc"
+    ],
+    "argv_contains_all": [
+      "--listFiles"
+    ]
+  },
+  "action": "passthrough"
+}

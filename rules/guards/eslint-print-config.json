@@ -1,0 +1,12 @@
+{
+  "id": "guards/eslint-print-config",
+  "match": {
+    "program": [
+      "eslint"
+    ],
+    "argv_contains_all": [
+      "--print-config"
+    ]
+  },
+  "action": "passthrough"
+}

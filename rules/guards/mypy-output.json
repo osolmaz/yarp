@@ -1,0 +1,12 @@
+{
+  "id": "guards/mypy-output",
+  "match": {
+    "program": [
+      "mypy"
+    ],
+    "argv_contains_all": [
+      "--output"
+    ]
+  },
+  "action": "passthrough"
+}
