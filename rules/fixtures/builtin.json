@@ -1072,6 +1072,18 @@
       "expected_action": "passthrough"
     },
     {
+      "id": "guards-docker-progress-match",
+      "rule_id": "guards/docker-progress",
+      "argv": [
+        "docker",
+        "buildx",
+        "build",
+        "--progress=rawjson",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
       "id": "guards-kubectl-output-short-match",
       "rule_id": "guards/kubectl-output-short",
       "argv": [

@@ -105,6 +105,7 @@
     "guards/kubectl-short-watch.json",
     "guards/kubectl-watch.json",
     "guards/docker-format.json",
+    "guards/docker-progress.json",
     "guards/kubectl-output-short.json",
     "guards/kubectl-output-long.json",
     "builtin/search/rg.json",
