@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tempfile::{NamedTempFile, tempfile};
 
 const SCHEMA_VERSION: i64 = 1;
@@ -17,6 +17,7 @@ const ZSTD_LEVEL: i32 = 3;
 const COMPRESSION_PERCENT: u64 = 95;
 const MAX_FRAME_BYTES: u64 = 256 * 1024 * 1024;
 const INGEST_SCHEMA_VERSION: u32 = 1;
+const ARCHIVE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const SCHEMA: &str = r"
 CREATE TABLE sessions (
@@ -230,7 +231,7 @@ impl Archive {
                 )
             })?;
         connection
-            .busy_timeout(Duration::from_secs(5))
+            .busy_timeout(ARCHIVE_BUSY_TIMEOUT)
             .map_err(|error| format!("could not set archive busy timeout: {error}"))?;
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -260,7 +261,7 @@ impl Archive {
         let mut connection = Connection::open(&path)
             .map_err(|error| format!("could not open archive {}: {error}", path.display()))?;
         connection
-            .busy_timeout(Duration::from_secs(5))
+            .busy_timeout(ARCHIVE_BUSY_TIMEOUT)
             .map_err(|error| format!("could not set archive busy timeout: {error}"))?;
         connection
             .pragma_update(None, "foreign_keys", "ON")
@@ -1194,17 +1195,26 @@ pub fn archive_path() -> Result<PathBuf, String> {
 }
 
 fn enable_wal_mode(connection: &Connection) -> Result<(), String> {
-    const ATTEMPTS: usize = 100;
-    for attempt in 0..ATTEMPTS {
+    const ATTEMPT_TIMEOUT: Duration = Duration::from_millis(25);
+    const RETRY_DELAY: Duration = Duration::from_millis(10);
+    connection
+        .busy_timeout(ATTEMPT_TIMEOUT)
+        .map_err(|error| format!("could not set WAL retry timeout: {error}"))?;
+    let deadline = Instant::now() + ARCHIVE_BUSY_TIMEOUT;
+    loop {
         match connection.pragma_update(None, "journal_mode", "WAL") {
-            Ok(()) => return Ok(()),
-            Err(error) if is_lock_error(&error) && attempt + 1 < ATTEMPTS => {
-                std::thread::sleep(Duration::from_millis(10));
+            Ok(()) => {
+                connection
+                    .busy_timeout(ARCHIVE_BUSY_TIMEOUT)
+                    .map_err(|error| format!("could not restore archive busy timeout: {error}"))?;
+                return Ok(());
+            }
+            Err(error) if is_lock_error(&error) && Instant::now() < deadline => {
+                std::thread::sleep(RETRY_DELAY);
             }
             Err(error) => return Err(format!("could not enable archive WAL mode: {error}")),
         }
     }
-    unreachable!("WAL retry loop always returns")
 }
 
 fn is_lock_error(error: &rusqlite::Error) -> bool {
