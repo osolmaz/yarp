@@ -48,12 +48,42 @@ Search and Git diff are the first targets. Together they contain about 180
 million additional removable characters over current YARP. Test, build, log,
 status, and reviewed human-readable list output provide the remaining coverage.
 
+## Native tool truncation
+
+Pi and Codex already limit large model-facing tool results. Pi's built-in limit
+is 50 KiB or 2,000 lines, whichever comes first. Its tools normally keep the
+head for file and search output or the tail for logs and command output. Codex
+unified execution defaults to 10,000 output tokens, uses middle truncation, and
+has a separate 1 MiB collection cap.
+
+A collapsed or shortened TUI view is not proof that the model received the same
+text. Display folding, model-facing truncation, output collection, and later
+context compaction are separate layers.
+
+The frozen corpus contains persisted agent tool results, so its shell-output
+measurements already include much of this native truncation. YARP's 20% release
+target is additional removal from those stored results, not a replacement for
+native limits.
+
+Native truncation remains the final emergency limit. YARP's job is different: it
+uses command structure to remove repetitive text and retain useful evidence
+before a blunt limit chooses a head, tail, or middle slice. For example, a 40
+KiB test log fits below Pi's byte limit but can still be reduced to its
+failures, diagnostics, and final totals.
+
+YARP should run before native truncation whenever a safe command wrapper is
+available. If a post-result reducer receives an already truncated result, it
+must record that limitation, summarize only the bytes it can verify, and never
+claim that its archive contains missing bytes. A documented complete source such
+as Pi Bash's `fullOutputPath` may be used only after YARP captures and verifies
+it through the existing `source_output/before` archive snapshot.
+
 ## Product behavior
 
 For a selected command, YARP will:
 
 1. Run the command once with the current child-process contract.
-2. Capture the exact source output.
+2. Capture the best available exact source and record whether it is complete.
 3. Parse lines with a typed reducer for that command family.
 4. Build a bounded summary containing outcome, diagnostics, structure, context,
    and examples.
@@ -106,7 +136,14 @@ child stdout/stderr
 
 The runner continues to spool stdout and stderr independently. It waits for the
 archive transaction before emitting reduced streams. A spool or archive failure
-restores the exact raw stream and preserves the child status.
+restores the exact raw stream and preserves the child status. Wrapped streams
+are complete child output and reach YARP before Pi applies its own limit.
+
+A post-result reducer has a weaker source contract. It prefers a verified
+`source_output/before` snapshot when the documented host tool provided one.
+Otherwise it uses `result_text/before`, which is exact only for the result the
+host exposed and may already be truncated. The summary and omission marker must
+name that source and its completeness.
 
 The reducer does not write SQLite and does not know archive paths. It receives
 an optional opaque archive reference used only to render retrieval instructions.
@@ -229,9 +266,9 @@ yarp archive read \
   --lines 801:900
 ```
 
-Supported subjects are `stdout`, `stderr`, and `result_text`. The command always
-reads the `before` snapshot. It writes selected bytes to stdout and writes its
-own diagnostics to stderr.
+Supported subjects are `stdout`, `stderr`, `source_output`, and `result_text`.
+The command always reads the `before` snapshot. It writes selected bytes to
+stdout and writes its own diagnostics to stderr.
 
 Line ranges are one-based and inclusive. Byte ranges are available for exact
 non-text inspection. Exactly one range form is required. One request is capped
@@ -265,20 +302,23 @@ For an unwrapped shell call, add a post-result path:
 
 1. `tool_call` retains the original command in the existing active-call state.
 2. Pi runs the original command unchanged.
-3. `tool_result` commits `result/before`, `result_text/before`, and the
-   provisional result.
+3. `tool_result` commits `result/before`, `result_text/before`, any documented
+   `source_output/before`, and the provisional result.
 4. Only after that commit, the extension invokes a one-shot Rust result reducer.
-5. Rust analyzes the original command, validates rule packs, and reduces the
-   exact text with the real status.
-6. The extension returns a `content` patch only when Rust returns a valid
+5. Rust prefers a verified complete `source_output` and otherwise uses the exact
+   host-exposed `result_text` with its truncation state.
+6. Rust analyzes the original command, validates rule packs, and reduces the
+   selected source with the real status.
+7. The extension returns a `content` patch only when Rust returns a valid
    compact result.
-7. `tool_execution_end` stores the final result after every result hook.
+8. `tool_execution_end` stores the final result after every result hook.
 
-The one-shot process uses a bounded length-framed stdin protocol so command text
-and result content do not appear in process arguments. It is not a service and
-retains no state after the request. The TypeScript side accepts only one shell
-text content item, preserves `details`, `usage`, and `isError`, and passes
-through images, multiple text items, malformed content, and unknown tool shapes.
+The one-shot process uses a bounded length-framed stdin protocol so command
+text, source completeness, native truncation metadata, and result content do not
+appear in process arguments. It is not a service and retains no state after the
+request. The TypeScript side accepts only one shell text content item, preserves
+`details`, `usage`, and `isError`, and passes through images, multiple text
+items, malformed content, and unknown tool shapes.
 
 When the archive is disabled, post-result reduction remains disabled because no
 exact `result_text` recovery source exists. Direct wrapped commands continue to
@@ -389,7 +429,8 @@ documented partial return from `tool_result`; do not edit session entries.
 ### Corpus release gates
 
 Run the production matcher and reducers over all 371,241 frozen shell results
-and report raw counts.
+and report raw counts. Treat these as incremental savings after the native
+truncation already present in persisted agent results.
 
 - Remove at least 289,105,282 of 1,445,526,406 shell-output characters.
 - Use 303,560,545 removed characters as the development target.
@@ -464,8 +505,10 @@ The work is complete when:
 - compact results use absolute and proportional savings gates instead of a fixed
   input threshold;
 - omission markers identify exact, bounded archive ranges when recovery is
-  available;
+  available and state whether the archived source was complete;
 - direct wrapped commands preserve stream separation and status;
+- native Pi and Codex limits remain final safety nets rather than YARP's summary
+  policy;
 - safe compound results can be reduced without changing or replaying their
   commands;
 - archive, protocol, reducer, and rule failures return unchanged output;
