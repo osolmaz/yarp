@@ -14,22 +14,22 @@ Command-Aware Pruning will improve coverage and reduction while retaining the cu
 
 ## Implemented result
 
-The implementation now uses 128 independently authored built-in rules. Built-ins compile into indexed Rust data during the build. External source packs use strict JSON, compile explicitly into one indexed `.yrp` file, and load without a server or cache. The runtime has bounded byte-stream reducers for head-and-tail retention, literal line filtering, Cargo tests, Git diffs, Git status, and search output.
+The implementation now uses 144 independently authored built-in rules. Built-ins compile into indexed Rust data during the build. External source packs use strict JSON, compile explicitly into one indexed `.yrp` file, and load without a server or cache. The runtime has bounded byte-stream reducers for head-and-tail retention, literal line filtering, Cargo tests, Git diffs, Git status, and search output.
 
 The production engine was evaluated on the same 371,241 stored shell results as the baseline:
 
 | Metric | Baseline | Command-aware | Absolute change |
 | --- | ---: | ---: | ---: |
-| Eligible results | 33,830 | 58,638 | +24,808 |
-| Changed results | 3,481 | 4,184 | +703 |
-| Characters removed | 61,814,796 | 68,232,604 | +6,417,808 |
-| Share of all output removed | 3.18351% | 3.51403% | +0.33052 points |
+| Eligible results | 33,830 | 56,946 | +23,116 |
+| Changed results | 3,481 | 4,136 | +655 |
+| Characters removed | 61,814,796 | 67,524,245 | +5,709,449 |
+| Share of all output removed | 3.18351% | 3.47755% | +0.29404 points |
 
-The command-aware benchmark reads an explicit stored exit code when one is available and otherwise falls back to the stored error flag. The older baseline used only the error flag. Because failure policies retain more context, the comparison is conservative but not an exact policy-for-policy timing comparison. The character reduction increased by 10.38%. The new result cleared a retrospective minimum worthwhile effect of five million additional removed characters and 0.25 percentage points of all output. Shipping still required every safety and semantic gate. Compression alone was not sufficient.
+The command-aware benchmark reads an explicit stored exit code when one is available and otherwise falls back to the stored error flag. The older baseline used only the error flag. Because failure policies retain more context, the comparison is conservative but not an exact policy-for-policy timing comparison. The character reduction increased by 9.24%. The new result cleared a retrospective minimum worthwhile effect of five million additional removed characters and 0.25 percentage points of all output. Shipping still required every safety and semantic gate. Compression alone was not sufficient.
 
 A targeted review sampled the 100 largest results for six high-impact rules. The simple diagnostic-word check found that reduced output retained 1,926 of 1,959 Cargo-test diagnostic lines, 2,850 of 3,466 package-test diagnostic lines, 711 of 769 CI-run diagnostic lines, 940 of 1,097 grep diagnostic lines, and 680 of 1,044 ripgrep diagnostic lines. These are targeted structural checks, not corpus-wide semantic-quality rates. Large Git diffs continue to omit changed lines after their explicit budget and mark the omission, so exact object inspection remains protected by pass-through rules.
 
-The standalone performance harness measured built-in matching below one microsecond at p95. A warm 1,000-rule external pack opened and matched in 223 microseconds at p95; its first measured open and match took 256 microseconds. The streaming search reducer processed a 1 GiB synthetic input at 213.94 MB/s with a configured per-stream memory bound of 499,968 bytes. These results are well below the proposed 5 ms external-pack threshold, so a persistent rule process is not justified.
+The standalone performance harness measured built-in matching below one microsecond at p95. A warm 1,000-rule external pack opened and matched in 220 microseconds at p95; its first measured open and match took 382 microseconds. The streaming search reducer processed a 1 GiB synthetic input at 151.88 MB/s with a configured per-stream memory bound of 530,688 bytes. These results are well below the proposed 5 ms external-pack threshold, so a persistent rule process is not justified.
 
 The complete extractor database still verifies with zero orphan calls, results, or observations. Raw benchmark rows, paired outputs, and the private database remain outside Git.
 
@@ -852,7 +852,7 @@ short raw buffer
 + fixed rendering reserve
 ```
 
-The implementation must calculate a conservative upper bound before starting the child. It must reject a rule whose bound overflows `usize` or exceeds the engine's configured per-stream maximum.
+The implementation must calculate a conservative upper bound before starting the child. It must reject a rule whose bound overflows `usize` or exceeds the 4 MiB configured per-stream maximum. Stdout and stderr can therefore retain at most 8 MiB of rule state together, plus fixed runner and archive I/O buffers.
 
 The runner handles stdout and stderr concurrently, so process-level calculations must include both streams and optional archive spool buffers. Disk-backed archive spools do not count as retained output memory, but their small I/O buffers do.
 

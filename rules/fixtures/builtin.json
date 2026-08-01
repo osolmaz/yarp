@@ -129,31 +129,233 @@
       "expected_action": "passthrough"
     },
     {
-      "id": "guards-ls-zero-match",
-      "rule_id": "guards/ls-zero",
+      "id": "guards-rg-files-match",
+      "rule_id": "guards/rg-files",
       "argv": [
-        "ls",
-        "--zero"
-      ],
-      "expected_action": "passthrough"
-    },
-    {
-      "id": "guards-du-null-match",
-      "rule_id": "guards/du-null",
-      "argv": [
-        "du",
-        "--null",
+        "rg",
+        "--files",
+        "needle",
         "."
       ],
       "expected_action": "passthrough"
     },
     {
-      "id": "guards-du-zero-match",
-      "rule_id": "guards/du-zero",
+      "id": "guards-rg-files-with-matches-match",
+      "rule_id": "guards/rg-files-with-matches",
       "argv": [
-        "du",
-        "-0",
+        "rg",
+        "--files-with-matches",
+        "needle",
         "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-rg-files-without-match-match",
+      "rule_id": "guards/rg-files-without-match",
+      "argv": [
+        "rg",
+        "--files-without-match",
+        "needle",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-rg-count-match",
+      "rule_id": "guards/rg-count",
+      "argv": [
+        "rg",
+        "--count",
+        "needle",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-rg-count-matches-match",
+      "rule_id": "guards/rg-count-matches",
+      "argv": [
+        "rg",
+        "--count-matches",
+        "needle",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-rg-type-list-match",
+      "rule_id": "guards/rg-type-list",
+      "argv": [
+        "rg",
+        "--type-list",
+        "needle",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-rg-short-files-match",
+      "rule_id": "guards/rg-short-files",
+      "argv": [
+        "rg",
+        "-l",
+        "needle",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-rg-short-files-without-match",
+      "rule_id": "guards/rg-short-files-without",
+      "argv": [
+        "rg",
+        "-L",
+        "needle",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-rg-short-count-match",
+      "rule_id": "guards/rg-short-count",
+      "argv": [
+        "rg",
+        "-c",
+        "needle",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-grep-files-with-matches-match",
+      "rule_id": "guards/grep-files-with-matches",
+      "argv": [
+        "grep",
+        "--files-with-matches",
+        "needle",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-grep-files-with-matches-match",
+      "rule_id": "guards/git-grep-files-with-matches",
+      "argv": [
+        "git",
+        "grep",
+        "--files-with-matches",
+        "needle"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-grep-files-without-match-match",
+      "rule_id": "guards/grep-files-without-match",
+      "argv": [
+        "grep",
+        "--files-without-match",
+        "needle",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-grep-files-without-match-match",
+      "rule_id": "guards/git-grep-files-without-match",
+      "argv": [
+        "git",
+        "grep",
+        "--files-without-match",
+        "needle"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-grep-count-match",
+      "rule_id": "guards/grep-count",
+      "argv": [
+        "grep",
+        "--count",
+        "needle",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-grep-count-match",
+      "rule_id": "guards/git-grep-count",
+      "argv": [
+        "git",
+        "grep",
+        "--count",
+        "needle"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-grep-short-files-match",
+      "rule_id": "guards/grep-short-files",
+      "argv": [
+        "grep",
+        "-l",
+        "needle",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-grep-short-files-match",
+      "rule_id": "guards/git-grep-short-files",
+      "argv": [
+        "git",
+        "grep",
+        "-l",
+        "needle"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-grep-short-files-without-match",
+      "rule_id": "guards/grep-short-files-without",
+      "argv": [
+        "grep",
+        "-L",
+        "needle",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-grep-short-files-without-match",
+      "rule_id": "guards/git-grep-short-files-without",
+      "argv": [
+        "git",
+        "grep",
+        "-L",
+        "needle"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-grep-short-count-match",
+      "rule_id": "guards/grep-short-count",
+      "argv": [
+        "grep",
+        "-c",
+        "needle",
+        "."
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-grep-short-count-match",
+      "rule_id": "guards/git-grep-short-count",
+      "argv": [
+        "git",
+        "grep",
+        "-c",
+        "needle"
       ],
       "expected_action": "passthrough"
     },
@@ -484,25 +686,6 @@
         "git",
         "grep",
         "needle"
-      ],
-      "expected_action": "reduce"
-    },
-    {
-      "id": "search-ls-match",
-      "rule_id": "search/ls",
-      "argv": [
-        "ls",
-        "-la"
-      ],
-      "expected_action": "reduce"
-    },
-    {
-      "id": "search-du-match",
-      "rule_id": "search/du",
-      "argv": [
-        "du",
-        "-sh",
-        "."
       ],
       "expected_action": "reduce"
     },

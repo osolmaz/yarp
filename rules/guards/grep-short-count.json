@@ -1,0 +1,12 @@
+{
+  "id": "guards/grep-short-count",
+  "match": {
+    "program": [
+      "grep"
+    ],
+    "argv_contains_all": [
+      "-c"
+    ]
+  },
+  "action": "passthrough"
+}

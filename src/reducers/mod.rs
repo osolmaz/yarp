@@ -31,6 +31,13 @@ impl StreamReducer {
         if rule.action != Action::Reduce {
             return Err("cannot create a reducer for a passthrough rule".to_owned());
         }
+        let memory_bound = yarp_rule_pack::stream_memory_bound(rule)?;
+        if memory_bound > yarp_rule_pack::MAX_STREAM_MEMORY_BYTES {
+            return Err(format!(
+                "rule requires {memory_bound} bytes per stream, above the {}-byte limit",
+                yarp_rule_pack::MAX_STREAM_MEMORY_BYTES
+            ));
+        }
         let kind = rule
             .reducer
             .clone()
@@ -179,46 +186,7 @@ pub fn reduce_bytes(rule: &Rule, input: &[u8], success: bool) -> Result<Vec<u8>,
 ///
 /// Returns an error when the rule is incomplete or the bound overflows `usize`.
 pub fn configured_memory_bound(rule: &Rule) -> Result<usize, String> {
-    let success = rule
-        .success
-        .ok_or_else(|| "reduction rule is missing a success policy".to_owned())?;
-    let failure = rule
-        .failure
-        .ok_or_else(|| "reduction rule is missing a failure policy".to_owned())?;
-    let raw = success
-        .max_output_bytes
-        .saturating_add(success.min_savings_bytes)
-        .max(
-            failure
-                .max_output_bytes
-                .saturating_add(failure.min_savings_bytes),
-        );
-    let max_line = success.max_line_bytes.max(failure.max_line_bytes);
-    let line_state = max_line
-        .checked_mul(2)
-        .ok_or_else(|| "line memory bound overflowed".to_owned())?;
-    let reducer_state = if matches!(rule.reducer, Some(Reducer::GitDiff)) {
-        max_line
-            .checked_mul(3)
-            .ok_or_else(|| "reducer memory bound overflowed".to_owned())?
-    } else {
-        0
-    };
-    [
-        raw,
-        success.max_output_bytes,
-        failure.max_output_bytes,
-        line_state,
-        reducer_state,
-        8 * 1024,
-        64 * 1024,
-    ]
-    .into_iter()
-    .try_fold(0_usize, |total, value| {
-        total
-            .checked_add(value)
-            .ok_or_else(|| "stream memory bound overflowed".to_owned())
-    })
+    yarp_rule_pack::stream_memory_bound(rule)
 }
 
 #[cfg(test)]
@@ -262,6 +230,22 @@ mod tests {
         let failure = reduce_bytes(&rule(Reducer::HeadTail), input.as_bytes(), false)
             .expect("failure reduction");
         assert!(failure.len() > success.len());
+    }
+
+    #[test]
+    fn rejects_rules_above_the_stream_memory_limit() {
+        let mut oversized = rule(Reducer::HeadTail);
+        let policy = OutputPolicy {
+            head_lines: 10_000,
+            tail_lines: 10_000,
+            max_line_bytes: 1_048_576,
+            max_output_bytes: 16_777_216,
+            min_savings_bytes: 1_048_576,
+        };
+        oversized.success = Some(policy);
+        oversized.failure = Some(policy);
+        let error = StreamReducer::new(&oversized).expect_err("memory limit");
+        assert!(error.contains("per stream"));
     }
 
     #[test]

@@ -70,6 +70,11 @@ mod tests {
         LineView {
             prefix: value.as_bytes().to_vec(),
             tail: VecDeque::from(value.as_bytes().to_vec()),
+            line_ending: if value.ends_with('\n') {
+                b"\n".to_vec()
+            } else {
+                Vec::new()
+            },
             total_bytes: value.len(),
             truncated: false,
         }

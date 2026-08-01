@@ -1,0 +1,15 @@
+{
+  "id": "guards/git-grep-short-files",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "grep"
+    ],
+    "argv_contains_all": [
+      "-l"
+    ]
+  },
+  "action": "passthrough"
+}

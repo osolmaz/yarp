@@ -1,0 +1,12 @@
+{
+  "id": "guards/grep-short-files",
+  "match": {
+    "program": [
+      "grep"
+    ],
+    "argv_contains_all": [
+      "-l"
+    ]
+  },
+  "action": "passthrough"
+}

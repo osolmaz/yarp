@@ -1,11 +1,11 @@
 {
-  "id": "guards/ls-zero",
+  "id": "guards/rg-files-with-matches",
   "match": {
     "program": [
-      "ls"
+      "rg"
     ],
     "argv_contains_all": [
-      "--zero"
+      "--files-with-matches"
     ]
   },
   "action": "passthrough"

@@ -1,0 +1,15 @@
+{
+  "id": "guards/git-grep-count",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "grep"
+    ],
+    "argv_contains_all": [
+      "--count"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "guards/grep-files-without-match",
+  "match": {
+    "program": [
+      "grep"
+    ],
+    "argv_contains_all": [
+      "--files-without-match"
+    ]
+  },
+  "action": "passthrough"
+}
