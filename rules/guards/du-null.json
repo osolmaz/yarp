@@ -1,0 +1,12 @@
+{
+  "id": "guards/du-null",
+  "match": {
+    "program": [
+      "du"
+    ],
+    "argv_contains_all": [
+      "--null"
+    ]
+  },
+  "action": "passthrough"
+}
