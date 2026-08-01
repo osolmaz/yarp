@@ -9,6 +9,7 @@ const LINE_MARKER_RESERVE: usize = 96;
 pub struct LineView {
     pub prefix: Vec<u8>,
     pub tail: VecDeque<u8>,
+    pub line_ending: Vec<u8>,
     pub total_bytes: usize,
     pub truncated: bool,
 }
@@ -36,6 +37,8 @@ pub struct LineAccumulator {
     total_bytes: usize,
     prefix_limit: usize,
     tail_limit: usize,
+    previous_byte: Option<u8>,
+    last_byte: Option<u8>,
 }
 
 impl LineAccumulator {
@@ -47,11 +50,15 @@ impl LineAccumulator {
             total_bytes: 0,
             prefix_limit,
             tail_limit,
+            previous_byte: None,
+            last_byte: None,
         }
     }
 
     pub fn push(&mut self, byte: u8) {
         self.total_bytes = self.total_bytes.saturating_add(1);
+        self.previous_byte = self.last_byte;
+        self.last_byte = Some(byte);
         if self.prefix.len() < self.prefix_limit {
             self.prefix.push(byte);
         }
@@ -66,6 +73,11 @@ impl LineAccumulator {
     pub fn take(&mut self) -> LineView {
         let total_bytes = self.total_bytes;
         self.total_bytes = 0;
+        let line_ending = match (self.previous_byte.take(), self.last_byte.take()) {
+            (Some(b'\r'), Some(b'\n')) => b"\r\n".to_vec(),
+            (_, Some(b'\n')) => b"\n".to_vec(),
+            _ => Vec::new(),
+        };
         LineView {
             prefix: std::mem::replace(
                 &mut self.prefix,
@@ -75,6 +87,7 @@ impl LineAccumulator {
                 &mut self.tail,
                 VecDeque::with_capacity(self.tail_limit.min(64 * 1024)),
             ),
+            line_ending,
             total_bytes,
             truncated: total_bytes > self.prefix_limit,
         }
@@ -199,10 +212,8 @@ impl Retention {
     }
 
     fn observe_newline(&mut self, line: &LineView) {
-        if line.prefix.ends_with(b"\r\n") {
-            self.newline = b"\r\n".to_vec();
-        } else if line.prefix.ends_with(b"\n") {
-            self.newline = b"\n".to_vec();
+        if !line.line_ending.is_empty() {
+            self.newline.clone_from(&line.line_ending);
         }
     }
 }
@@ -265,13 +276,7 @@ fn render_line(line: &LineView, limit: usize, two_sided: bool) -> (Vec<u8>, bool
         return (line.prefix.clone(), false);
     }
     let tail = line.tail_bytes();
-    let newline = if line.prefix.ends_with(b"\r\n") || tail.ends_with(b"\r\n") {
-        &b"\r\n"[..]
-    } else if line.prefix.ends_with(b"\n") || tail.ends_with(b"\n") {
-        &b"\n"[..]
-    } else {
-        &[][..]
-    };
+    let newline = line.line_ending.as_slice();
     let mut omitted = line.total_bytes.saturating_sub(limit);
     let (marker, available) = loop {
         let marker = format!("[yarp: line truncated; {omitted} bytes omitted]");
@@ -329,9 +334,17 @@ mod tests {
     }
 
     fn line(value: &[u8]) -> LineView {
+        let line_ending = if value.ends_with(b"\r\n") {
+            b"\r\n".to_vec()
+        } else if value.ends_with(b"\n") {
+            b"\n".to_vec()
+        } else {
+            Vec::new()
+        };
         LineView {
             prefix: value.to_vec(),
             tail: value.iter().copied().collect(),
+            line_ending,
             total_bytes: value.len(),
             truncated: false,
         }
@@ -352,6 +365,17 @@ mod tests {
             retained.render(),
             b"one\ntwo\n[yarp: omitted 1 lines]\nfour\n"
         );
+    }
+
+    #[test]
+    fn preserves_the_ending_after_a_truncated_line() {
+        let mut accumulator = LineAccumulator::new(256, 0);
+        for byte in b"a".repeat(300).into_iter().chain([b'\n']) {
+            accumulator.push(byte);
+        }
+        let line = accumulator.take();
+        assert_eq!(line.line_ending, b"\n");
+        assert!(render_line(&line, 256, false).0.ends_with(b"]\n"));
     }
 
     #[test]

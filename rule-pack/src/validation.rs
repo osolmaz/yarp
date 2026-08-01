@@ -9,6 +9,7 @@ pub const MAX_RULES: usize = 10_000;
 pub const MAX_SOURCE_FILE_BYTES: usize = 64 * 1024;
 pub const MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_COMPILED_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_STREAM_MEMORY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Validate source manifest fields and explicit rule paths.
 ///
@@ -98,6 +99,13 @@ pub fn validate_rule(rule: &Rule) -> Result<(), String> {
             validate_reducer(reducer)?;
             validate_policy("success", success)?;
             validate_policy("failure", failure)?;
+            let memory_bound = stream_memory_bound_parts(reducer, success, failure)?;
+            if memory_bound > MAX_STREAM_MEMORY_BYTES {
+                return Err(format!(
+                    "reduce rule {} requires {memory_bound} bytes per stream, above the {MAX_STREAM_MEMORY_BYTES}-byte limit",
+                    rule.id
+                ));
+            }
         }
     }
     Ok(())
@@ -251,6 +259,79 @@ fn validate_pattern(pattern: &LinePattern) -> Result<(), String> {
     Ok(())
 }
 
+/// Calculate the conservative retained-memory bound for one rule stream.
+///
+/// # Errors
+///
+/// Returns an error when the rule is incomplete or the calculation overflows `usize`.
+pub fn stream_memory_bound(rule: &Rule) -> Result<usize, String> {
+    let reducer = rule
+        .reducer
+        .as_ref()
+        .ok_or_else(|| "reduction rule is missing a reducer".to_owned())?;
+    let success = rule
+        .success
+        .as_ref()
+        .ok_or_else(|| "reduction rule is missing a success policy".to_owned())?;
+    let failure = rule
+        .failure
+        .as_ref()
+        .ok_or_else(|| "reduction rule is missing a failure policy".to_owned())?;
+    stream_memory_bound_parts(reducer, success, failure)
+}
+
+fn stream_memory_bound_parts(
+    reducer: &Reducer,
+    success: &OutputPolicy,
+    failure: &OutputPolicy,
+) -> Result<usize, String> {
+    let raw = success
+        .max_output_bytes
+        .saturating_add(success.min_savings_bytes)
+        .max(
+            failure
+                .max_output_bytes
+                .saturating_add(failure.min_savings_bytes),
+        );
+    let max_line = success.max_line_bytes.max(failure.max_line_bytes);
+    let line_state = max_line
+        .checked_mul(2)
+        .ok_or_else(|| "line memory bound overflowed".to_owned())?;
+    let reducer_state = if matches!(reducer, Reducer::GitDiff) {
+        max_line
+            .checked_mul(3)
+            .ok_or_else(|| "reducer memory bound overflowed".to_owned())?
+    } else {
+        0
+    };
+    // Each retained line can occupy a geometrically grown outer-vector slot plus its own Vec.
+    let retained_lines = success
+        .head_lines
+        .checked_add(success.tail_lines)
+        .and_then(|value| value.checked_add(failure.head_lines))
+        .and_then(|value| value.checked_add(failure.tail_lines))
+        .ok_or_else(|| "retained line count overflowed".to_owned())?;
+    let retained_line_overhead = retained_lines
+        .checked_mul(64)
+        .ok_or_else(|| "retained line overhead overflowed".to_owned())?;
+    [
+        raw,
+        success.max_output_bytes,
+        failure.max_output_bytes,
+        line_state,
+        reducer_state,
+        retained_line_overhead,
+        8 * 1024,
+        64 * 1024,
+    ]
+    .into_iter()
+    .try_fold(0_usize, |total, value| {
+        total
+            .checked_add(value)
+            .ok_or_else(|| "stream memory bound overflowed".to_owned())
+    })
+}
+
 fn validate_policy(label: &str, policy: &OutputPolicy) -> Result<(), String> {
     if policy.head_lines > 10_000 || policy.tail_lines > 10_000 {
         return Err(format!("{label} line limits must not exceed 10000"));
@@ -359,6 +440,17 @@ mod tests {
         guard.failure = None;
         validate_rules(&[guard, rule("build", &["build"]), rule("test", &["test"])])
             .expect("valid rules");
+    }
+
+    #[test]
+    fn rejects_rules_above_the_aggregate_memory_limit() {
+        let mut oversized = rule("oversized", &["run"]);
+        let policy = oversized.success.as_mut().expect("success policy");
+        policy.max_output_bytes = 16_777_216;
+        policy.min_savings_bytes = 1_048_576;
+        oversized.failure = oversized.success;
+        let error = validate_rule(&oversized).expect_err("memory limit");
+        assert!(error.contains("per stream"));
     }
 
     #[test]

@@ -1,0 +1,15 @@
+{
+  "id": "guards/git-grep-files-without-match",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "grep"
+    ],
+    "argv_contains_all": [
+      "--files-without-match"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "guards/rg-type-list",
+  "match": {
+    "program": [
+      "rg"
+    ],
+    "argv_contains_all": [
+      "--type-list"
+    ]
+  },
+  "action": "passthrough"
+}

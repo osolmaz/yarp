@@ -1,11 +1,11 @@
 {
-  "id": "guards/du-zero",
+  "id": "guards/rg-short-files",
   "match": {
     "program": [
-      "du"
+      "rg"
     ],
     "argv_contains_all": [
-      "-0"
+      "-l"
     ]
   },
   "action": "passthrough"

@@ -1,0 +1,12 @@
+{
+  "id": "guards/rg-count-matches",
+  "match": {
+    "program": [
+      "rg"
+    ],
+    "argv_contains_all": [
+      "--count-matches"
+    ]
+  },
+  "action": "passthrough"
+}

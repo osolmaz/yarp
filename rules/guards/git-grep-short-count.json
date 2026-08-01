@@ -1,11 +1,14 @@
 {
-  "id": "guards/du-null",
+  "id": "guards/git-grep-short-count",
   "match": {
     "program": [
-      "du"
+      "git"
+    ],
+    "argv_prefix": [
+      "grep"
     ],
     "argv_contains_all": [
-      "--null"
+      "-c"
     ]
   },
   "action": "passthrough"

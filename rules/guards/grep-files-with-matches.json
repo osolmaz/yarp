@@ -1,0 +1,12 @@
+{
+  "id": "guards/grep-files-with-matches",
+  "match": {
+    "program": [
+      "grep"
+    ],
+    "argv_contains_all": [
+      "--files-with-matches"
+    ]
+  },
+  "action": "passthrough"
+}

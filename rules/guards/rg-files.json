@@ -1,0 +1,12 @@
+{
+  "id": "guards/rg-files",
+  "match": {
+    "program": [
+      "rg"
+    ],
+    "argv_contains_all": [
+      "--files"
+    ]
+  },
+  "action": "passthrough"
+}

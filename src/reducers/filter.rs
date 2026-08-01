@@ -205,6 +205,11 @@ mod tests {
         LineView {
             prefix: value.to_vec(),
             tail: VecDeque::from(value.to_vec()),
+            line_ending: if value.ends_with(b"\n") {
+                b"\n".to_vec()
+            } else {
+                Vec::new()
+            },
             total_bytes: value.len() + usize::from(truncated),
             truncated,
         }
