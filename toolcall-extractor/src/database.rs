@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::keys;
 use crate::model::{
     IssueRecord, ObservationRecord, SessionRecord, SourceItemRecord, SourceRootRecord,
-    SourceStatus, ToolCallRecord, ToolResultRecord,
+    ToolCallRecord, ToolResultRecord,
 };
 use crate::private_fs;
 use crate::sink::{Checkpoint, Sink};
@@ -30,6 +30,9 @@ pub struct Database {
     observations: Vec<ObservationRecord>,
     issues: Vec<IssueRecord>,
     staged_growth_upper_bound: u64,
+    source_checkpoints: BTreeMap<String, Option<Checkpoint>>,
+    source_initial_offsets: BTreeMap<String, Option<u64>>,
+    reset_sources: BTreeSet<String>,
     _lock: File,
 }
 
@@ -130,6 +133,9 @@ impl Database {
             observations: Vec::new(),
             issues: Vec::new(),
             staged_growth_upper_bound: 0,
+            source_checkpoints: BTreeMap::new(),
+            source_initial_offsets: BTreeMap::new(),
+            reset_sources: BTreeSet::new(),
             _lock: lock,
         })
     }
@@ -231,6 +237,12 @@ impl Database {
         self.observations.clear();
         self.issues.clear();
         self.staged_growth_upper_bound = 0;
+    }
+
+    fn clear_source_state(&mut self) {
+        self.source_checkpoints.clear();
+        self.source_initial_offsets.clear();
+        self.reset_sources.clear();
     }
 
     fn quarantine_orphan_results(&self) -> Result<()> {
@@ -550,6 +562,7 @@ impl Sink for Database {
                 "source transaction already active".to_owned(),
             ));
         }
+        self.clear_source_state();
         self.connection.execute_batch("BEGIN TRANSACTION;")?;
         self.in_transaction = true;
         Ok(())
@@ -570,6 +583,7 @@ impl Sink for Database {
         self.connection.execute_batch("COMMIT;")?;
         self.in_transaction = false;
         self.staged_growth_upper_bound = 0;
+        self.clear_source_state();
         Ok(())
     }
 
@@ -579,10 +593,19 @@ impl Sink for Database {
             self.connection.execute_batch("ROLLBACK;")?;
             self.in_transaction = false;
         }
+        self.clear_source_state();
         Ok(())
     }
 
     fn reset_source(&mut self, source_item_key: &str) -> Result<()> {
+        if self.in_transaction && !self.source_checkpoints.contains_key(source_item_key) {
+            let checkpoint = self.checkpoint(source_item_key)?;
+            self.source_checkpoints
+                .insert(source_item_key.to_owned(), checkpoint);
+        }
+        if self.in_transaction {
+            self.reset_sources.insert(source_item_key.to_owned());
+        }
         self.execute_cached(
             "CREATE OR REPLACE TEMP TABLE reset_result_keys AS
              SELECT result_key FROM observations
@@ -646,17 +669,40 @@ impl Sink for Database {
 
     fn source_item(&mut self, record: &SourceItemRecord) -> Result<()> {
         private_fs::enforce_size_limit(&self.path, estimate_source_item(record))?;
-        if matches!(record.status, SourceStatus::Deferred)
-            && record.imported_byte_count == Some(0)
-            && let Some(checkpoint) = self.checkpoint(&record.source_item_key)?
+        let was_seen = self
+            .source_initial_offsets
+            .contains_key(&record.source_item_key);
+        if self.in_transaction
+            && !self
+                .source_checkpoints
+                .contains_key(&record.source_item_key)
+        {
+            let checkpoint = self.checkpoint(&record.source_item_key)?;
+            self.source_checkpoints
+                .insert(record.source_item_key.clone(), checkpoint);
+        }
+        if self.in_transaction && !was_seen {
+            self.source_initial_offsets
+                .insert(record.source_item_key.clone(), record.imported_byte_count);
+        }
+        let stateless_replay = self.in_transaction
+            && was_seen
+            && self.source_initial_offsets.get(&record.source_item_key) == Some(&Some(0))
+            && !self.reset_sources.contains(&record.source_item_key);
+        if stateless_replay
+            && let Some(checkpoint) = self
+                .source_checkpoints
+                .get(&record.source_item_key)
+                .and_then(Option::as_ref)
         {
             let unchanged = checkpoint.adapter_version == record.adapter_version
                 && checkpoint.device_id == record.device_id
                 && checkpoint.inode == record.inode
                 && checkpoint.size_bytes == record.size_bytes
                 && checkpoint.snapshot_mtime_ns == record.snapshot_mtime_ns
-                && checkpoint.imported_byte_count == Some(record.size_bytes)
-                && checkpoint.status == "complete";
+                && checkpoint.imported_byte_count == record.imported_byte_count
+                && checkpoint.prefix_sha256 == record.prefix_sha256
+                && checkpoint.status == record.status.as_str();
             if !unchanged {
                 self.reset_source(&record.source_item_key)?;
             }
