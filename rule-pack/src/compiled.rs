@@ -9,7 +9,8 @@ use crate::model::{ENGINE_ABI_VERSION, Rule};
 use crate::source::SourcePack;
 use crate::strict_json;
 use crate::validation::{
-    MAX_COMPILED_BYTES, MAX_RULES, validate_manifest, validate_rule, validate_rules,
+    MAX_COMPILED_BYTES, MAX_RULES, MAX_SOURCE_FILE_BYTES, validate_manifest, validate_rule,
+    validate_rules,
 };
 
 const MAGIC: &[u8; 8] = b"YARPRUL\0";
@@ -63,6 +64,12 @@ pub fn compile(pack: &SourcePack) -> Result<Vec<u8>, String> {
     for rule in &sorted_rules {
         let body = serde_jcs::to_vec(rule)
             .map_err(|error| format!("could not encode rule {}: {error}", rule.id))?;
+        if body.len() > MAX_SOURCE_FILE_BYTES {
+            return Err(format!(
+                "compiled rule {} exceeds {MAX_SOURCE_FILE_BYTES} bytes",
+                rule.id
+            ));
+        }
         let offset = u64::try_from(records.len())
             .map_err(|_| "compiled record offset does not fit u64".to_owned())?;
         let length = u32::try_from(body.len())
@@ -528,7 +535,7 @@ fn validate_index(
             .offset
             .checked_add(u64::from(rule.length))
             .ok_or_else(|| "compiled rule bounds overflowed".to_owned())?;
-        if rule.length == 0 || end > records_len {
+        if rule.length == 0 || rule.length as usize > MAX_SOURCE_FILE_BYTES || end > records_len {
             return Err("compiled rule record is out of bounds".to_owned());
         }
     }
@@ -783,6 +790,26 @@ mod tests {
             CompiledPack::open(file.path(), None, Some([0_u8; 32]))
                 .expect_err("compiled digest mismatch")
                 .contains("compiled pack digest changed")
+        );
+    }
+
+    #[test]
+    fn rejects_oversized_indexed_records_before_allocation() {
+        let length = u32::try_from(MAX_SOURCE_FILE_BYTES + 1).expect("record length");
+        let rules = [RuleRecord {
+            id: "tests/run".to_owned(),
+            offset: 0,
+            length,
+            digest: [0_u8; 32],
+        }];
+        let programs = [ProgramEntry {
+            program: "tool".to_owned(),
+            candidates: vec![0],
+        }];
+        assert!(
+            validate_index(&rules, &programs, u64::from(length))
+                .expect_err("oversized record")
+                .contains("out of bounds")
         );
     }
 

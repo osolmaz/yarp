@@ -115,6 +115,7 @@ pub struct Retention {
     total_lines: usize,
     truncated_lines: usize,
     newline: Vec<u8>,
+    newline_observed: bool,
 }
 
 impl Retention {
@@ -147,6 +148,7 @@ impl Retention {
             total_lines: 0,
             truncated_lines: 0,
             newline: b"\n".to_vec(),
+            newline_observed: false,
         }
     }
 
@@ -215,8 +217,9 @@ impl Retention {
     }
 
     fn observe_newline(&mut self, line: &LineView) {
-        if !line.line_ending.is_empty() {
+        if !self.newline_observed && !line.line_ending.is_empty() {
             self.newline.clone_from(&line.line_ending);
+            self.newline_observed = true;
         }
     }
 }
@@ -263,6 +266,9 @@ impl ShortRaw {
             return reduced;
         };
         if raw.len() != self.total_bytes {
+            return reduced;
+        }
+        if raw.len() > policy.max_output_bytes {
             return reduced;
         }
         let savings = raw.len().saturating_sub(reduced.len());
@@ -383,9 +389,33 @@ mod tests {
     }
 
     #[test]
-    fn short_raw_requires_minimum_savings() {
+    fn marker_uses_the_first_observed_line_ending() {
+        let mut retained = Retention::new(policy());
+        for value in [
+            &b"one\r\n"[..],
+            &b"two\n"[..],
+            &b"three\n"[..],
+            &b"four\n"[..],
+        ] {
+            retained.observe(&line(value), true, false);
+        }
+        let output = retained.render();
+        assert!(
+            output
+                .windows(b"[yarp: omitted 1 lines]\r\n".len())
+                .any(|window| window == b"[yarp: omitted 1 lines]\r\n")
+        );
+    }
+
+    #[test]
+    fn short_raw_requires_minimum_savings_without_exceeding_the_output_cap() {
         let mut raw = ShortRaw::new(policy(), policy());
         raw.push(b"short\n");
         assert_eq!(raw.choose(b"tiny\n".to_vec(), policy()), b"short\n");
+
+        let input = vec![b'x'; policy().max_output_bytes + 1];
+        let mut raw = ShortRaw::new(policy(), policy());
+        raw.push(&input);
+        assert_eq!(raw.choose(b"reduced".to_vec(), policy()), b"reduced");
     }
 }
