@@ -159,7 +159,7 @@ This sends framed normalized records through the pipe and creates no intermediat
 
 The default database is `~/.local/share/toolcall-extractor/toolcalls.duckdb`. Tool inputs and outputs can contain secrets, so its directory and files are private. The extractor reads agent state without modifying it, has no network code, and stops before its files reach 10,000,000,000 bytes. See [the implementation plan](docs/toolcall-extractor-implementation-plan.md) for supported formats and privacy boundaries.
 
-A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The command-aware rules removed 67,524,246 characters from stored shell outputs. This is 24.7830% of eligible output and 3.47755% of all rendered output. The eligible set is broader than the earlier generic policy because more commands now have explicit rules. The generated database and transcripts are not included in the repository.
+A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The command-aware rules removed 67,524,246 characters from stored shell outputs. This is 24.7838% of eligible output and 3.47755% of all rendered output. The eligible set is broader than the earlier generic policy because more commands now have explicit rules. The generated database and transcripts are not included in the repository.
 
 ## Limits
 

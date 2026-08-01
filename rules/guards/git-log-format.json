@@ -1,0 +1,15 @@
+{
+  "id": "guards/git-log-format",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "log"
+    ],
+    "argv_contains_all": [
+      "--format"
+    ]
+  },
+  "action": "passthrough"
+}

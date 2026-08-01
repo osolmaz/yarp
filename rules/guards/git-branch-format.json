@@ -1,0 +1,15 @@
+{
+  "id": "guards/git-branch-format",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "branch"
+    ],
+    "argv_contains_all": [
+      "--format"
+    ]
+  },
+  "action": "passthrough"
+}
