@@ -2,8 +2,9 @@
 
 YARP should keep the exact command output locally and give the model a smaller,
 command-specific summary when that summary is useful. The summary must show what
-happened, preserve the evidence needed for the next action, and identify exact
-archived ranges that can be read later.
+happened, preserve the evidence needed for the next action, and include one
+copyable command for searching omitted output. A second command reads an exact
+line range when search context is not enough.
 
 This replaces broad head-and-tail pruning with typed summaries. It does not add
 a fixed 10,000-character threshold. Small output stays exact whenever a summary
@@ -26,7 +27,10 @@ least 20% while preserving these rules:
   and proportional savings requirements. The hard output cap still wins.
 - Reducer memory stays bounded independently of total input size and below 4 MiB
   per stream or result.
-- Archive, reducer, or Pi integration failure returns the unchanged output.
+- Archive, reducer, search, read, or Pi integration failure returns the
+  unchanged primary output and never returns unverified archive bytes.
+- The model never needs an account, session, database ID, snapshot subject,
+  archive path, or Pi-specific argument to retrieve omitted output.
 - The archive and the offline `toolcall-extractor` remain separate systems.
 
 The working corpus target is 21%, or 303,560,545 removed shell-output
@@ -91,8 +95,10 @@ For a selected command, YARP will:
    policy.
 6. Return the raw bytes when the summary does not save enough.
 7. Return the summary when it passes every guard and savings check.
-8. Add exact archive ranges to omission markers when an archive reference is
-   available.
+8. Add one short call reference and a copyable `yarp search` example when an
+   archive reference is available.
+9. Let `yarp search` print copyable `yarp read` commands for exact ranges around
+   returned matches.
 
 For example, a test summary will keep failing test names, error blocks,
 warnings, and final totals. It will count or omit routine passing-test progress.
@@ -111,8 +117,11 @@ This work will not add:
 - an LLM summarizer;
 - network access or telemetry;
 - a daemon, service, watcher, socket, or remote store;
-- executable rule hooks, plugins, runtime regular expressions, or replacement
-  commands;
+- executable rule hooks, plugins, runtime regular expressions in rule matching,
+  or replacement commands;
+- a general query language, search index, ranking service, or arbitrary archive
+  SQL;
+- a custom Pi retrieval tool whose schema consumes model context on every turn;
 - a generic unknown-command reducer;
 - automatic retrieval of omitted output;
 - direct writes to Pi session history;
@@ -141,13 +150,14 @@ are complete child output and reach YARP before Pi applies its own limit.
 
 A post-result reducer has a weaker source contract. It prefers a verified
 `source_output/before` snapshot when the documented host tool provided one.
-Otherwise it uses `result_text/before`, which is exact only for the result the
-host exposed and may already be truncated. The summary and omission marker must
-name that source and its completeness.
+Otherwise it uses the text exposed by the host, which may already be truncated,
+and commits those exact bytes as `result_text/before` only if the summary wins.
+The summary and omission marker must name that source and its completeness.
 
-The reducer does not write SQLite and does not know archive paths. It receives
-an optional opaque archive reference used only to render retrieval instructions.
-The archive module validates and resolves that reference.
+The reducer does not write SQLite and does not know archive paths. It returns a
+summary draft containing rendered evidence and omitted source spans. After the
+archive transaction succeeds, the runner resolves the call reference and adds
+the retrieval marker. No reference is shown before the exact source commits.
 
 ### Typed evidence
 
@@ -218,7 +228,10 @@ min_savings_basis_points
 ```
 
 Success and failure keep separate policies. A failure normally receives a larger
-output budget.
+output budget. Validate `max_line_bytes` from 1 through 1,048,576,
+`max_output_bytes` from 1 through 4,194,304, `min_savings_bytes` from 0 through
+1,048,576, and `min_savings_basis_points` from 0 through 10,000. Reject any
+combination whose calculated stream-memory bound exceeds 4 MiB.
 
 A compact result is used only when it saves at least `min_savings_bytes` and at
 least `min_savings_basis_points` of the raw bytes. This removes the need for a
@@ -252,45 +265,312 @@ A pass-through match vetoes the whole result. Multiple incompatible reducer
 families are ambiguous and pass through. Parsing is for result classification
 only; YARP never replays or changes the compound command.
 
-### Archive retrieval
+### Model-facing retrieval
 
-Add a bounded read command for exact archived ranges:
+Expose two top-level commands:
 
 ```text
-yarp archive read \
-  --archive-agent pi \
-  --archive-account ACCOUNT \
-  --archive-session SESSION \
-  --archive-call CALL \
-  --subject stdout \
-  --lines 801:900
+yarp search REF PATTERN
+yarp read REF [SOURCE] START:END
 ```
 
-Supported subjects are `stdout`, `stderr`, `source_output`, and `result_text`.
-The command always reads the `before` snapshot. It writes selected bytes to
-stdout and writes its own diagnostics to stderr.
+`yarp search` is the normal path. `yarp read` is the exact-range escape hatch.
+Do not expose the archive subcommand tree, database keys, or snapshot model in
+summary text.
 
-Line ranges are one-based and inclusive. Byte ranges are available for exact
-non-text inspection. Exactly one range form is required. One request is capped
-at 64 KiB; an oversized request fails before writing content and asks for a
-smaller range. Payload decompression, byte length, and SHA-256 must verify
-before any bytes are returned.
+A generated omission marker has this shape:
 
-Keep `yarp archive restore` for restoring complete stdout and stderr to their
-original streams. `archive read` serves a different purpose and does not replace
-it.
+```text
+[yarp: omitted 2,418 lines; ref=yr_4f91d03ab8d44712a48fa8b0d671e3d2; source complete]
+Search omitted output: yarp search yr_4f91d03ab8d44712a48fa8b0d671e3d2 'pattern'
+```
 
-The Pi result path needs an exact text snapshot that can be ranged without
-loading the canonical result JSON. Extend the existing version 1 archive in
-place with a `result_text` snapshot subject. Store it only when a shell result
-has exactly one text content item. Derive it from the same `tool_result` event
-and commit it atomically with `result/before`. Rebuild the version 1 `snapshots`
-constraint during migration, verify the resulting schema, and keep one database.
-Do not retain a reader for the superseded table shape.
+The marker is emitted only when the reference resolves to the exact source used
+for the summary. Without a committed source, YARP may still emit a safe summary,
+but it must omit the reference and retrieval instruction.
 
-This archive schema change requires explicit maintainer approval before
-implementation. The rest of the reducer work can proceed without it, but
-post-result summaries and `result_text` retrieval cannot ship until it is
+#### Call references
+
+`REF` is a YARP archive call reference. It is not a source agent's tool-call ID,
+SQLite row ID, payload digest, path, credential, or authorization token.
+
+Add `archive_ref TEXT NOT NULL UNIQUE` to `tool_calls`. Its external form is
+`yr_` followed by 32 lowercase hexadecimal digits containing 128 random bits.
+The format is deliberately boring: it is easy for models to copy, strict to
+validate, and independent of every host's session and call-ID rules.
+
+The version 1 table constraint is:
+
+```sql
+archive_ref TEXT NOT NULL UNIQUE CHECK (
+    length(archive_ref) = 35
+    AND substr(archive_ref, 1, 3) = 'yr_'
+    AND substr(archive_ref, 4) NOT GLOB '*[^0-9a-f]*'
+)
+```
+
+The snapshots subject constraint gains exactly `result_text`, plus bounded
+completeness metadata for that source:
+
+```sql
+subject TEXT NOT NULL CHECK (
+    subject IN (
+        'input', 'result', 'result_text', 'source_output', 'stdout', 'stderr'
+    )
+),
+source_completeness TEXT CHECK (
+    source_completeness IN ('complete', 'incomplete', 'unknown')
+),
+CHECK (
+    (
+        subject = 'result_text'
+        AND stage = 'before'
+        AND source_completeness IS NOT NULL
+    )
+    OR (
+        subject <> 'result_text'
+        AND source_completeness IS NULL
+    )
+)
+```
+
+Wrapped before streams and documented `source_output` snapshots are complete by
+contract and need no repeated metadata. `result_text` records `complete` only
+when the host proves no native truncation, `incomplete` when it reports
+truncation, and `unknown` otherwise.
+
+Generate references with SQLite `randomblob(16)` inside the call-start
+transaction. Retry a unique collision at most three times, then fail the initial
+archive transaction. An idempotent retry of an existing
+`(session_id, source_call_id)` reuses its committed reference; it never
+generates a second identity for the same call. The reference is immutable for
+the life of the call and is removed only when explicit archive pruning deletes
+that call. It is not reused. Possessing a reference does not bypass filesystem
+permissions or grant access to another user's archive.
+
+Migrate the existing version 1 archive in place:
+
+1. Create the normal pre-migration backup.
+2. Add a nullable `archive_ref` column.
+3. Backfill every existing call with a unique value.
+4. Rebuild `tool_calls` with `NOT NULL`, format checks, and a unique constraint.
+5. Recreate indexes and foreign keys.
+6. Verify row counts, foreign keys, archive references, payload references, and
+   SQLite integrity before commit.
+7. Keep `PRAGMA user_version = 1`; do not add a parallel schema or fallback
+   reader.
+
+The extension and runner continue to correlate writes with the full internal
+archive key. The short reference is only for explicit read-only retrieval. It
+resolves without ambient session environment, working directory, account flags,
+or host-specific state, so the same command works after resume and from every
+supported host adapter.
+
+#### Canonical source selection
+
+A call reference can own more than one snapshot. Search chooses sources without
+asking the model for a subject:
+
+1. For a wrapped call, search `stdout/before` and `stderr/before` separately.
+2. Otherwise, prefer a verified `source_output/before` produced by a documented
+   host full-output path.
+3. Otherwise, search `result_text/before`.
+4. If none exists, report that the call has no searchable text.
+
+Never search `input`, canonical result JSON, after snapshots, or duplicate views
+of the same source. Search output labels `stdout`, `stderr`, `source_output`, or
+`result_text`. Wrapped streams stay separate. If the source is only the
+host-exposed result and native truncation is known or cannot be ruled out, print
+`source incomplete` or `source completeness unknown` instead of
+`source complete`.
+
+#### Search syntax
+
+The default form follows the part of `rg` that models already know:
+
+```text
+yarp search REF PATTERN
+yarp search REF -e PATTERN [-e PATTERN ...]
+```
+
+Support these options and no others in the first implementation:
+
+| Option                     | Meaning                                      |
+| -------------------------- | -------------------------------------------- |
+| `-e`, `--regexp PATTERN`   | Add an alternative pattern.                  |
+| `-F`, `--fixed-strings`    | Treat patterns as literals.                  |
+| `-i`, `--ignore-case`      | Use Unicode-aware case-insensitive matching. |
+| `-w`, `--word-regexp`      | Require word boundaries around each match.   |
+| `-v`, `--invert-match`     | Select nonmatching lines.                    |
+| `-A`, `--after-context N`  | Show lines after a selected line.            |
+| `-B`, `--before-context N` | Show lines before a selected line.           |
+| `-C`, `--context N`        | Set both context counts.                     |
+| `-m`, `--max-count N`      | Show at most N selected lines per source.    |
+| `--`                       | End option parsing.                          |
+
+Accept options before or after `REF` and the positional pattern. A pattern that
+starts with `-` requires `-e` or `--`. One positional pattern and repeated `-e`
+are mutually exclusive. Repeated `-e` patterns use OR semantics, matching `rg`.
+
+Defaults are two context lines and 20 selected lines per source. Accept context
+counts from 0 through 50 and match counts from 1 through 100 as canonical
+unsigned decimal values. Reject duplicates that conflict, missing values,
+overflow, signs, whitespace-padded numbers, and unknown options. Context is
+coalesced when ranges overlap. Results keep source order, use one-based line
+numbers, and separate disjoint groups with `--`. No-match behavior follows `rg`:
+exit 1 with an explicit `No matches` message; matches exit 0; invalid arguments,
+invalid patterns, missing references, corruption, and I/O failures exit nonzero
+with a YARP diagnostic.
+
+Use the pinned Rust `regex` crate with its linear-time engine and explicit
+compiled-size limits. The standard library has no regex engine, so this is the
+one justified new runtime dependency. Disable unneeded crate features, keep the
+lockfile exact, and include it in normal dependency audit checks.
+
+Match one source line at a time; do not add multiline mode, look-around,
+backreferences, replacement, captures in output, file globs, recursion, or
+executable predicates. Bound one pattern to 1,024 UTF-8 bytes, allow at most
+eight patterns, cap the compiled regex size, and keep total regex state inside
+the 4 MiB result-query memory limit. `-F` remains available when exact text is
+easier and cheaper.
+
+`-v` is safe because this command reads an immutable source and still obeys
+match, context, and byte limits. It does not change the stored source or the
+primary summary.
+
+#### Search output
+
+Search begins with a machine-generated header that states:
+
+- the call reference;
+- the source name;
+- whether that source is complete;
+- total selected lines;
+- displayed selected lines;
+- omitted selected lines;
+- the active context and match limits.
+
+Every displayed selected line includes its source name and source line number.
+Use `:` between a source, selected line number, and selected text, and `-` for a
+context line, matching familiar `rg -n -C` output. A complete result looks like:
+
+```text
+[yarp search: ref=yr_4f91d03ab8d44712a48fa8b0d671e3d2]
+[source=stderr complete=true matches=17 showing=2 context=2]
+stderr-116-before context
+stderr-117-before context
+stderr:118:error[E0308]: mismatched types
+stderr-119-after context
+stderr-120-after context
+--
+stderr:904:error[E0308]: expected String
+[yarp search: 15 selected lines omitted]
+Read exact context: yarp read yr_4f91d03ab8d44712a48fa8b0d671e3d2 stderr 116:120
+Read exact context: yarp read yr_4f91d03ab8d44712a48fa8b0d671e3d2 stderr 902:906
+```
+
+The footer prints one ready-to-run exact read command for each displayed group.
+
+Do not print archive paths, internal IDs, payload hashes, SQL values, or
+unrequested result metadata.
+
+#### Model usability
+
+The omission marker is the just-in-time instruction surface. Do not add a
+persistent system-prompt paragraph, skill requirement, custom tool schema, or
+host-specific tutorial. The marker contains exactly one valid command and only
+appears when retrieval is possible.
+
+`yarp search --help` must fit within 2 KiB and lead with these examples:
+
+```text
+yarp search REF 'error|FAILED'
+yarp search REF 'literal text' -F -i
+yarp search REF 'warning' -v -C 3 -m 20
+yarp read REF stdout 118:130
+```
+
+Usage errors must print one corrected command shape. Search output must print
+copyable exact-read commands rather than asking the model to construct ranges or
+source names. Stable command names, option names, defaults, headers, and error
+phrasing are part of the model-facing contract and require fixture tests.
+
+Add a bounded model usability evaluation before release. For each active model
+family, present 20 held-out shortened results with only the generated marker and
+a task that requires omitted evidence. At least 19 of 20 first retrieval
+attempts must use a syntactically valid `yarp search` command, and every model
+must recover the requested evidence within two retrieval calls. Report raw
+counts by model. A failure blocks release even when the character target passes.
+
+#### Exact reads
+
+`yarp read` accepts a one-based inclusive line range:
+
+```text
+yarp read REF 118:130
+yarp read REF stdout 118:130
+```
+
+The short form is valid only when canonical source selection yields one source.
+When a wrapped call has both stdout and stderr, the source argument is required.
+Valid source names are exactly those printed by `yarp search`.
+
+Add an explicit byte form for binary or byte-exact inspection:
+
+```text
+yarp read REF SOURCE --bytes START:END
+```
+
+Byte offsets are zero-based with an exclusive end. Line and byte forms are
+mutually exclusive. Text reads preserve exact bytes and line endings; generated
+headers and diagnostics go to stderr so stdout contains only requested source
+bytes. Binary data is never inserted into a generated summary or search result.
+
+#### Query bounds and verification
+
+Search and read have a 32 KiB hard stdout cap so their results stay below Pi's
+50 KiB native tool cap and normal Codex output limits with room for metadata. An
+exact read that would exceed the cap fails before writing stdout and prints a
+smaller suggested range. Search reduces displayed groups until the whole result
+fits, then reports the omitted selected-line count.
+
+Archive payloads are read through incremental SQLite blob I/O and incremental
+Zstandard decompression. YARP scans the complete selected source, verifies its
+uncompressed length and SHA-256, and retains only bounded matches and context.
+It emits no source bytes until verification succeeds. A checksum, decompression,
+range, schema, permission, or source-selection error returns no content.
+
+A query source line is capped at 1 MiB before regex matching. Encountering a
+longer line aborts the search before output and recommends a bounded byte read;
+YARP must not silently skip an unsearched part of a line or call the match count
+complete. Exact line reads containing one line larger than 32 KiB also fail
+before output and recommend the byte form.
+
+Do not build a persistent search index. Current source sizes are cheap to scan,
+and on-demand scanning avoids another schema, stale index repair, and retained
+plaintext. Add an index only after measured read latency exceeds the release
+budget on real archives.
+
+Keep `yarp archive restore` as the operator command for restoring complete
+stdout and stderr to their original streams. The model-facing commands do not
+replace archive verification, statistics, pruning, or full restore.
+
+#### Result text snapshots
+
+The Pi result path needs exact text bytes without loading canonical result JSON.
+Extend the existing version 1 archive in place with a `result_text` snapshot
+subject. It is a recovery source, not a second copy of every shell result. Store
+it only when a post-result summary actually wins, the shell result has exactly
+one text content item, and no complete stdout, stderr, or `source_output`
+snapshot can recover the summarized bytes. Derive it from the same `tool_result`
+event and commit it before returning the compact result. Rebuild the version 1
+`snapshots` constraint during migration, verify the resulting schema, and keep
+one database. Do not retain a reader for the superseded table shape.
+
+The `archive_ref`, `result_text`, and `source_completeness` changes share one
+reviewed in-place migration. This persistent schema change requires explicit
+maintainer approval before implementation. Reducer work can proceed without it,
+but model-facing retrieval and post-result summaries cannot ship until it is
 approved.
 
 ### Pi integration
@@ -302,23 +582,28 @@ For an unwrapped shell call, add a post-result path:
 
 1. `tool_call` retains the original command in the existing active-call state.
 2. Pi runs the original command unchanged.
-3. `tool_result` commits `result/before`, `result_text/before`, any documented
-   `source_output/before`, and the provisional result.
+3. `tool_result` commits `result/before`, any documented `source_output/before`,
+   and the provisional raw result.
 4. Only after that commit, the extension invokes a one-shot Rust result reducer.
 5. Rust prefers a verified complete `source_output` and otherwise uses the exact
-   host-exposed `result_text` with its truncation state.
+   host-exposed text supplied through the framed request with its truncation
+   state.
 6. Rust analyzes the original command, validates rule packs, and reduces the
    selected source with the real status.
-7. The extension returns a `content` patch only when Rust returns a valid
-   compact result.
-8. `tool_execution_end` stores the final result after every result hook.
+7. When the compact result wins and no complete source snapshot exists, YARP
+   commits `result_text/before` before adding a retrieval reference.
+8. The extension returns a `content` patch only after the chosen recovery source
+   and call reference commit.
+9. `tool_execution_end` stores the final result after every result hook.
 
 The one-shot process uses a bounded length-framed stdin protocol so command
 text, source completeness, native truncation metadata, and result content do not
-appear in process arguments. It is not a service and retains no state after the
-request. The TypeScript side accepts only one shell text content item, preserves
-`details`, `usage`, and `isError`, and passes through images, multiple text
-items, malformed content, and unknown tool shapes.
+appear in process arguments. The compact response contains a summary draft; Rust
+adds the committed call reference and exact retrieval instruction before the
+extension returns the `content` patch. It is not a service and retains no state
+after the request. The TypeScript side accepts only one shell text content item,
+preserves `details`, `usage`, and `isError`, and passes through images, multiple
+text items, malformed content, and unknown tool shapes.
 
 When the archive is disabled, post-result reduction remains disabled because no
 exact `result_text` recovery source exists. Direct wrapped commands continue to
@@ -328,7 +613,121 @@ Use Pi's documented `tool_call`, `tool_result`, `tool_execution_end`,
 `message_end`, `session_start`, and `session_shutdown` events. Use the
 documented partial return from `tool_result`; do not edit session entries.
 
+## Security and privacy
+
+Archive references are locators, not access-control capabilities. Every command
+still opens the one private local archive under its normal POSIX permission
+checks. Resolve references with parameterized SQLite queries. Never accept a
+path, database override, account, session, snapshot ID, or SQL fragment from the
+model-facing commands.
+
+Run search inside one read transaction. This pins a consistent set of call and
+payload rows while explicit pruning or another writer proceeds through WAL.
+Verify the selected reference still points to the same snapshots before
+returning output.
+
+Search valid UTF-8 text only. Strip ANSI terminal sequences with the same
+bounded state machine used by reducers, render other unsafe control bytes
+visibly, and match the normalized line that is shown to the model. Keep source
+line numbers bound to raw archived lines. `yarp read` remains exact and may
+return control or binary bytes only when explicitly requested.
+
+A query pattern and its matched output may contain secrets. Pi archives the
+`yarp search` or `yarp read` tool call under the normal archive policy. YARP
+does not write query logs elsewhere, collect metrics remotely, place plaintext
+mirrors on disk, or include source content in diagnostics.
+
+Search results are untrusted tool output. Generated headers and footers use
+fixed text and cannot be influenced by source lines. Source text is displayed
+inside clearly delimited source groups. YARP does not claim that matching text
+is safe instructions for the model.
+
+## Version agreement and activation
+
+The Rust binary, rule-pack contract, Pi extension, and archive schema change in
+one release. At `session_start`, the Pi package compares its exact package
+version with `yarp --version`. A mismatch disables archive capture, rewriting,
+post-result summaries, and model-facing retrieval for that session, preserves
+original tool behavior, and prints one clear warning. Do not guess capabilities
+from failed commands or keep version-specific compatibility branches.
+
+The first archive open by the new binary performs the approved in-place schema
+migration under an exclusive transaction after creating and verifying the
+backup. Refuse migration when the backup cannot be created, free space is
+insufficient, the schema is unexpected, or integrity checks fail. Do not start
+Pi tool capture until migration commits.
+
+The final feature is enabled by default after all release gates pass. Do not
+ship a permanent experimental setting or separate old and new modes. When the
+archive is explicitly disabled, direct typed reducers may still produce
+self-contained summaries, but they omit references; post-result summaries and
+retrieval remain unavailable.
+
+Rolling back requires stopping Pi, restoring the pre-migration database backup,
+and reinstalling the previous matching Rust and Pi package versions. Do not add
+runtime downgrade readers. Document that calls captured after migration are not
+present in the restored backup and must be explicitly exported first if they
+need to be retained.
+
+## Delivery sequence
+
+Implement and verify the work in this dependency order:
+
+1. Add the bounded evidence collector and typed reducers without changing the
+   archive or enabling new output.
+2. Replace the rule and output-policy contract, migrate built-ins, and prove the
+   direct-runner safety and corpus gates.
+3. Add the reviewed archive schema migration, stable references, and
+   `result_text` snapshots.
+4. Add streaming archive source verification and canonical source selection.
+5. Add `yarp search`, then `yarp read`, with CLI, security, model usability, and
+   performance tests.
+6. Add retrieval markers to direct wrapped summaries only after archive commit.
+7. Add the conservative post-result classifier and one-shot Pi result reducer.
+8. Run the full corpus, manual semantic review, live Pi canaries, model
+   usability evaluation, migration rehearsal, and rollback rehearsal.
+9. Update the archive specification, README, CLI help, rule schemas, examples,
+   and release notes in the same release.
+
+Commit coherent working slices, but do not publish a release where summaries
+advertise references before search and read are available. Do not activate the
+post-result path before `result_text`, completeness reporting, and failure
+restoration pass their live canaries.
+
 ## Work plan
+
+### Code boundaries
+
+Keep responsibilities in these modules:
+
+- `rule-pack/src/model.rs`, `source.rs`, `compiled.rs`, and `validation.rs` own
+  the strict reducer and output-policy contract.
+- `src/reducers/evidence.rs` owns bounded evidence classes, source spans,
+  omission ranges, and rendering.
+- `src/reducers/search.rs`, `diff.rs`, `test.rs`, `build.rs`, `log.rs`,
+  `status.rs`, and `list.rs` own typed parsing. Do not put command-ID branches
+  in the shared collector.
+- `src/runner.rs` owns child execution, stream spools, real status, archive
+  commit ordering, summary selection, and final emission.
+- `src/archive.rs` owns schema migration, references, payload verification,
+  source lookup, pruning, and exact snapshot reads.
+- A new `src/archive_query.rs` owns model-facing search and range-read parsing,
+  bounded matching, context collection, and rendering. It receives verified
+  source readers from `archive.rs` and never opens SQLite itself.
+- `src/lib.rs` owns top-level `search` and `read` CLI dispatch and stable exit
+  codes.
+- `src/rewrite/` owns conservative shell analysis. It does not read outputs or
+  archives.
+- `hooks/pi/archive-client.ts` owns archive operations. A new checked Pi client
+  module owns the one-shot framed result reducer.
+- `hooks/pi/yarp.ts` remains orchestration only: correlate calls, invoke Rust,
+  and return documented Pi patches.
+- `toolcall-extractor/src/benchmark.rs` owns private corpus measurements and has
+  no live-runtime dependency.
+
+Every new external value is checked before use. TypeScript keeps strict unknown
+validation and no explicit `any`; Rust keeps `#![forbid(unsafe_code)]` and no
+unchecked casts.
 
 ### Shared summary engine
 
@@ -374,17 +773,27 @@ documented partial return from `tool_result`; do not edit session entries.
 - Reject old source and compiled packs clearly. Do not silently reinterpret
   them.
 
-### Archive range reading
+### Call references and model retrieval
 
-- Add exact text and byte range readers with strict parsing and a 64 KiB request
-  cap.
-- Add `result_text` capture and the approved in-place schema migration.
-- Include retrieval commands only when an archive key and a matching source span
-  exist.
-- Add pass-through guards so archive inspection output is never summarized
-  recursively.
-- Test pruned calls, missing calls, incomplete calls, corrupted payloads, binary
-  payloads, line endings, and concurrent archive writers.
+- Add strict `archive_ref` creation, migration, lookup, uniqueness, format, and
+  pruning behavior.
+- Add on-demand `result_text` capture in the same approved in-place schema
+  migration, only for winning post-result summaries without another complete
+  source.
+- Add canonical source selection without duplicate snapshots or merged streams.
+- Implement top-level `yarp search` with the reviewed `rg`-style subset.
+- Implement top-level `yarp read` for exact bounded line and byte ranges.
+- Use streaming payload verification and bounded regex, match, and context
+  state.
+- Include one search instruction only after the referenced source commits.
+- Print exact read commands from search results so the model never constructs a
+  source selector or range syntax without an example.
+- Add pass-through guards so `yarp search`, `yarp read`, and archive inspection
+  output are never summarized recursively.
+- Test old and new calls, missing and pruned references, incomplete calls,
+  malformed references, regex limits, no matches, invert matching, overlapping
+  context, multiple sources, corrupted payloads, binary payloads, line endings,
+  output caps, concurrent archive writers, and native host truncation.
 
 ### Compound-result support
 
@@ -417,9 +826,15 @@ documented partial return from `tool_result`; do not edit session entries.
 - Success and failure select from the real child status.
 - Explicit stored exit codes override generic error fields.
 - Stdout and stderr reducers have independent state.
-- Every omitted range points to the exact archived source bytes.
-- A retrieval request returns exact bytes or returns no content and a nonzero
-  status.
+- Every omission marker names a committed call reference or contains no
+  retrieval instruction.
+- Every search match and read range points to the exact archived source bytes.
+- A retrieval request returns verified bounded bytes or returns no content and a
+  nonzero status.
+- Models can copy the generated `yarp search` and `yarp read` commands without
+  knowing archive or Pi internals.
+- Held-out model usability checks meet the 19-of-20 valid first-search gate for
+  every active model family and recover requested evidence within two calls.
 - Archive failure restores raw output.
 - Unknown, ambiguous, mixed, invalid, and guarded commands remain unchanged.
 - Compiled-pack source and file digests are rechecked before use.
@@ -433,6 +848,8 @@ and report raw counts. Treat these as incremental savings after the native
 truncation already present in persisted agent results.
 
 - Remove at least 289,105,282 of 1,445,526,406 shell-output characters.
+- Count every generated heading, omission marker, call reference, and retrieval
+  instruction in final output size; do not report metadata-free savings.
 - Use 303,560,545 removed characters as the development target.
 - Change zero current pass-through results.
 - Produce zero ambiguous reductions.
@@ -444,10 +861,30 @@ truncation already present in persisted agent results.
   output.
 - Report actual token counts for the active model families as a secondary
   metric; runtime limits remain byte based and deterministic.
+- Report follow-up search and read calls separately from primary summary
+  savings; do not assume that every omission causes a retrieval.
 
 The corpus is a census of the stored data, so it has no sampling interval. It
 may not represent future command use. Manual review and public fixtures remain
 release vetoes even when the numeric target passes.
+
+### Storage and migration gates
+
+- Rehearse migration from an untouched version 1 fixture and a copy of the live
+  archive.
+- Verify every old call receives one unique immutable reference and every old
+  snapshot remains byte-identical.
+- Keep reference-column and index growth below 256 database bytes per existing
+  call, excluding the explicit migration backup.
+- Store no `result_text` snapshot for unchanged results or calls with a complete
+  stream or `source_output` recovery source.
+- Verify result-text compression uses the existing payload policy and does not
+  create an uncompressed mirror.
+- Run migration interruption tests before table rebuild, during backfill, during
+  index creation, and before commit; each interruption must leave either the old
+  verified database or the new verified database.
+- Rehearse the documented restore of the pre-migration backup with the previous
+  binary and Pi package.
 
 ### Performance gates
 
@@ -457,7 +894,9 @@ release vetoes even when the numeric target passes.
   machine.
 - Keep one-shot post-result reducer startup and reduction below 20 ms p95 for a
   16 KiB result after warmup.
-- Keep archive range reads below 20 ms p95 for a 64 KiB range after warmup.
+- Keep `yarp search` below 20 ms p95 for a 1 MiB compressed source with 20
+  displayed matches after warmup.
+- Keep `yarp read` below 20 ms p95 for a 32 KiB range after warmup.
 - Run at least 100 measured repetitions and report median, p95, and maximum.
 
 ### Repository gates
@@ -480,17 +919,20 @@ git diff --check
 
 Exercise the extension with a temporary `pi -e` path and then reload it. The
 live test must cover one unchanged short result, one indexed search summary, one
-failed test summary, one exact range retrieval, one compound result, one archive
-failure, and one parallel pair.
+failed test summary, one copied `yarp search` command, one copied `yarp read`
+command, one no-match query, one compound result, one archive failure, and one
+parallel pair.
 
 ## Pi contract
 
 - **Session state:** Pi appends its normal tool-result entry containing the
   compact text returned by the documented hook. YARP does not append, rewrite,
   or migrate Pi session entries directly.
-- **Other persistent data:** the existing YARP archive gains the proposed
-  `result_text` snapshot subject in place. No second database or sidecar is
-  added. This change needs explicit maintainer approval before implementation.
+- **Other persistent data:** the existing YARP archive gains
+  `tool_calls.archive_ref`, the proposed `result_text` snapshot subject, and its
+  bounded `source_completeness` value in place. No second database, search
+  index, plaintext mirror, or sidecar is added. This change needs explicit
+  maintainer approval before implementation.
 - **Pi internals:** none.
 - **Public API:** documented `tool_call`, `tool_result`, `tool_execution_end`,
   `message_end`, `session_start`, and `session_shutdown` events and their
@@ -504,8 +946,13 @@ The work is complete when:
 - generic head-and-tail pruning is removed;
 - compact results use absolute and proportional savings gates instead of a fixed
   input threshold;
-- omission markers identify exact, bounded archive ranges when recovery is
-  available and state whether the archived source was complete;
+- omission markers contain one short committed call reference and one copyable
+  `yarp search` command when recovery is available;
+- `yarp search` provides bounded `rg`-style retrieval and prints exact
+  `yarp read` commands without exposing archive internals;
+- the generated marker and short help text pass the held-out model usability
+  gate;
+- search and read state whether the archived source was complete;
 - direct wrapped commands preserve stream separation and status;
 - native Pi and Codex limits remain final safety nets rather than YARP's summary
   policy;
