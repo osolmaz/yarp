@@ -439,6 +439,39 @@
       "expected_action": "passthrough"
     },
     {
+      "id": "guards-git-stash-format-match",
+      "rule_id": "guards/git-stash-format",
+      "argv": [
+        "git",
+        "stash",
+        "list",
+        "--format=%H"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-stash-pretty-match",
+      "rule_id": "guards/git-stash-pretty",
+      "argv": [
+        "git",
+        "stash",
+        "list",
+        "--pretty=format:%H"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-tag-format-match",
+      "rule_id": "guards/git-tag-format",
+      "argv": [
+        "git",
+        "tag",
+        "--list",
+        "--format=%(refname)"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
       "id": "guards-git-log-format-match",
       "rule_id": "guards/git-log-format",
       "argv": [
@@ -2309,6 +2342,15 @@
       "argv": [
         "ls",
         "--dired"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-ls-dired-short-match",
+      "rule_id": "guards/ls-dired-short",
+      "argv": [
+        "ls",
+        "-D"
       ],
       "expected_action": "passthrough"
     },

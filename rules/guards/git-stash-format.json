@@ -1,0 +1,16 @@
+{
+  "id": "guards/git-stash-format",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "stash",
+      "list"
+    ],
+    "argv_contains_all": [
+      "--format"
+    ]
+  },
+  "action": "passthrough"
+}
