@@ -439,8 +439,8 @@ Support these options and no others in the first implementation:
 | -------------------------- | -------------------------------------------- |
 | `-e`, `--regexp PATTERN`   | Add an alternative pattern.                  |
 | `-F`, `--fixed-strings`    | Treat patterns as literals.                  |
-| `-i`, `--ignore-case`      | Use Unicode-aware case-insensitive matching. |
-| `-w`, `--word-regexp`      | Require word boundaries around each match.   |
+| `-i`, `--ignore-case`      | Use ASCII case-insensitive matching.         |
+| `-w`, `--word-regexp`      | Require ASCII word boundaries.                |
 | `-v`, `--invert-match`     | Select nonmatching lines.                    |
 | `-A`, `--after-context N`  | Show lines after a selected line.            |
 | `-B`, `--before-context N` | Show lines before a selected line.           |
