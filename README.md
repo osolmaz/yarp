@@ -22,7 +22,7 @@ Both commands install from the public GitHub repository.
 
 ## Use
 
-The Pi extension handles supported `bash` and `exec_command` calls automatically. Built-in rules cover common repository inspection, search, test, build, lint, and package-script commands. Search coverage includes `rg`, `grep`, `egrep`, `fgrep`, and `git grep`. File and system coverage includes `ls`, `find`, `fd`, `tree`, `du`, `df`, `free`, `lsof`, and common `ps` listings. YARP also handles common Git and GitHub lists, container inventories, and Kubernetes inspection. Exact-output forms such as structured JSON, NUL-delimited output, custom process columns, child-executing file searches, streaming output, and Git object inspection stay untouched.
+The Pi extension handles supported `bash` and `exec_command` calls automatically. Built-in rules cover common repository inspection and search plus tests and builds. They also cover linting and package scripts. Search coverage includes `rg`, `grep`, `egrep`, `fgrep`, and `git grep`. File and system coverage includes `ls`, `find`, `fd`, `tree`, `du`, `df`, `free`, `lsof`, and common `ps` listings. YARP also handles common Git and GitHub lists, container inventories, and Kubernetes inspection. Exact-output forms such as structured JSON, NUL-delimited output, custom process columns, child-executing file searches, streaming output, and Git object inspection stay untouched.
 
 Run a supported command directly when needed:
 
@@ -91,7 +91,7 @@ yarp rewrite --rule-pack ./example-rules.yrp "example-check"
 
 Set `YARP_RULE_PACKS` to an operating-system path list for global packs. A trusted Pi project may instead keep a compiled pack at `.yarp/rules.yrp`; the extension ignores that path until Pi reports the project as trusted. YARP does not scan for source packs, compile them automatically, download rules, or execute code from a rule.
 
-See the [indexed output summary plan](docs/indexed-output-summaries-implementation-plan.md) and the checked-in JSON schemas under `rules/schema/` for the complete reducer contract, matching rules, limits, and fail-open behavior.
+See the [indexed output summary plan](docs/indexed-output-summaries-implementation-plan.md) and the checked-in JSON schemas under `rules/schema/` for the complete reducer contract. They define matching and limits plus fail-open behavior. The [shell result planning implementation plan](docs/shell-result-planning-implementation-plan.md) covers adaptive evidence selection for pipelines and command chains.
 
 ## Archive
 
@@ -173,7 +173,7 @@ This sends framed normalized records through the pipe and creates no intermediat
 
 The default database is `~/.local/share/toolcall-extractor/toolcalls.duckdb`. Tool inputs and outputs can contain secrets, so its directory and files are private. The extractor reads agent state without modifying it, has no network code, and stops before its files reach 10,000,000,000 bytes. See [the implementation plan](docs/toolcall-extractor-implementation-plan.md) for supported formats and privacy boundaries.
 
-A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The production matcher evaluated all 371,241 stored shell results. Typed summaries changed 29,439 results and removed 306,302,222 characters: 92.2887% of eligible output, 21.1897% of shell output, and 15.7748% of all rendered output. No ambiguous reduction or registered diagnostic veto occurred. The generated database, transcripts, and report remain outside the repository.
+A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The production matcher evaluated all 371,241 stored shell results. Typed summaries changed 29,439 results and removed 306,302,222 characters: 92.2887% of eligible output, 21.1897% of shell output, and 15.7748% of all rendered output. No ambiguous reduction or registered diagnostic veto occurred. The generated database and transcripts remain outside the repository, as does the report.
 
 ## Limits
 

@@ -78,7 +78,7 @@ The broad `shell/unsupported-syntax` family contains 179,696 unchanged results a
 
 ## Shell result planning
 
-Pipeline support should use one shell result planner across command combinations. A non-executing parser should produce a syntax tree and reject incomplete or recovered parses while preserving the original command text. The planner should identify typed output and carry it only through reviewed line-preserving stages. Every other stage vetoes reduction. Current output types cover search and list output plus test and build output.
+The [shell result planning implementation plan](shell-result-planning-implementation-plan.md) defines the parser, rule contract, safety checks, and release gates. Pipeline support should use one shell result planner across command combinations. A non-executing parser should produce a syntax tree and reject incomplete or recovered parses while preserving the original command text. The planner should identify typed output and carry it only through reviewed line-preserving stages. Every other stage vetoes reduction. Current output types cover search and list output plus test and build output.
 
 The first useful transforms are `cat`, `tee`, line-based `head` and `tail`, `sort`, and `uniq`. Their options need guards for byte output, NUL separators, numbering, counts, custom formatting, and other forms that change line content. A pass-through guard or unknown stage anywhere in the pipeline blocks reduction.
 
