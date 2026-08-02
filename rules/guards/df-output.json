@@ -1,0 +1,12 @@
+{
+  "id": "guards/df-output",
+  "match": {
+    "program": [
+      "df"
+    ],
+    "argv_contains_all": [
+      "--output"
+    ]
+  },
+  "action": "passthrough"
+}

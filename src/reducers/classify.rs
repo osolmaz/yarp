@@ -14,6 +14,18 @@ pub fn trim_start(mut value: &[u8]) -> &[u8] {
     value
 }
 
+pub fn is_tool_outcome(line: &[u8]) -> bool {
+    let line = trim_start(body(line));
+    [
+        &b"Process exited with code "[..],
+        &b"Process running with session ID "[..],
+        &b"Command exited with code "[..],
+        &b"Command timed out"[..],
+    ]
+    .iter()
+    .any(|prefix| line.starts_with(prefix))
+}
+
 pub fn contains_ascii_insensitive(body: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty()
         && body.windows(needle.len()).any(|window| {

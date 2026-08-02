@@ -1,0 +1,12 @@
+{
+  "id": "guards/find-exec",
+  "match": {
+    "program": [
+      "find"
+    ],
+    "argv_contains_all": [
+      "-exec"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,13 @@
+{
+  "id": "guards/container-quiet-short",
+  "match": {
+    "program": [
+      "docker",
+      "podman"
+    ],
+    "argv_contains_all": [
+      "-q"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -16,14 +16,16 @@ does not meet the rule's minimum savings requirements.
 ## Implemented result
 
 The production matcher evaluated all 371,241 frozen shell results after the
-final semantic pass. Of 62,357 eligible results, 29,348 changed and 9,641
+final semantic pass. Of 66,998 eligible results, 29,439 changed and 10,353
 matched an explicit pass-through rule. No result was ambiguous. YARP removed
-305,675,304 of 1,445,526,406 shell-output characters, or 21.1463%. This is
-93.0069% of eligible output and 15.7425% of all rendered tool output. The
+306,302,222 of 1,445,526,406 shell-output characters, or 21.1897%. This is
+92.2887% of eligible output and 15.7748% of all rendered tool output. The
 registered diagnostic veto count was zero.
 
 A private review covered the 100 largest changed results for each of the seven
-typed reducer families. Generic occurrences of `failure`, `panic`, `error`,
+original typed reducer families. The common-command expansion also reviewed 69
+large direct results and 20 compound-command results from every newly active
+rule in the corpus. Generic occurrences of `failure`, `panic`, `error`,
 `warning`, and `test result` are rendered as `source_terms` and source-term
 samples. A command-specific parser labels a line as a diagnostic only when its
 output syntax provides stronger evidence. The final marker-length review kept

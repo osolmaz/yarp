@@ -1,4 +1,5 @@
 use std::fs::{self, File, OpenOptions};
+use std::io::Write as _;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -69,6 +70,92 @@ pub fn protect_database(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Atomically write a report under a private directory.
+///
+/// # Errors
+///
+/// Returns an error when the destination is not a regular private file, its parent is not a
+/// mode-0700 directory, or the write cannot be completed.
+pub fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::InvalidArguments("private output path has no parent".to_owned()))?;
+    match fs::symlink_metadata(parent) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(Error::InvalidArguments(format!(
+                "private output directory {} must not be a symlink",
+                parent.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(Error::io(parent, error)),
+    }
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(Error::InvalidArguments(format!(
+                "private output {} must be a regular file",
+                path.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(Error::io(path, error)),
+    }
+    prepare_database_path(path)?;
+    let parent_metadata = fs::symlink_metadata(parent).map_err(|error| Error::io(parent, error))?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+        return Err(Error::InvalidArguments(format!(
+            "private output directory {} must not be a symlink",
+            parent.display()
+        )));
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            Error::InvalidArguments("private output name is not valid UTF-8".to_owned())
+        })?;
+    let (temporary, mut file) = create_temporary(parent, file_name)?;
+    let result = (|| -> Result<()> {
+        file.write_all(contents)
+            .map_err(|error| Error::io(&temporary, error))?;
+        file.sync_all()
+            .map_err(|error| Error::io(&temporary, error))?;
+        drop(file);
+        fs::rename(&temporary, path).map_err(|error| Error::io(path, error))?;
+        set_mode(path, 0o600)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn create_temporary(parent: &Path, file_name: &str) -> Result<(PathBuf, File)> {
+    for counter in 0_u8..100 {
+        let path = parent.join(format!(
+            ".{file_name}.{}.{}.tmp",
+            std::process::id(),
+            counter
+        ));
+        match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(Error::io(&path, error)),
+        }
+    }
+    Err(Error::InvalidSource(
+        "could not allocate a private output temporary file".to_owned(),
+    ))
 }
 
 pub fn verify_private(path: &Path) -> Result<()> {
@@ -199,6 +286,53 @@ mod tests {
         let root = tempfile::tempdir().expect("root");
         let outside = tempfile::NamedTempFile::new().expect("file");
         assert!(relative_path(root.path(), outside.path()).is_err());
+    }
+
+    #[test]
+    fn writes_private_output_atomically() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("reports/ceiling.json");
+        write_private(&path, b"first").expect("first write");
+        assert_eq!(fs::read(&path).expect("read"), b"first");
+        assert_eq!(
+            fs::metadata(path.parent().expect("parent"))
+                .expect("parent metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&path)
+                .expect("file metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        write_private(&path, b"second").expect("replace");
+        assert_eq!(fs::read(&path).expect("read replacement"), b"second");
+    }
+
+    #[test]
+    fn rejects_private_output_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let directory = temp.path().join("reports");
+        fs::create_dir(&directory).expect("directory");
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).expect("mode");
+        let target = directory.join("target");
+        fs::write(&target, b"original").expect("target");
+        let path = directory.join("ceiling.json");
+        symlink(&target, &path).expect("symlink");
+        assert!(write_private(&path, b"replacement").is_err());
+        assert_eq!(fs::read(&target).expect("target read"), b"original");
+
+        let linked_directory = temp.path().join("linked-reports");
+        symlink(&directory, &linked_directory).expect("directory symlink");
+        assert!(write_private(&linked_directory.join("report.json"), b"report").is_err());
+        assert!(!directory.join("report.json").exists());
     }
 
     #[test]

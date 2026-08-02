@@ -1,0 +1,12 @@
+{
+  "id": "guards/tree-xml",
+  "match": {
+    "program": [
+      "tree"
+    ],
+    "argv_contains_all": [
+      "-X"
+    ]
+  },
+  "action": "passthrough"
+}

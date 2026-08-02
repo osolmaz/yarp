@@ -1,0 +1,13 @@
+{
+  "id": "guards/fd-exec-batch-long",
+  "match": {
+    "program": [
+      "fd",
+      "fdfind"
+    ],
+    "argv_contains_all": [
+      "--exec-batch"
+    ]
+  },
+  "action": "passthrough"
+}

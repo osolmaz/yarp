@@ -1,0 +1,12 @@
+{
+  "id": "guards/cmake-trace-expand",
+  "match": {
+    "program": [
+      "cmake"
+    ],
+    "argv_contains_all": [
+      "--trace-expand"
+    ]
+  },
+  "action": "passthrough"
+}

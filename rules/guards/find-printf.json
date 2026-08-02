@@ -1,0 +1,12 @@
+{
+  "id": "guards/find-printf",
+  "match": {
+    "program": [
+      "find"
+    ],
+    "argv_contains_all": [
+      "-printf"
+    ]
+  },
+  "action": "passthrough"
+}

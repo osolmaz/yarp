@@ -2,7 +2,9 @@
   "id": "guards/grep-capital-z",
   "match": {
     "program": [
-      "grep"
+      "grep",
+      "egrep",
+      "fgrep"
     ],
     "argv_contains_all": [
       "-Z"

@@ -1,0 +1,13 @@
+{
+  "id": "guards/fd-print0-long",
+  "match": {
+    "program": [
+      "fd",
+      "fdfind"
+    ],
+    "argv_contains_all": [
+      "--print0"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "guards/lsof-terse",
+  "match": {
+    "program": [
+      "lsof"
+    ],
+    "argv_contains_all": [
+      "-t"
+    ]
+  },
+  "action": "passthrough"
+}

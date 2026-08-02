@@ -1,0 +1,13 @@
+{
+  "id": "guards/git-reflog-exists",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "reflog",
+      "exists"
+    ]
+  },
+  "action": "passthrough"
+}

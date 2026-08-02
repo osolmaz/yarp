@@ -1987,6 +1987,847 @@
         "main"
       ],
       "expected_action": "reduce"
+    },
+    {
+      "id": "guards-cmake-debug-find-match",
+      "rule_id": "guards/cmake-debug-find",
+      "argv": [
+        "cmake",
+        "--debug-find"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cmake-debug-output-match",
+      "rule_id": "guards/cmake-debug-output",
+      "argv": [
+        "cmake",
+        "--debug-output"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cmake-trace-expand-match",
+      "rule_id": "guards/cmake-trace-expand",
+      "argv": [
+        "cmake",
+        "--trace-expand"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cmake-trace-redirect-match",
+      "rule_id": "guards/cmake-trace-redirect",
+      "argv": [
+        "cmake",
+        "--trace-redirect"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cmake-trace-source-match",
+      "rule_id": "guards/cmake-trace-source",
+      "argv": [
+        "cmake",
+        "--trace-source"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cmake-trace-match",
+      "rule_id": "guards/cmake-trace",
+      "argv": [
+        "cmake",
+        "--trace"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-container-quiet-long-match",
+      "rule_id": "guards/container-quiet-long",
+      "argv": [
+        "docker",
+        "--quiet"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-container-quiet-short-match",
+      "rule_id": "guards/container-quiet-short",
+      "argv": [
+        "docker",
+        "-q"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-df-output-match",
+      "rule_id": "guards/df-output",
+      "argv": [
+        "df",
+        "--output"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-du-null-long-match",
+      "rule_id": "guards/du-null-long",
+      "argv": [
+        "du",
+        "--null"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-du-null-short-match",
+      "rule_id": "guards/du-null-short",
+      "argv": [
+        "du",
+        "-0"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-fd-exec-batch-long-match",
+      "rule_id": "guards/fd-exec-batch-long",
+      "argv": [
+        "fd",
+        "--exec-batch"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-fd-exec-batch-short-match",
+      "rule_id": "guards/fd-exec-batch-short",
+      "argv": [
+        "fd",
+        "-X"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-fd-exec-long-match",
+      "rule_id": "guards/fd-exec-long",
+      "argv": [
+        "fd",
+        "--exec"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-fd-exec-short-match",
+      "rule_id": "guards/fd-exec-short",
+      "argv": [
+        "fd",
+        "-x"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-fd-print0-long-match",
+      "rule_id": "guards/fd-print0-long",
+      "argv": [
+        "fd",
+        "--print0"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-fd-print0-short-match",
+      "rule_id": "guards/fd-print0-short",
+      "argv": [
+        "fd",
+        "-0"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-find-delete-match",
+      "rule_id": "guards/find-delete",
+      "argv": [
+        "find",
+        "-delete"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-find-exec-match",
+      "rule_id": "guards/find-exec",
+      "argv": [
+        "find",
+        "-exec"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-find-execdir-match",
+      "rule_id": "guards/find-execdir",
+      "argv": [
+        "find",
+        "-execdir"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-find-fls-match",
+      "rule_id": "guards/find-fls",
+      "argv": [
+        "find",
+        "-fls"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-find-fprint-match",
+      "rule_id": "guards/find-fprint",
+      "argv": [
+        "find",
+        "-fprint"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-find-fprint0-match",
+      "rule_id": "guards/find-fprint0",
+      "argv": [
+        "find",
+        "-fprint0"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-find-fprintf-match",
+      "rule_id": "guards/find-fprintf",
+      "argv": [
+        "find",
+        "-fprintf"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-find-ok-match",
+      "rule_id": "guards/find-ok",
+      "argv": [
+        "find",
+        "-ok"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-find-okdir-match",
+      "rule_id": "guards/find-okdir",
+      "argv": [
+        "find",
+        "-okdir"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-find-print0-match",
+      "rule_id": "guards/find-print0",
+      "argv": [
+        "find",
+        "-print0"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-find-printf-match",
+      "rule_id": "guards/find-printf",
+      "argv": [
+        "find",
+        "-printf"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-free-count-long-match",
+      "rule_id": "guards/free-count-long",
+      "argv": [
+        "free",
+        "--count"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-free-count-short-match",
+      "rule_id": "guards/free-count-short",
+      "argv": [
+        "free",
+        "-c"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-free-seconds-long-match",
+      "rule_id": "guards/free-seconds-long",
+      "argv": [
+        "free",
+        "--seconds"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-free-seconds-short-match",
+      "rule_id": "guards/free-seconds-short",
+      "argv": [
+        "free",
+        "-s"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-null-all-match",
+      "rule_id": "guards/git-null-all",
+      "argv": [
+        "git",
+        "--null"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-porcelain-match",
+      "rule_id": "guards/git-porcelain",
+      "argv": [
+        "git",
+        "--porcelain"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-zero-all-match",
+      "rule_id": "guards/git-zero-all",
+      "argv": [
+        "git",
+        "-z"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-ls-dired-match",
+      "rule_id": "guards/ls-dired",
+      "argv": [
+        "ls",
+        "--dired"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-ls-zero-match",
+      "rule_id": "guards/ls-zero",
+      "argv": [
+        "ls",
+        "--zero"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-lsof-fields-match",
+      "rule_id": "guards/lsof-fields",
+      "argv": [
+        "lsof",
+        "-F"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-lsof-repeat-plus-match",
+      "rule_id": "guards/lsof-repeat-plus",
+      "argv": [
+        "lsof",
+        "+r"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-lsof-repeat-short-match",
+      "rule_id": "guards/lsof-repeat-short",
+      "argv": [
+        "lsof",
+        "-r"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-lsof-terse-match",
+      "rule_id": "guards/lsof-terse",
+      "argv": [
+        "lsof",
+        "-t"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-ps-format-bsd-preloaded-match",
+      "rule_id": "guards/ps-format-bsd-preloaded",
+      "argv": [
+        "ps",
+        "O"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-ps-format-bsd-match",
+      "rule_id": "guards/ps-format-bsd",
+      "argv": [
+        "ps",
+        "o"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-ps-format-long-match",
+      "rule_id": "guards/ps-format-long",
+      "argv": [
+        "ps",
+        "--format"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-ps-format-preloaded-match",
+      "rule_id": "guards/ps-format-preloaded",
+      "argv": [
+        "ps",
+        "-O"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-ps-format-short-match",
+      "rule_id": "guards/ps-format-short",
+      "argv": [
+        "ps",
+        "-o"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-tree-html-match",
+      "rule_id": "guards/tree-html",
+      "argv": [
+        "tree",
+        "-H"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-tree-json-match",
+      "rule_id": "guards/tree-json",
+      "argv": [
+        "tree",
+        "-J"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-tree-output-match",
+      "rule_id": "guards/tree-output",
+      "argv": [
+        "tree",
+        "-o"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-tree-xml-match",
+      "rule_id": "guards/tree-xml",
+      "argv": [
+        "tree",
+        "-X"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "filesystem-df-match",
+      "rule_id": "filesystem/df",
+      "argv": [
+        "df"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "filesystem-du-match",
+      "rule_id": "filesystem/du",
+      "argv": [
+        "du"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "filesystem-fd-match",
+      "rule_id": "filesystem/fd",
+      "argv": [
+        "fd"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "filesystem-find-match",
+      "rule_id": "filesystem/find",
+      "argv": [
+        "find"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "filesystem-ls-match",
+      "rule_id": "filesystem/ls",
+      "argv": [
+        "ls"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "filesystem-tree-match",
+      "rule_id": "filesystem/tree",
+      "argv": [
+        "tree"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "system-free-match",
+      "rule_id": "system/free",
+      "argv": [
+        "free"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "system-lsof-match",
+      "rule_id": "system/lsof",
+      "argv": [
+        "lsof"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "system-ps-all-match",
+      "rule_id": "system/ps-all",
+      "argv": [
+        "ps",
+        "-e"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "system-ps-aux-match",
+      "rule_id": "system/ps-aux",
+      "argv": [
+        "ps",
+        "aux"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "system-ps-ef-match",
+      "rule_id": "system/ps-ef",
+      "argv": [
+        "ps",
+        "-ef"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "git-remote-verbose-long-match",
+      "rule_id": "git/remote-verbose-long",
+      "argv": [
+        "git",
+        "remote",
+        "--verbose"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "git-remote-verbose-match",
+      "rule_id": "git/remote-verbose",
+      "argv": [
+        "git",
+        "remote",
+        "-v"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "git-stash-list-match",
+      "rule_id": "git/stash-list",
+      "argv": [
+        "git",
+        "stash",
+        "list"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "git-tag-list-short-match",
+      "rule_id": "git/tag-list-short",
+      "argv": [
+        "git",
+        "tag",
+        "-l"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "git-tag-list-match",
+      "rule_id": "git/tag-list",
+      "argv": [
+        "git",
+        "tag",
+        "--list"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "git-worktree-list-match",
+      "rule_id": "git/worktree-list",
+      "argv": [
+        "git",
+        "worktree",
+        "list"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-lint-alias-match",
+      "rule_id": "js/lint-alias",
+      "argv": [
+        "pnpm",
+        "lint"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-typecheck-alias-match",
+      "rule_id": "js/typecheck-alias",
+      "argv": [
+        "pnpm",
+        "typecheck"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-issue-status-match",
+      "rule_id": "gh/issue-status",
+      "argv": [
+        "gh",
+        "issue",
+        "status"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-pr-status-match",
+      "rule_id": "gh/pr-status",
+      "argv": [
+        "gh",
+        "pr",
+        "status"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-release-list-match",
+      "rule_id": "gh/release-list",
+      "argv": [
+        "gh",
+        "release",
+        "list"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-repo-list-match",
+      "rule_id": "gh/repo-list",
+      "argv": [
+        "gh",
+        "repo",
+        "list"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-workflow-list-match",
+      "rule_id": "gh/workflow-list",
+      "argv": [
+        "gh",
+        "workflow",
+        "list"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-cmake-preset-match",
+      "rule_id": "build/cmake-preset",
+      "argv": [
+        "cmake",
+        "--preset"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-cmake-source-match",
+      "rule_id": "build/cmake-source",
+      "argv": [
+        "cmake",
+        "-S"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "ops-container-images-match",
+      "rule_id": "ops/container-images",
+      "argv": [
+        "docker",
+        "images"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "ops-container-ps-match",
+      "rule_id": "ops/container-ps",
+      "argv": [
+        "docker",
+        "ps"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "ops-kubectl-events-match",
+      "rule_id": "ops/kubectl-events",
+      "argv": [
+        "kubectl",
+        "events"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "ops-kubectl-top-match",
+      "rule_id": "ops/kubectl-top",
+      "argv": [
+        "kubectl",
+        "top"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "guards-gh-yaml-match",
+      "rule_id": "guards/gh-yaml",
+      "argv": [
+        "gh",
+        "--yaml"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-reflog-delete-match",
+      "rule_id": "guards/git-reflog-delete",
+      "argv": [
+        "git",
+        "reflog",
+        "delete"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-reflog-drop-match",
+      "rule_id": "guards/git-reflog-drop",
+      "argv": [
+        "git",
+        "reflog",
+        "drop"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-reflog-exists-match",
+      "rule_id": "guards/git-reflog-exists",
+      "argv": [
+        "git",
+        "reflog",
+        "exists"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-reflog-expire-match",
+      "rule_id": "guards/git-reflog-expire",
+      "argv": [
+        "git",
+        "reflog",
+        "expire"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-reflog-format-match",
+      "rule_id": "guards/git-reflog-format",
+      "argv": [
+        "git",
+        "reflog",
+        "--format"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-reflog-pretty-match",
+      "rule_id": "guards/git-reflog-pretty",
+      "argv": [
+        "git",
+        "reflog",
+        "--pretty"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-git-reflog-write-match",
+      "rule_id": "guards/git-reflog-write",
+      "argv": [
+        "git",
+        "reflog",
+        "write"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "git-reflog-match",
+      "rule_id": "git/reflog",
+      "argv": [
+        "git",
+        "reflog"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "git-remote-show-match",
+      "rule_id": "git/remote-show",
+      "argv": [
+        "git",
+        "remote",
+        "show"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-repo-view-match",
+      "rule_id": "gh/repo-view",
+      "argv": [
+        "gh",
+        "repo",
+        "view"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "gh-workflow-view-match",
+      "rule_id": "gh/workflow-view",
+      "argv": [
+        "gh",
+        "workflow",
+        "view"
+      ],
+      "expected_action": "reduce"
     }
   ]
 }

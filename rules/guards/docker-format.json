@@ -2,7 +2,8 @@
   "id": "guards/docker-format",
   "match": {
     "program": [
-      "docker"
+      "docker",
+      "podman"
     ],
     "argv_contains_all": [
       "--format"

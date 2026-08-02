@@ -1,0 +1,12 @@
+{
+  "id": "guards/cmake-debug-output",
+  "match": {
+    "program": [
+      "cmake"
+    ],
+    "argv_contains_all": [
+      "--debug-output"
+    ]
+  },
+  "action": "passthrough"
+}

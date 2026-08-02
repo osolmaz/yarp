@@ -1,0 +1,12 @@
+{
+  "id": "guards/ps-format-long",
+  "match": {
+    "program": [
+      "ps"
+    ],
+    "argv_contains_all": [
+      "--format"
+    ]
+  },
+  "action": "passthrough"
+}

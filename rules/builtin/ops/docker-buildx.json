@@ -2,7 +2,8 @@
   "id": "ops/docker-buildx",
   "match": {
     "program": [
-      "docker"
+      "docker",
+      "podman"
     ],
     "argv_prefix": [
       "buildx",

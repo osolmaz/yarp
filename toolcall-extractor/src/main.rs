@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 use toolcall_extractor::adapters;
 use toolcall_extractor::benchmark;
+use toolcall_extractor::ceiling::{self, AnalysisOptions};
 use toolcall_extractor::database::Database;
 use toolcall_extractor::error::{Error, Result};
 use toolcall_extractor::private_fs;
@@ -26,6 +27,7 @@ enum Command {
     Issues(DatabaseArgs),
     Verify(DatabaseArgs),
     BenchmarkYarp(DatabaseArgs),
+    AnalyzeCeiling(CeilingArgs),
 }
 
 #[derive(Args)]
@@ -60,6 +62,20 @@ struct IngestArgs {
 struct DatabaseArgs {
     #[arg(long)]
     database: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct CeilingArgs {
+    #[arg(long)]
+    database: Option<PathBuf>,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long, default_value_t = 704)]
+    summary_character_budget: u64,
+    #[arg(long, default_value_t = 256)]
+    minimum_removed_characters: u64,
+    #[arg(long, default_value_t = 1_500)]
+    minimum_savings_basis_points: u64,
 }
 
 #[derive(Subcommand)]
@@ -126,7 +142,34 @@ fn run(cli: Cli) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }
+        Command::AnalyzeCeiling(arguments) => analyze_ceiling(arguments),
     }
+}
+
+fn analyze_ceiling(arguments: CeilingArgs) -> Result<()> {
+    if arguments.summary_character_budget == 0 {
+        return Err(Error::InvalidArguments(
+            "summary character budget must be positive".to_owned(),
+        ));
+    }
+    if arguments.minimum_savings_basis_points > 10_000 {
+        return Err(Error::InvalidArguments(
+            "minimum savings basis points must not exceed 10000".to_owned(),
+        ));
+    }
+    let report = ceiling::run(
+        &database_path(arguments.database)?,
+        AnalysisOptions {
+            summary_character_budget: arguments.summary_character_budget,
+            minimum_removed_characters: arguments.minimum_removed_characters,
+            minimum_savings_basis_points: arguments.minimum_savings_basis_points,
+        },
+    )?;
+    let mut encoded = serde_json::to_vec_pretty(&report)?;
+    encoded.push(b'\n');
+    private_fs::write_private(&arguments.output, &encoded)?;
+    println!("ceiling analysis complete");
+    Ok(())
 }
 
 fn extract(arguments: ExtractArgs) -> Result<()> {

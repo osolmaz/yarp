@@ -2,7 +2,9 @@
   "id": "search/grep",
   "match": {
     "program": [
-      "grep"
+      "grep",
+      "egrep",
+      "fgrep"
     ]
   },
   "action": "reduce",

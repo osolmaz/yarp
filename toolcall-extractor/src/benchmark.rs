@@ -108,11 +108,11 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
             .saturating_add(u64::try_from(output.chars().count()).unwrap_or(u64::MAX));
         let (rule, rule_label) = match benchmark_selection(&command) {
             BenchmarkSelection::Reduce { rule, label } => (rule, label),
-            BenchmarkSelection::Passthrough => {
+            BenchmarkSelection::Passthrough { .. } => {
                 passthrough_results = passthrough_results.saturating_add(1);
                 continue;
             }
-            BenchmarkSelection::Ambiguous => {
+            BenchmarkSelection::Ambiguous { .. } => {
                 ambiguous_results = ambiguous_results.saturating_add(1);
                 continue;
             }
@@ -220,21 +220,25 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
     })
 }
 
-enum BenchmarkSelection {
+pub(crate) enum BenchmarkSelection {
     Reduce { rule: Box<Rule>, label: String },
-    Passthrough,
-    Ambiguous,
+    Passthrough { labels: Vec<String> },
+    Ambiguous { labels: Vec<String> },
     Unsupported,
 }
 
-fn benchmark_selection(command: &str) -> BenchmarkSelection {
+pub(crate) fn benchmark_selection(command: &str) -> BenchmarkSelection {
     match yarp_cli::rewrite::select_builtin_command(command) {
         Ok((_, yarp_cli::rules::Selection::Reduce(selected))) => BenchmarkSelection::Reduce {
             label: format!("{}/{}", selected.pack_id, selected.rule.id),
             rule: Box::new((*selected.rule).clone()),
         },
-        Ok((_, yarp_cli::rules::Selection::Passthrough(_))) => BenchmarkSelection::Passthrough,
-        Ok((_, yarp_cli::rules::Selection::Ambiguous(_))) => BenchmarkSelection::Ambiguous,
+        Ok((_, yarp_cli::rules::Selection::Passthrough(labels))) => {
+            BenchmarkSelection::Passthrough { labels }
+        }
+        Ok((_, yarp_cli::rules::Selection::Ambiguous(labels))) => {
+            BenchmarkSelection::Ambiguous { labels }
+        }
         Ok((_, yarp_cli::rules::Selection::Unsupported)) | Err(_) => {
             match yarp_cli::rewrite::select_result_rule(command) {
                 Ok(rule) => {
@@ -328,7 +332,7 @@ fn measure(output: &str, pruned: &[u8]) -> PruningMetrics {
     }
 }
 
-fn result_succeeded(is_error: Option<bool>, output_json: Option<&str>) -> Option<bool> {
+pub(crate) fn result_succeeded(is_error: Option<bool>, output_json: Option<&str>) -> Option<bool> {
     if let Some(value) = output_json.and_then(|value| serde_json::from_str::<Value>(value).ok()) {
         let exit_code = ["exit_code", "exitCode"]
             .into_iter()
@@ -350,7 +354,7 @@ fn result_succeeded(is_error: Option<bool>, output_json: Option<&str>) -> Option
     is_error.map(|value| !value)
 }
 
-fn shell_command(tool: &str, input_format: &str, input: &str) -> Option<String> {
+pub(crate) fn shell_command(tool: &str, input_format: &str, input: &str) -> Option<String> {
     let lower = tool.to_ascii_lowercase();
     if !(lower == "bash"
         || lower == "exec_command"

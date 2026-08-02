@@ -17,7 +17,7 @@ pub fn classify(line: &[u8]) -> EvidenceClass {
 
 fn is_cli_diagnostic(line: &[u8]) -> bool {
     let line = trim_start(line);
-    [
+    if [
         &b"error:"[..],
         &b"fatal:"[..],
         &b"warning:"[..],
@@ -25,6 +25,37 @@ fn is_cli_diagnostic(line: &[u8]) -> bool {
     ]
     .iter()
     .any(|prefix| starts_ascii_insensitive(line, prefix))
+    {
+        return true;
+    }
+    let command_prefix = [
+        &b"ls:"[..],
+        &b"find:"[..],
+        &b"fd:"[..],
+        &b"fdfind:"[..],
+        &b"tree:"[..],
+        &b"du:"[..],
+        &b"df:"[..],
+        &b"ps:"[..],
+        &b"lsof:"[..],
+        &b"free:"[..],
+    ]
+    .iter()
+    .any(|prefix| starts_ascii_insensitive(line, prefix));
+    command_prefix
+        && [
+            &b"cannot"[..],
+            &b"could not"[..],
+            &b"denied"[..],
+            &b"error"[..],
+            &b"failed"[..],
+            &b"invalid"[..],
+            &b"no such"[..],
+            &b"unknown"[..],
+            &b"unrecognized"[..],
+        ]
+        .iter()
+        .any(|term| contains_ascii_insensitive(line, term))
 }
 
 fn is_list_outcome(line: &[u8]) -> bool {
@@ -66,5 +97,14 @@ mod tests {
             classify(b"fatal: bad revision\n"),
             EvidenceClass::Diagnostic
         );
+        assert_eq!(
+            classify(b"find: './private': Permission denied\n"),
+            EvidenceClass::Diagnostic
+        );
+        assert_eq!(
+            classify(b"ls: cannot access 'missing': No such file\n"),
+            EvidenceClass::Diagnostic
+        );
+        assert_eq!(classify(b"find: source fixture\n"), EvidenceClass::Example);
     }
 }
