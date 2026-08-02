@@ -8,6 +8,39 @@ use crate::reducers::{RecoveryMarker, StreamReducer};
 
 const RESULT_PROTOCOL_VERSION: u32 = 1;
 const MAX_RESULT_FRAME_BYTES: u64 = 4 * 1024 * 1024;
+const SETUP_DIAGNOSTIC_OVERLAP_BYTES: usize = 31;
+
+#[derive(Debug, Default)]
+struct SetupDiagnosticScanner {
+    tail: Vec<u8>,
+    matched: bool,
+}
+
+impl SetupDiagnosticScanner {
+    fn push(&mut self, chunk: &[u8]) {
+        if self.matched {
+            return;
+        }
+        let prefix_len = chunk.len().min(SETUP_DIAGNOSTIC_OVERLAP_BYTES);
+        let mut boundary = Vec::with_capacity(self.tail.len().saturating_add(prefix_len));
+        boundary.extend_from_slice(&self.tail);
+        boundary.extend_from_slice(&chunk[..prefix_len]);
+        self.matched = crate::rewrite::contains_setup_diagnostic(&boundary)
+            || crate::rewrite::contains_setup_diagnostic(chunk);
+        if chunk.len() >= SETUP_DIAGNOSTIC_OVERLAP_BYTES {
+            self.tail
+                .extend_from_slice(&chunk[chunk.len() - SETUP_DIAGNOSTIC_OVERLAP_BYTES..]);
+            self.tail
+                .drain(..self.tail.len() - SETUP_DIAGNOSTIC_OVERLAP_BYTES);
+        } else {
+            self.tail.extend_from_slice(chunk);
+            if self.tail.len() > SETUP_DIAGNOSTIC_OVERLAP_BYTES {
+                self.tail
+                    .drain(..self.tail.len() - SETUP_DIAGNOSTIC_OVERLAP_BYTES);
+            }
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -81,6 +114,7 @@ fn reduce(request: &ReduceRequest) -> Result<OwnedResponse, String> {
             .map_err(|error| format!("could not rewind source_output: {error}"))?;
         let mut reducer =
             StreamReducer::new_with_transform_diagnostics(rule, plan.transform_diagnostics)?;
+        let mut setup_diagnostics = SetupDiagnosticScanner::default();
         let mut hasher = Sha256::new();
         let mut buffer = [0_u8; 8 * 1024];
         loop {
@@ -90,6 +124,12 @@ fn reduce(request: &ReduceRequest) -> Result<OwnedResponse, String> {
                 .map_err(|error| format!("could not read source_output: {error}"))?;
             if count == 0 {
                 break;
+            }
+            if plan.fail_open_setup_diagnostics {
+                setup_diagnostics.push(&buffer[..count]);
+                if setup_diagnostics.matched {
+                    return Ok(OwnedResponse::unchanged());
+                }
             }
             reducer.push(&buffer[..count]);
             hasher.update(&buffer[..count]);
@@ -117,6 +157,11 @@ fn reduce(request: &ReduceRequest) -> Result<OwnedResponse, String> {
         ));
     }
 
+    if plan.fail_open_setup_diagnostics
+        && crate::rewrite::contains_setup_diagnostic(request.text.as_bytes())
+    {
+        return Ok(OwnedResponse::unchanged());
+    }
     let mut reducer =
         StreamReducer::new_with_transform_diagnostics(rule, plan.transform_diagnostics)?;
     for chunk in request.text.as_bytes().chunks(8 * 1024) {
@@ -298,12 +343,35 @@ mod tests {
         assert!(response.changed);
         assert!(response.content.expect("summary").contains("search"));
 
+        let setup_failure = ReduceRequest {
+            schema_version: 1,
+            command: "cd /a/very/long/missing/path && cargo test | head -1".to_owned(),
+            text: "bash: line 1: cd: /a/very/long/missing/path: No such file or directory\n"
+                .to_owned(),
+            is_error: true,
+            exit_code: Some(1),
+            archive_ref: "yr_0123456789abcdef0123456789abcdef".to_owned(),
+            source_completeness: SourceCompleteness::Unknown,
+            prefer_archive_source: false,
+        };
+        let response = reduce(&setup_failure).expect("setup failure pass-through");
+        assert!(!response.changed);
+
         let guarded = ReduceRequest {
             command: "rg --json TODO . | jq .".to_owned(),
             ..request
         };
         let response = reduce(&guarded).expect("guarded pass-through");
         assert!(!response.changed);
+    }
+
+    #[test]
+    fn finds_setup_diagnostics_across_stream_boundaries() {
+        let mut scanner = SetupDiagnosticScanner::default();
+        scanner.push(b"bash: line 1: c");
+        assert!(!scanner.matched);
+        scanner.push(b"d: missing: No such file or directory\n");
+        assert!(scanner.matched);
     }
 
     #[test]

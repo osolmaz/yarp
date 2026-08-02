@@ -148,6 +148,7 @@ pub struct ResultPlan {
     pub rule: Rule,
     pub status_confidence: StatusConfidence,
     pub transform_diagnostics: TransformDiagnostics,
+    pub fail_open_setup_diagnostics: bool,
 }
 
 /// Select one compatible typed plan for conservative post-result reduction.
@@ -161,6 +162,7 @@ pub fn select_result_plan(command: &str) -> Result<ResultPlan, String> {
     let mut selected: Option<Rule> = None;
     let mut confidence = StatusConfidence::Complete;
     let mut transform_diagnostics = TransformDiagnostics::default();
+    let mut fail_open_setup_diagnostics = false;
     let mut pipefail = Some(false);
     let mut previous_had_output = false;
 
@@ -192,6 +194,7 @@ pub fn select_result_plan(command: &str) -> Result<ResultPlan, String> {
         let has_output = candidate.is_some();
         let may_have_setup_diagnostics =
             setup && matches!(item, ShellItem::Simple(command) if setup_may_emit(&command.words));
+        fail_open_setup_diagnostics |= may_have_setup_diagnostics;
         let may_have_visible_output = has_output || may_have_setup_diagnostics;
         match connector {
             Some(Connector::Sequence) if previous_had_output => {
@@ -217,6 +220,7 @@ pub fn select_result_plan(command: &str) -> Result<ResultPlan, String> {
         rule,
         status_confidence: confidence,
         transform_diagnostics,
+        fail_open_setup_diagnostics,
     })
 }
 
@@ -700,6 +704,27 @@ fn is_setup_command(words: &[String]) -> bool {
         [program, value] if program == "umask" && !value.starts_with('-') => true,
         _ => false,
     }
+}
+
+/// Return whether output contains a diagnostic from an accepted fallible setup command.
+#[must_use]
+pub fn contains_setup_diagnostic(input: &[u8]) -> bool {
+    [
+        b"cd:".as_slice(),
+        b"umask:".as_slice(),
+        b"export:".as_slice(),
+        b"readonly variable".as_slice(),
+        b"not a valid identifier".as_slice(),
+    ]
+    .iter()
+    .any(|pattern| {
+        input.windows(pattern.len()).any(|window| {
+            window
+                .iter()
+                .zip(*pattern)
+                .all(|(left, right)| left.eq_ignore_ascii_case(right))
+        })
+    })
 }
 
 fn setup_may_emit(words: &[String]) -> bool {
