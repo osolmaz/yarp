@@ -601,6 +601,11 @@ mod tests {
                 StatusConfidence::FinalStageOnly,
                 false,
             ),
+            (
+                "cd missing; cargo test",
+                StatusConfidence::FinalStageOnly,
+                false,
+            ),
         ] {
             let BenchmarkSelection::Reduce {
                 status_confidence, ..

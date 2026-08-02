@@ -177,7 +177,7 @@ This sends framed normalized records through the pipe and creates no intermediat
 
 The default database is `~/.local/share/toolcall-extractor/toolcalls.duckdb`. Tool inputs and outputs can contain secrets, so its directory and files are private. The extractor reads agent state without modifying it, has no network code, and stops before its files reach 10,000,000,000 bytes. See [the implementation plan](docs/toolcall-extractor-implementation-plan.md) for supported formats and privacy boundaries.
 
-A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The production matcher evaluated all 371,241 stored shell results. Typed summaries changed 37,466 results and removed 375,126,127 characters: 91.6949% of eligible output, 25.9508% of shell output, and 19.3193% of all rendered output. No ambiguous reduction or registered diagnostic veto occurred. The generated database and transcripts remain outside the repository, as does the report.
+A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The production matcher evaluated all 371,241 stored shell results. Typed summaries changed 37,466 results and removed 375,125,749 characters: 91.6948% of eligible output, 25.9508% of shell output, and 19.3193% of all rendered output. No ambiguous reduction or registered diagnostic veto occurred. The generated database and transcripts remain outside the repository, as does the report.
 
 ## Limits
 

@@ -296,9 +296,9 @@ fn parse_pipeline(node: Node<'_>, source: &str) -> Result<ShellItem, String> {
     let mut token_cursor = node.walk();
     if node
         .children(&mut token_cursor)
-        .any(|child| !child.is_named() && child.kind() == "|&")
+        .any(|child| !child.is_named() && child.kind() != "|")
     {
-        return Err("pipelines that merge stderr are unsupported".to_owned());
+        return Err("pipeline uses an unsupported operator or prefix".to_owned());
     }
     let mut stages = Vec::with_capacity(stage_nodes.len());
     for stage in stage_nodes {
@@ -768,6 +768,7 @@ mod tests {
             "cat <<EOF\nvalue\nEOF",
             "cargo test |",
             "cargo test &&",
+            "! cargo test | head -100",
             "((((((((((((((((((((cargo test))))))))))))))))))))",
         ] {
             assert!(parse(source).is_err(), "accepted {source:?}");
