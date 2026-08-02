@@ -319,7 +319,7 @@ impl EvidenceCollector {
             .as_bytes(),
         );
         output.extend_from_slice(&self.newline);
-        if omitted > 0 || self.truncated_lines > 0 {
+        if omitted > 0 || self.truncated_lines > 0 || recovery.is_some() {
             append_recovery_marker(
                 &mut output,
                 &self.newline,
@@ -399,7 +399,9 @@ fn append_recovery_marker(
     truncated: u64,
     recovery: Option<RecoveryMarker<'_>>,
 ) {
-    let description = if truncated == 0 {
+    let description = if omitted == 0 && truncated == 0 {
+        "exact output archived".to_owned()
+    } else if truncated == 0 {
         format!("omitted {omitted} line(s)")
     } else {
         format!("omitted {omitted} line(s), truncated {truncated} line(s)")
@@ -482,6 +484,29 @@ mod tests {
         assert!(output.contains("== outcome ==\r\n"));
         assert!(output.contains("L2: error: failed"));
         assert!(output.contains("yarp search yr_0123456789abcdef0123456789abcdef"));
+    }
+
+    #[test]
+    fn changed_output_keeps_recovery_even_when_no_line_is_omitted() {
+        let mut collector = EvidenceCollector::new("test", policy());
+        collector.observe(1, &line("error: failed\n"), EvidenceClass::Diagnostic);
+        let output = String::from_utf8(collector.render(
+            Some(RecoveryMarker {
+                archive_ref: "yr_0123456789abcdef0123456789abcdef",
+                source: "stderr",
+                completeness: "complete",
+            }),
+            [false; 5],
+        ))
+        .expect("UTF-8");
+        assert!(
+            output
+                .contains("[yarp: exact output archived; ref=yr_0123456789abcdef0123456789abcdef")
+        );
+        assert!(
+            output
+                .contains("Search omitted output: yarp search yr_0123456789abcdef0123456789abcdef")
+        );
     }
 
     #[test]
