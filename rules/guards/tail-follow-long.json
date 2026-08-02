@@ -1,0 +1,8 @@
+{
+  "id": "guards/tail-follow-long",
+  "match": {
+    "program": ["tail"],
+    "argv_contains_all": ["--follow"]
+  },
+  "action": "passthrough"
+}

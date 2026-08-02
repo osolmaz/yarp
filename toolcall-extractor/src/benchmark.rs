@@ -16,6 +16,8 @@ pub struct PruningMetrics {
     pub original_characters: u64,
     pub pruned_characters: u64,
     pub removed_characters: u64,
+    pub maximum_original_characters: u64,
+    pub maximum_removed_characters: u64,
     pub original_bytes: u64,
     pub pruned_bytes: u64,
     pub removed_bytes: u64,
@@ -44,6 +46,7 @@ pub struct BenchmarkReport {
     pub removed_percent_of_all_output: f64,
     pub diagnostic_vetoes: u64,
     pub diagnostic_vetoes_by_term: BTreeMap<String, u64>,
+    pub missing_recovery_markers: u64,
     pub eligible_original_bytes: u64,
     pub eligible_pruned_bytes: u64,
     pub removed_bytes: u64,
@@ -56,6 +59,9 @@ pub struct BenchmarkReport {
     pub by_tool: BTreeMap<String, PruningMetrics>,
     pub by_rule: BTreeMap<String, PruningMetrics>,
     pub by_reducer: BTreeMap<String, PruningMetrics>,
+    pub by_shell_syntax: BTreeMap<String, PruningMetrics>,
+    pub by_shell_syntax_and_status: BTreeMap<String, PruningMetrics>,
+    pub by_result_property: BTreeMap<String, PruningMetrics>,
     pub by_status: BTreeMap<String, PruningMetrics>,
     pub by_size_band: BTreeMap<String, PruningMetrics>,
 }
@@ -78,6 +84,7 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
     let mut shell_output_characters = 0_u64;
     let mut diagnostic_vetoes = 0_u64;
     let mut diagnostic_vetoes_by_term = BTreeMap::<String, u64>::new();
+    let mut missing_recovery_markers = 0_u64;
     let mut passthrough_results = 0_u64;
     let mut ambiguous_results = 0_u64;
     let mut unsupported_results = 0_u64;
@@ -87,6 +94,9 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
     let mut by_tool = BTreeMap::<String, PruningMetrics>::new();
     let mut by_rule = BTreeMap::<String, PruningMetrics>::new();
     let mut by_reducer = BTreeMap::<String, PruningMetrics>::new();
+    let mut by_shell_syntax = BTreeMap::<String, PruningMetrics>::new();
+    let mut by_shell_syntax_and_status = BTreeMap::<String, PruningMetrics>::new();
+    let mut by_result_property = BTreeMap::<String, PruningMetrics>::new();
     let mut by_status = BTreeMap::<String, PruningMetrics>::new();
     let mut by_size_band = BTreeMap::<String, PruningMetrics>::new();
     while let Some(row) = rows.next()? {
@@ -142,6 +152,9 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
         )
         .unwrap_or_else(|_| output.as_bytes().to_vec());
         let metrics = measure(&output, &pruned);
+        if metrics.affected_results > 0 && !has_recovery_marker(&pruned) {
+            missing_recovery_markers = missing_recovery_markers.saturating_add(1);
+        }
         let lost_diagnostics = lost_registered_diagnostics(&output, &pruned);
         diagnostic_vetoes =
             diagnostic_vetoes.saturating_add(u64::from(!lost_diagnostics.is_empty()));
@@ -156,19 +169,44 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
         by_tool.entry(tool).or_default().add(&metrics);
         by_rule.entry(rule_label).or_default().add(&metrics);
         by_reducer.entry(reducer_label).or_default().add(&metrics);
+        let syntax_labels = yarp_cli::shell::inspect_syntax(&command)
+            .labels()
+            .collect::<Vec<_>>();
+        let status_label = if succeeded == Some(true) {
+            "success"
+        } else if succeeded == Some(false) {
+            "failure"
+        } else {
+            "unknown"
+        };
+        let mut selected_syntax = if syntax_labels.is_empty() {
+            vec!["simple_command"]
+        } else {
+            syntax_labels
+        };
+        if selected_syntax.len() > 1 {
+            selected_syntax.push("mixed_syntax");
+        }
+        for label in selected_syntax {
+            by_shell_syntax
+                .entry(label.to_owned())
+                .or_default()
+                .add(&metrics);
+            by_shell_syntax_and_status
+                .entry(format!("{label}/{status_label}"))
+                .or_default()
+                .add(&metrics);
+        }
         by_status
-            .entry(
-                if succeeded == Some(true) {
-                    "success"
-                } else if succeeded == Some(false) {
-                    "failure"
-                } else {
-                    "unknown"
-                }
-                .to_owned(),
-            )
+            .entry(status_label.to_owned())
             .or_default()
             .add(&metrics);
+        for property in result_properties(&output, output_json.as_deref()) {
+            by_result_property
+                .entry(property.to_owned())
+                .or_default()
+                .add(&metrics);
+        }
         by_size_band
             .entry(size_band(output.len()).to_owned())
             .or_default()
@@ -202,6 +240,7 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
         removed_bytes: total.removed_bytes,
         diagnostic_vetoes,
         diagnostic_vetoes_by_term,
+        missing_recovery_markers,
         original_lines: total.original_lines,
         pruned_lines: total.pruned_lines,
         removed_lines: total.original_lines.saturating_sub(total.pruned_lines),
@@ -215,6 +254,9 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
         by_tool,
         by_rule,
         by_reducer,
+        by_shell_syntax,
+        by_shell_syntax_and_status,
+        by_result_property,
         by_status,
         by_size_band,
     })
@@ -239,20 +281,22 @@ pub(crate) fn benchmark_selection(command: &str) -> BenchmarkSelection {
         Ok((_, yarp_cli::rules::Selection::Ambiguous(labels))) => {
             BenchmarkSelection::Ambiguous { labels }
         }
-        Ok((_, yarp_cli::rules::Selection::Unsupported)) | Err(_) => {
-            match yarp_cli::rewrite::select_result_rule(command) {
-                Ok(rule) => {
-                    let Some(reducer) = rule.reducer.as_ref() else {
-                        return BenchmarkSelection::Unsupported;
-                    };
-                    BenchmarkSelection::Reduce {
-                        label: format!("compound/{}", reducer_name(reducer)),
-                        rule: Box::new(rule),
-                    }
+        Ok((
+            _,
+            yarp_cli::rules::Selection::Transform(_) | yarp_cli::rules::Selection::Unsupported,
+        ))
+        | Err(_) => match yarp_cli::rewrite::select_result_rule(command) {
+            Ok(rule) => {
+                let Some(reducer) = rule.reducer.as_ref() else {
+                    return BenchmarkSelection::Unsupported;
+                };
+                BenchmarkSelection::Reduce {
+                    label: format!("compound/{}", reducer_name(reducer)),
+                    rule: Box::new(rule),
                 }
-                Err(_) => BenchmarkSelection::Unsupported,
             }
-        }
+            Err(_) => BenchmarkSelection::Unsupported,
+        },
     }
 }
 
@@ -270,6 +314,54 @@ fn reducer_name(reducer: &Reducer) -> String {
     .to_owned()
 }
 
+fn result_properties(output: &str, output_json: Option<&str>) -> Vec<&'static str> {
+    let mut properties = Vec::new();
+    if !output.is_ascii() {
+        properties.push("non_ascii");
+    }
+    let maximum_line = output
+        .as_bytes()
+        .split(|byte| *byte == b'\n')
+        .map(<[u8]>::len)
+        .max()
+        .unwrap_or(0);
+    if maximum_line > 16 * 1024 {
+        properties.push("long_line_16k");
+    }
+    if maximum_line > 1024 * 1024 {
+        properties.push("oversized_line_1m");
+    }
+    if output_json
+        .and_then(|value| serde_json::from_str::<Value>(value).ok())
+        .is_some_and(|value| json_has_truncation(&value))
+    {
+        properties.push("host_truncated");
+    }
+    if [
+        "Process running with session ID",
+        "Command exited with code",
+        "Process exited with code",
+        "timed out",
+    ]
+    .iter()
+    .any(|marker| output.contains(marker))
+    {
+        properties.push("transport_outcome");
+    }
+    properties
+}
+
+fn json_has_truncation(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            ((key == "truncated" || key == "isTruncated") && value == &Value::Bool(true))
+                || json_has_truncation(value)
+        }),
+        Value::Array(values) => values.iter().any(json_has_truncation),
+        _ => false,
+    }
+}
+
 fn size_band(bytes: usize) -> &'static str {
     match bytes {
         0..1_000 => "000000-000999",
@@ -277,6 +369,11 @@ fn size_band(bytes: usize) -> &'static str {
         10_000..100_000 => "010000-099999",
         _ => "100000+",
     }
+}
+
+fn has_recovery_marker(pruned: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(pruned);
+    text.contains("yr_0123456789abcdef0123456789abcdef") && text.contains("yarp search")
 }
 
 fn lost_registered_diagnostics(original: &str, pruned: &[u8]) -> Vec<&'static str> {
@@ -304,6 +401,12 @@ impl PruningMetrics {
         self.removed_characters = self
             .removed_characters
             .saturating_add(other.removed_characters);
+        self.maximum_original_characters = self
+            .maximum_original_characters
+            .max(other.maximum_original_characters);
+        self.maximum_removed_characters = self
+            .maximum_removed_characters
+            .max(other.maximum_removed_characters);
         self.original_bytes = self.original_bytes.saturating_add(other.original_bytes);
         self.pruned_bytes = self.pruned_bytes.saturating_add(other.pruned_bytes);
         self.removed_bytes = self.removed_bytes.saturating_add(other.removed_bytes);
@@ -324,6 +427,8 @@ fn measure(output: &str, pruned: &[u8]) -> PruningMetrics {
         original_characters,
         pruned_characters,
         removed_characters: original_characters.saturating_sub(pruned_characters),
+        maximum_original_characters: original_characters,
+        maximum_removed_characters: original_characters.saturating_sub(pruned_characters),
         original_bytes,
         pruned_bytes,
         removed_bytes: original_bytes.saturating_sub(pruned_bytes),
@@ -402,6 +507,26 @@ mod tests {
     }
 
     #[test]
+    fn reports_only_fixed_result_properties() {
+        let output = format!(
+            "Process running with session ID 12\nnon-ASCII: café\n{}",
+            "x".repeat(17_000)
+        );
+        assert_eq!(
+            result_properties(&output, Some(r#"{"details":{"truncated":true}}"#)),
+            [
+                "non_ascii",
+                "long_line_16k",
+                "host_truncated",
+                "transport_outcome"
+            ]
+        );
+        assert!(json_has_truncation(
+            &serde_json::json!({"nested": [{"isTruncated": true}]})
+        ));
+    }
+
+    #[test]
     fn prefers_explicit_exit_status() {
         assert_eq!(
             result_succeeded(Some(false), Some(r#"{"exit_code":1}"#)),
@@ -424,6 +549,14 @@ mod tests {
             Some(false)
         );
         assert_eq!(result_succeeded(None, None), None);
+    }
+
+    #[test]
+    fn requires_both_parts_of_the_recovery_marker() {
+        assert!(has_recovery_marker(
+            b"yarp search yr_0123456789abcdef0123456789abcdef 'error'"
+        ));
+        assert!(!has_recovery_marker(b"yr_0123456789abcdef0123456789abcdef"));
     }
 
     #[test]

@@ -1,0 +1,8 @@
+{
+  "id": "guards/sort-output-long",
+  "match": {
+    "program": ["sort"],
+    "argv_contains_all": ["--output"]
+  },
+  "action": "passthrough"
+}

@@ -51,42 +51,44 @@ Family IDs come from public built-in rule IDs or a fixed category in the analyze
 
 ## Shell syntax coverage
 
-A separate read-only census examined the same 371,241 shell results and 1,445,526,406 output characters. It used a Bash syntax tree when parsing succeeded and a quote-aware scanner for the 24,934 commands that the parser could not read. The census retained no command text or output. Counts in the table overlap because one command can use several forms.
+The read-only analyzer examined the same 371,241 shell results and 1,445,526,406 output characters with YARP's bounded Bash parser and lexical feature scanner. It found 211 parser failures. The report retains no command text or output. Counts in the table overlap because one command can use several forms.
 
 | Shell form | Results | Share of shell results | Output characters | Share of shell output |
 | --- | ---: | ---: | ---: | ---: |
-| Pipeline `\|` | 85,499 | 23.03% | 378,071,055 | 26.15% |
-| AND chain `&&` | 72,465 | 19.52% | 305,685,936 | 21.15% |
-| Redirection other than `2>&1` or `1>&2` | 47,612 | 12.83% | 114,227,424 | 7.90% |
-| Semicolon chain `;` | 44,234 | 11.92% | 116,415,972 | 8.05% |
+| Pipeline `\|` | 85,405 | 23.01% | 377,915,307 | 26.14% |
+| AND chain `&&` | 72,448 | 19.52% | 305,684,143 | 21.15% |
+| Redirection other than `2>&1` or `1>&2` | 48,388 | 13.03% | 114,679,650 | 7.93% |
+| Semicolon chain `;` | 44,579 | 12.01% | 117,295,522 | 8.11% |
 | Multiline shell input | 36,139 | 9.73% | 78,919,466 | 5.46% |
-| Parameter expansion | 25,272 | 6.81% | 69,522,342 | 4.81% |
-| OR chain `\|\|` | 21,484 | 5.79% | 40,996,357 | 2.84% |
-| Command substitution | 19,993 | 5.39% | 43,851,862 | 3.03% |
-| Executable path | 8,142 | 2.19% | 16,586,798 | 1.15% |
-| Loop or conditional | 7,032 | 1.89% | 18,910,812 | 1.31% |
-| Unsupported wrapper | 3,874 | 1.04% | 12,900,853 | 0.89% |
-| Comment | 2,455 | 0.66% | 3,150,079 | 0.22% |
-| Background command | 2,402 | 0.65% | 2,073,429 | 0.14% |
-| Nested shell | 1,069 | 0.29% | 1,744,076 | 0.12% |
-| Subshell group | 491 | 0.13% | 831,575 | 0.06% |
-| Shell function | 166 | 0.04% | 394,181 | 0.03% |
+| Parameter expansion | 25,079 | 6.76% | 68,821,658 | 4.76% |
+| OR chain `\|\|` | 21,489 | 5.79% | 41,001,742 | 2.84% |
+| Command substitution | 19,828 | 5.34% | 43,830,953 | 3.03% |
+| Executable path | 9,004 | 2.43% | 17,844,279 | 1.23% |
+| Loop or conditional | 8,416 | 2.27% | 20,884,933 | 1.44% |
+| Unsupported wrapper | 4,366 | 1.18% | 14,151,654 | 0.98% |
+| `2>&1` or `1>&2` stream merge | 7,800 | 2.10% | 7,305,229 | 0.51% |
+| Comment | 2,460 | 0.66% | 3,152,780 | 0.22% |
+| Nested shell | 1,166 | 0.31% | 1,803,679 | 0.12% |
+| Background command | 1,334 | 0.36% | 1,266,407 | 0.09% |
+| Subshell group | 660 | 0.18% | 980,491 | 0.07% |
+| Shell function | 297 | 0.08% | 470,289 | 0.03% |
+| Parser failure | 211 | 0.06% | 162,887 | 0.01% |
 
-The current result classifier accepts simple `;`, `&&`, and `||` chains only when each output command selects the same reducer family. It also accepts reviewed setup commands and assignments along with known wrappers and the `2>&1` and `1>&2` stream merges. This selected 3,958 compound results in the measured corpus. Of those, 1,486 changed and removed 11,782,428 characters. A pipeline always passes through.
+The result planner accepts a chain or pipeline only when every possible visible output has one reducer family. It also accepts reviewed setup commands and assignments along with known wrappers and the `2>&1` and `1>&2` stream merges. The planner selected 16,945 compound results. Of those, 10,112 changed and removed 83,047,677 characters. Pipelines accounted for 12,990 selected results, 8,678 changed results, and 71,418,862 removed characters.
 
-The broad `shell/unsupported-syntax` family contains 179,696 unchanged results and 702,810,072 output characters. The operator and syntax rows above explain much of that family, but they must not be added together because of overlap. Exact-text inspection, structured output, count-only output, and machine-readable forms remain separate intentional pass-through categories.
+The broad `shell/unsupported-syntax` family now contains 167,134 unchanged results and 628,070,213 output characters. The operator and syntax rows above explain much of that family, but they must not be added together because of overlap. Exact-text inspection, structured output, count-only output, and machine-readable forms remain separate intentional pass-through categories.
 
 ## Shell result planning
 
-The [shell result planning implementation plan](shell-result-planning-implementation-plan.md) defines the parser, rule contract, safety checks, and release gates. Pipeline support should use one shell result planner across command combinations. A non-executing parser should produce a syntax tree and reject incomplete or recovered parses while preserving the original command text. The planner should identify typed output and carry it only through reviewed line-preserving stages. Every other stage vetoes reduction. Current output types cover search and list output plus test and build output.
+The [shell result planning implementation plan](shell-result-planning-implementation-plan.md) records the parser, rule contract, safety checks, and release gates. One non-executing parser now serves simple commands, chains, and pipelines. It rejects incomplete or recovered parses while preserving the original command text. The planner carries typed output only through reviewed line-preserving stages. Every other stage vetoes reduction. Current output types cover search, list, test, build, diff, log, and status output.
 
-The first useful transforms are `cat`, `tee`, line-based `head` and `tail`, `sort`, and `uniq`. Their options need guards for byte output, NUL separators, numbering, counts, custom formatting, and other forms that change line content. A pass-through guard or unknown stage anywhere in the pipeline blocks reduction.
+The first transforms are guarded forms of `cat`, `tee`, line-based `head` and `tail`, `sort`, and `uniq`. Their guards cover byte output, NUL separators, numbering, counts, custom formatting, file operands that would introduce unrelated input, and other forms that change the output contract. A pass-through guard or unknown stage anywhere in the pipeline blocks reduction.
 
-YARP should execute the original pipeline unchanged. Rewriting individual stages could change buffering, signals, stream routing, and exit status. The Pi extension can continue archiving the exact result before the existing `tool_result` hook asks YARP to reduce it. Without explicit `pipefail`, the planner should use the larger failure policy because an earlier stage may have failed even when the pipeline exit code is zero.
+YARP executes the original pipeline unchanged. Rewriting individual stages could change buffering, signals, stream routing, and exit status. The Pi extension archives the exact result before the existing `tool_result` hook asks YARP to reduce it. Without explicit `pipefail`, the planner uses the larger failure policy because an earlier stage may have failed even when the pipeline exit code is zero.
 
-Pipelines and compatible linear chains have the best measured opportunity. Simple multiline input and reviewed wrappers can use the same planner. Parameter expansion, command substitution, arbitrary redirection, loops, background jobs, nested shells, executable paths, and aliases should continue to pass through until their meaning can be established without running or expanding shell source.
+Parameter expansion, command substitution, arbitrary redirection, loops, background jobs, nested shells, process substitution, here documents, executable paths, and aliases still pass through when their meaning cannot be established without running or expanding shell source.
 
-A proposed retrospective release threshold is one additional percentage point of shell-output reduction, equal to 14,455,264 characters in this corpus. The maintainer must approve that threshold before it becomes a decision rule. Every release still requires zero registered diagnostic vetoes, exact archive recovery, model retrieval checks, bounded memory, and the existing throughput and latency gates.
+Before this work, typed summaries changed 29,439 results and removed 306,302,222 characters. The combined parser, planner, transforms, and ranked evidence selector change 37,485 results and remove 375,442,158 characters. The absolute gain is 8,046 changed results and 69,139,936 removed characters, or 4.7830 percentage points of shell output. This clears the proposed one-point minimum effect by 54,684,672 characters. Registered diagnostic vetoes and missing recovery markers remain zero. Release still requires retrieval checks, bounded memory, and the throughput and latency gates.
 
 This design changes no Pi internals or session entries. It adds no persistent schema or runtime state. It continues using Pi's documented shell-tool hooks.
 

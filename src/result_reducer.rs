@@ -56,12 +56,15 @@ pub fn run(input: impl Read, output: impl Write) -> Result<(), String> {
 }
 
 fn reduce(request: &ReduceRequest) -> Result<OwnedResponse, String> {
-    let Ok(rule) = crate::rewrite::select_result_rule(&request.command) else {
+    let Ok(plan) = crate::rewrite::select_result_plan(&request.command) else {
         return Ok(OwnedResponse::unchanged());
     };
-    let success = request
+    let reported_success = request
         .exit_code
         .map_or(!request.is_error, |exit_code| exit_code == 0);
+    let success =
+        reported_success && plan.status_confidence == crate::rewrite::StatusConfidence::Complete;
+    let rule = &plan.rule;
     if request.prefer_archive_source {
         let archive = Archive::open_read_only()?;
         let mut source = archive
@@ -76,7 +79,7 @@ fn reduce(request: &ReduceRequest) -> Result<OwnedResponse, String> {
             .body
             .seek(SeekFrom::Start(0))
             .map_err(|error| format!("could not rewind source_output: {error}"))?;
-        let mut reducer = StreamReducer::new(&rule)?;
+        let mut reducer = StreamReducer::new(rule)?;
         let mut hasher = Sha256::new();
         let mut buffer = [0_u8; 8 * 1024];
         loop {
@@ -113,7 +116,7 @@ fn reduce(request: &ReduceRequest) -> Result<OwnedResponse, String> {
         ));
     }
 
-    let mut reducer = StreamReducer::new(&rule)?;
+    let mut reducer = StreamReducer::new(rule)?;
     for chunk in request.text.as_bytes().chunks(8 * 1024) {
         reducer.push(chunk);
     }
@@ -237,6 +240,8 @@ fn validate_archive_ref(value: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
 
     fn frame(value: &serde_json::Value) -> Vec<u8> {
@@ -268,6 +273,71 @@ mod tests {
         let response: serde_json::Value =
             serde_json::from_slice(&output[8..8 + length]).expect("response");
         assert_eq!(response["changed"], false);
+    }
+
+    #[test]
+    fn reduces_safe_composite_results_and_preserves_uncertain_ones() {
+        let text = (0..2_000).fold(String::new(), |mut output, index| {
+            writeln!(output, "src/file{index}.rs:{index}: TODO item")
+                .expect("write search fixture");
+            output
+        });
+        let request = ReduceRequest {
+            schema_version: 1,
+            command: "rg TODO . | sort | head -50".to_owned(),
+            text: text.clone(),
+            is_error: false,
+            exit_code: Some(0),
+            archive_ref: "yr_0123456789abcdef0123456789abcdef".to_owned(),
+            source_completeness: SourceCompleteness::Unknown,
+            prefer_archive_source: false,
+        };
+        let response = reduce(&request).expect("composite reduction");
+        assert!(response.changed);
+        assert!(response.content.expect("summary").contains("search"));
+
+        let guarded = ReduceRequest {
+            command: "rg --json TODO . | jq .".to_owned(),
+            ..request
+        };
+        let response = reduce(&guarded).expect("guarded pass-through");
+        assert!(!response.changed);
+    }
+
+    #[test]
+    fn reduces_failure_evidence_for_every_supported_composite_shape() {
+        let text = format!(
+            "{}test result: FAILED\n",
+            "test case ... FAILED\n".repeat(1_000)
+        );
+        for command in [
+            "cargo test | head -100",
+            "set -o pipefail && cargo test | head -100",
+            "cargo test && cargo test",
+            "cargo test; cargo test",
+            "cargo test || cargo test",
+            "cargo test\ncargo test",
+            "cargo test 2>&1",
+        ] {
+            let request = ReduceRequest {
+                schema_version: 1,
+                command: command.to_owned(),
+                text: text.clone(),
+                is_error: true,
+                exit_code: Some(1),
+                archive_ref: "yr_0123456789abcdef0123456789abcdef".to_owned(),
+                source_completeness: SourceCompleteness::Unknown,
+                prefer_archive_source: false,
+            };
+            let response = reduce(&request).expect("composite failure reduction");
+            assert!(response.changed, "unchanged {command}");
+            let content = response.content.expect("summary");
+            assert!(content.contains("test result: FAILED"), "{command}");
+            assert!(
+                content.contains("yarp search yr_0123456789abcdef0123456789abcdef"),
+                "{command}"
+            );
+        }
     }
 
     #[test]

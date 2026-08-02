@@ -454,7 +454,7 @@ test("reduces one safe shell text result only after committing its recovery sour
   assert.deepEqual(staged["content"], patch?.content)
 })
 
-test("prefers a documented complete Bash source without duplicating result text", async () => {
+test("prefers a documented complete Bash source for a composite command", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
   const requests: Array<Parameters<ResultReducer["reduce"]>[0]> = []
@@ -471,20 +471,22 @@ test("prefers a documented complete Bash source without duplicating result text"
     },
   }
   await start(pi, sink, context, reducer)
-  await call(pi, "source-output", "bash", { command: "cargo test && cargo test" })
+  const command = "rg TODO . | sort | head -50"
+  await call(pi, "source-output", "bash", { command })
   const patch = await pi.registry.emit(
     "tool_result",
     {
       type: "tool_result",
       toolCallId: "source-output",
       toolName: "bash",
-      input: { command: "cargo test && cargo test" },
+      input: { command },
       content: [{ type: "text", text: "host-visible text" }],
       details: { fullOutputPath: "/tmp/pi-full-output.log", truncated: true },
       isError: false,
     },
     context,
   )
+  assert.equal(requests[0]?.command, command)
   assert.equal(requests[0]?.preferArchiveSource, true)
   assert.equal(requests[0]?.sourceCompleteness, "complete")
   assert.deepEqual(sink.resultTexts, [])

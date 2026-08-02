@@ -9,7 +9,7 @@ mod validation;
 pub use compiled::{CompiledPack, ProgramEntry, RuleRecord, compile};
 pub use model::{
     Action, CommandMatcher, ENGINE_ABI_VERSION, LinePattern, OutputPolicy, PackManifest,
-    PatternCase, PatternKind, PatternTrim, Reducer, Rule, SOURCE_SCHEMA_VERSION,
+    PatternCase, PatternKind, PatternTrim, Reducer, Rule, SOURCE_SCHEMA_VERSION, Transform,
 };
 pub use source::SourcePack;
 pub use strict_json::from_slice as decode_json;

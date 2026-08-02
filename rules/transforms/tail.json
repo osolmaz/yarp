@@ -1,0 +1,10 @@
+{
+  "id": "pipeline/tail",
+  "match": {
+    "program": ["tail"]
+  },
+  "action": "transform",
+  "transform": {
+    "kind": "line_preserving"
+  }
+}

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use yarp_rule_pack::{
     Action, CommandMatcher, LinePattern, OutputPolicy, PatternCase, PatternKind, PatternTrim,
-    Reducer, Rule, SourcePack, decode_json,
+    Reducer, Rule, SourcePack, Transform, decode_json,
 };
 
 #[derive(Deserialize)]
@@ -86,6 +86,7 @@ fn validate_fixtures(path: &Path, rules: &[Rule]) -> Result<(), String> {
         }
         let expected = match rule.action {
             Action::Reduce => "reduce",
+            Action::Transform => "transform",
             Action::Passthrough => "passthrough",
         };
         if fixture.expected_action != expected {
@@ -159,10 +160,13 @@ fn render_registry(source: &SourcePack) -> Result<String, String> {
 
 fn rule_expression(rule: &Rule) -> String {
     format!(
-        "yarp_rule_pack::Rule {{ id: {:?}.to_owned(), matcher: {}, action: {}, reducer: {}, success: {}, failure: {} }}",
+        "yarp_rule_pack::Rule {{ id: {:?}.to_owned(), matcher: {}, action: {}, transform: {}, reducer: {}, success: {}, failure: {} }}",
         rule.id,
         matcher_expression(&rule.matcher),
         action_expression(rule.action),
+        rule.transform
+            .map(transform_expression)
+            .map_or_else(|| "None".to_owned(), |value| format!("Some({value})")),
         rule.reducer
             .as_ref()
             .map(reducer_expression)
@@ -184,7 +188,14 @@ fn matcher_expression(matcher: &CommandMatcher) -> String {
 const fn action_expression(action: Action) -> &'static str {
     match action {
         Action::Reduce => "yarp_rule_pack::Action::Reduce",
+        Action::Transform => "yarp_rule_pack::Action::Transform",
         Action::Passthrough => "yarp_rule_pack::Action::Passthrough",
+    }
+}
+
+const fn transform_expression(transform: Transform) -> &'static str {
+    match transform {
+        Transform::LinePreserving => "yarp_rule_pack::Transform::LinePreserving",
     }
 }
 

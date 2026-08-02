@@ -52,6 +52,7 @@ impl Deref for SelectedRuleData {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Selection {
     Reduce(SelectedRule),
+    Transform(SelectedRule),
     Passthrough(Vec<String>),
     Ambiguous(Vec<String>),
     Unsupported,
@@ -331,11 +332,11 @@ pub fn canonical_project_pack(project_root: &Path, candidate: &Path) -> Result<P
 #[derive(Default)]
 struct MatchAccumulator {
     passthrough: Vec<String>,
-    reductions: ReductionMatches,
+    actions: ActionMatches,
 }
 
 #[derive(Default)]
-enum ReductionMatches {
+enum ActionMatches {
     #[default]
     None,
     One(SelectedRule),
@@ -344,21 +345,20 @@ enum ReductionMatches {
 
 impl MatchAccumulator {
     fn push(&mut self, selected: SelectedRule) {
-        match selected.rule.action {
-            Action::Passthrough => self.passthrough.push(qualified_id(&selected)),
-            Action::Reduce => {
-                self.reductions = match std::mem::take(&mut self.reductions) {
-                    ReductionMatches::None => ReductionMatches::One(selected),
-                    ReductionMatches::One(first) => {
-                        ReductionMatches::Many(vec![qualified_id(&first), qualified_id(&selected)])
-                    }
-                    ReductionMatches::Many(mut ids) => {
-                        ids.push(qualified_id(&selected));
-                        ReductionMatches::Many(ids)
-                    }
-                };
-            }
+        if selected.rule.action == Action::Passthrough {
+            self.passthrough.push(qualified_id(&selected));
+            return;
         }
+        self.actions = match std::mem::take(&mut self.actions) {
+            ActionMatches::None => ActionMatches::One(selected),
+            ActionMatches::One(first) => {
+                ActionMatches::Many(vec![qualified_id(&first), qualified_id(&selected)])
+            }
+            ActionMatches::Many(mut ids) => {
+                ids.push(qualified_id(&selected));
+                ActionMatches::Many(ids)
+            }
+        };
     }
 }
 
@@ -367,10 +367,16 @@ fn resolve(mut matches: MatchAccumulator) -> Selection {
         matches.passthrough.sort();
         return Selection::Passthrough(matches.passthrough);
     }
-    match matches.reductions {
-        ReductionMatches::None => Selection::Unsupported,
-        ReductionMatches::One(selected) => Selection::Reduce(selected),
-        ReductionMatches::Many(mut ids) => {
+    match matches.actions {
+        ActionMatches::None => Selection::Unsupported,
+        ActionMatches::One(selected) => match selected.rule.action {
+            Action::Reduce => Selection::Reduce(selected),
+            Action::Transform => Selection::Transform(selected),
+            Action::Passthrough => {
+                unreachable!("passthrough matches return before action resolution")
+            }
+        },
+        ActionMatches::Many(mut ids) => {
             ids.sort();
             Selection::Ambiguous(ids)
         }
@@ -472,6 +478,14 @@ mod tests {
             .select(&strings(&["cargo", "test", "--message-format=json"]))
             .expect("selection");
         assert!(matches!(selection, Selection::Passthrough(_)));
+        let selection = registry
+            .select(&strings(&["head", "-50"]))
+            .expect("selection");
+        assert!(matches!(selection, Selection::Transform(_)));
+        let selection = registry
+            .select(&strings(&["head", "--bytes=50"]))
+            .expect("selection");
+        assert!(matches!(selection, Selection::Passthrough(_)));
         assert_eq!(
             registry
                 .select(&strings(&["git", "push"]))
@@ -491,7 +505,8 @@ mod tests {
             let mut registry = Registry::builtins_only();
             let selection = registry.select(&fixture.argv).expect("selection");
             match (fixture.expected_action.as_str(), selection) {
-                ("reduce", Selection::Reduce(selected)) => {
+                ("reduce", Selection::Reduce(selected))
+                | ("transform", Selection::Transform(selected)) => {
                     assert_eq!(selected.rule.id, fixture.rule_id, "{}", fixture.id);
                 }
                 ("passthrough", Selection::Passthrough(ids)) => {

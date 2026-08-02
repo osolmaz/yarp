@@ -191,7 +191,8 @@ The following rule recognizes `example-test`, removes routine progress lines, an
 | --- | --- | --- | --- |
 | `id` | Yes | string | Unique rule identifier. |
 | `match` | Yes | object | Parsed argument conditions. |
-| `action` | Yes | enum | `reduce` or `passthrough`. |
+| `action` | Yes | enum | `reduce`, `transform`, or `passthrough`. |
+| `transform` | Conditional | enum | Result-only behavior for a `transform` rule. |
 | `reducer` | Conditional | object | Reduction behavior for a `reduce` rule. |
 | `success` | Conditional | object | Limits for exit status zero. |
 | `failure` | Conditional | object | Limits for nonzero or signal exit. |
@@ -206,12 +207,15 @@ Rule IDs must be unique across built-ins and every configured external pack. A d
 
 ### `action`
 
-`action` accepts two values.
+`action` accepts three values.
 
 | Value | Behavior |
 | --- | --- |
 | `reduce` | Run the declared reducer under the success or failure limits. |
+| `transform` | Carry an existing typed result through a reviewed line-preserving pipeline stage. It cannot run directly or create a type for unknown input. |
 | `passthrough` | Preserve the stream exactly and block broader reduction rules. |
+
+A transform rule sets `transform` to `line_preserving`. It must not define a reducer or success and failure policies. YARP also validates the selected program's arguments at result-planning time; unknown programs, file operands that introduce unrelated input, and unsafe flags preserve the original result.
 
 A `reduce` rule requires `reducer`, `success`, and `failure`. A `passthrough` rule forbids those fields.
 
@@ -496,7 +500,7 @@ The runtime uses binary search to locate one program bucket. It reads only that 
 
 ### Rule records
 
-A rule record contains the rule ID, action, matcher, reducer kind and settings, plus success and failure policies. Human descriptions and source paths do not enter runtime records.
+A rule record contains the rule ID, action, matcher, optional transform, reducer kind and settings, plus success and failure policies. Human descriptions and source paths do not enter runtime records.
 
 Each record has its own SHA-256 digest. The runtime also computes a SHA-256 digest over the complete compiled file for rewrite-and-run agreement. It verifies the header and index plus every selected record before use. `yarp rules verify` reads and verifies the whole pack.
 

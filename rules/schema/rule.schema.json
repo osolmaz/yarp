@@ -4,6 +4,7 @@
   "title": "YARP command pruning rule",
   "oneOf": [
     { "$ref": "#/$defs/reduceRule" },
+    { "$ref": "#/$defs/transformRule" },
     { "$ref": "#/$defs/passthroughRule" }
   ],
   "$defs": {
@@ -121,7 +122,7 @@
       ],
       "properties": {
         "max_line_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
-        "max_output_bytes": { "type": "integer", "minimum": 1, "maximum": 4194304 },
+        "max_output_bytes": { "type": "integer", "minimum": 704, "maximum": 4194304 },
         "min_savings_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 },
         "min_savings_basis_points": { "type": "integer", "minimum": 0, "maximum": 10000 }
       }
@@ -137,6 +138,25 @@
         "reducer": { "$ref": "#/$defs/reducer" },
         "success": { "$ref": "#/$defs/policy" },
         "failure": { "$ref": "#/$defs/policy" }
+      }
+    },
+    "transform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "const": "line_preserving" }
+      }
+    },
+    "transformRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "match", "action", "transform"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "match": { "$ref": "#/$defs/matcher" },
+        "action": { "const": "transform" },
+        "transform": { "$ref": "#/$defs/transform" }
       }
     },
     "passthroughRule": {

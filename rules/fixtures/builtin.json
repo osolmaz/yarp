@@ -2828,6 +2828,180 @@
         "view"
       ],
       "expected_action": "reduce"
+    },
+    {
+      "id": "pipeline-cat-match",
+      "rule_id": "pipeline/cat",
+      "argv": ["cat"],
+      "expected_action": "transform"
+    },
+    {
+      "id": "pipeline-tee-match",
+      "rule_id": "pipeline/tee",
+      "argv": ["tee", "output.log"],
+      "expected_action": "transform"
+    },
+    {
+      "id": "pipeline-head-match",
+      "rule_id": "pipeline/head",
+      "argv": ["head", "-50"],
+      "expected_action": "transform"
+    },
+    {
+      "id": "pipeline-tail-match",
+      "rule_id": "pipeline/tail",
+      "argv": ["tail", "-n", "50"],
+      "expected_action": "transform"
+    },
+    {
+      "id": "pipeline-sort-match",
+      "rule_id": "pipeline/sort",
+      "argv": ["sort", "-r"],
+      "expected_action": "transform"
+    },
+    {
+      "id": "pipeline-uniq-match",
+      "rule_id": "pipeline/uniq",
+      "argv": ["uniq", "-d"],
+      "expected_action": "transform"
+    },
+    {
+      "id": "guards-pipeline-help-match",
+      "rule_id": "guards/pipeline-help",
+      "argv": ["cat", "--help"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-pipeline-version-match",
+      "rule_id": "guards/pipeline-version",
+      "argv": ["head", "--version"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cat-number-match",
+      "rule_id": "guards/cat-number",
+      "argv": ["cat", "-n"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cat-number-long-match",
+      "rule_id": "guards/cat-number-long",
+      "argv": ["cat", "--number"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cat-number-nonblank-match",
+      "rule_id": "guards/cat-number-nonblank",
+      "argv": ["cat", "-b"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cat-show-all-match",
+      "rule_id": "guards/cat-show-all",
+      "argv": ["cat", "-A"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cat-show-all-long-match",
+      "rule_id": "guards/cat-show-all-long",
+      "argv": ["cat", "--show-all"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-cat-squeeze-match",
+      "rule_id": "guards/cat-squeeze",
+      "argv": ["cat", "-s"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-head-tail-bytes-match",
+      "rule_id": "guards/head-tail-bytes",
+      "argv": ["tail", "-c10"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-head-tail-bytes-long-match",
+      "rule_id": "guards/head-tail-bytes-long",
+      "argv": ["head", "--bytes=10"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-line-transform-zero-match",
+      "rule_id": "guards/line-transform-zero",
+      "argv": ["uniq", "-z"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-line-transform-zero-long-match",
+      "rule_id": "guards/line-transform-zero-long",
+      "argv": ["sort", "--zero-terminated"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-head-tail-verbose-match",
+      "rule_id": "guards/head-tail-verbose",
+      "argv": ["tail", "-v"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-head-tail-verbose-long-match",
+      "rule_id": "guards/head-tail-verbose-long",
+      "argv": ["head", "--verbose"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-tail-follow-match",
+      "rule_id": "guards/tail-follow",
+      "argv": ["tail", "-f"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-tail-follow-capital-match",
+      "rule_id": "guards/tail-follow-capital",
+      "argv": ["tail", "-F"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-tail-follow-long-match",
+      "rule_id": "guards/tail-follow-long",
+      "argv": ["tail", "--follow"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-sort-output-match",
+      "rule_id": "guards/sort-output",
+      "argv": ["sort", "-o", "output.txt"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-sort-output-long-match",
+      "rule_id": "guards/sort-output-long",
+      "argv": ["sort", "--output=output.txt"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-sort-debug-match",
+      "rule_id": "guards/sort-debug",
+      "argv": ["sort", "--debug"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-uniq-count-match",
+      "rule_id": "guards/uniq-count",
+      "argv": ["uniq", "-c"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-uniq-count-long-match",
+      "rule_id": "guards/uniq-count-long",
+      "argv": ["uniq", "--count"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-uniq-group-match",
+      "rule_id": "guards/uniq-group",
+      "argv": ["uniq", "--group"],
+      "expected_action": "passthrough"
     }
   ]
 }

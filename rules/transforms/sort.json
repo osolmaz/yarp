@@ -1,0 +1,10 @@
+{
+  "id": "pipeline/sort",
+  "match": {
+    "program": ["sort"]
+  },
+  "action": "transform",
+  "transform": {
+    "kind": "line_preserving"
+  }
+}

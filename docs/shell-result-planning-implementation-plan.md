@@ -6,13 +6,21 @@ YARP should understand the visible output of safe shell pipelines and command ch
 
 This work also improves evidence selection inside the existing reducers. Large successful results should keep the smallest useful summary. Failures and diagnostics should receive more space. Every changed result must retain an exact recovery path.
 
+## Implementation status
+
+The implementation is complete. It uses pinned `tree-sitter` 0.25.10 and `tree-sitter-bash` 0.25.1, both under the MIT license. Their build scripts compile the published generated C parsers with the `cc` crate and run no downloaded or repository-provided executable.
+
+The shared parser, result planner, transform action, six initial transforms, privacy-safe syntax report, ranked evidence selector, parser robustness harness, and performance benchmarks are in place. The production success budget is 512 bytes. A 384-byte budget removed about 0.9 million more characters than 512 bytes but dropped every immediate example from a representative large successful search summary. The 512-byte form retained three diverse examples and exact recovery. A 704-byte budget removed about 0.8 million fewer characters than 512 bytes without improving a mandatory safety gate. These differences are below the one-percentage-point release threshold, so the middle budget is the safer practical choice.
+
 ## Measured baseline
 
 The private corpus contains 371,241 shell results and 1,445,526,406 output characters. Current typed summaries change 29,439 results and remove 306,302,222 characters, which is 21.1897% of shell output.
 
 Shell operators and syntax account for a large part of the unchanged output. The full census is recorded in [Reduction ceiling analysis](reduction-ceiling-analysis.md). The largest forms are pipelines, `&&` chains, redirections, semicolon chains, multiline input, parameter expansion, and command substitution. Counts overlap because one command can contain several forms.
 
-The current classifier accepts simple `;`, `&&`, and `||` chains when every output command selects the same reducer family. It selected 3,958 compound results in the measured corpus. Of those, 1,486 changed and removed 11,782,428 characters. Pipelines always pass through.
+Before this implementation, the classifier accepted simple `;`, `&&`, and `||` chains when every output command selected the same reducer family. It selected 3,958 compound results. Of those, 1,486 changed and removed 11,782,428 characters. Pipelines passed through.
+
+The finished planner selects 16,945 compound results. Of those, 10,112 change and remove 83,047,677 characters. The full candidate changes 37,485 shell results and removes 375,442,158 characters, or 25.9727% of shell output.
 
 ## Required result
 
@@ -41,7 +49,7 @@ Exact-text inspection, structured output, NUL-delimited output, count-only outpu
 
 ## Parser
 
-Add exact dependencies on `tree-sitter = "=0.25.10"` and `tree-sitter-bash = "=0.25.1"` after reviewing their licenses, generated C parser, build script, and transitive dependencies. Record that review in the implementing pull request.
+Use exact dependencies on `tree-sitter = "=0.25.10"` and `tree-sitter-bash = "=0.25.1"`. The implementation review covered their MIT licenses, generated C parsers, build scripts, and transitive dependencies. The pull request records the same dependency review.
 
 Move shell parsing out of `src/rewrite.rs` into a dedicated `src/shell/` module. The module should contain parsing, literal-word decoding, stream analysis, and result planning. Both pre-execution rewriting and post-result reduction must use this parser.
 
@@ -299,13 +307,17 @@ Parser tests must cover quoting, escaped operators, comments, nested substitutio
 
 Keep the direct reducer throughput gate above 100 MB/s. Built-in rule matching must remain below 100 microseconds at p95. The complete result-reducer process must remain below 20 milliseconds at p95 on the existing benchmark.
 
-Add parser benchmarks for representative commands and the maximum accepted source size. Ordinary parser and planner work should remain below one millisecond at p95. Report median and p95 timing plus the maximum time and input size.
+The indexed-output benchmark measures representative commands and the maximum accepted source size. Ordinary parser and planner work must remain below one millisecond at p95. It reports median, p95, maximum time, and input size. The `shell_parser_fuzz` example is a bounded stdin harness for malformed and generated inputs:
+
+```sh
+printf '%s' 'cargo test |' | target/release/examples/shell_parser_fuzz
+```
 
 The configured stream memory bound remains below 4 MiB per stream. Parser limits must provide a separate fixed upper bound that does not depend on output size.
 
 ## Release decision
 
-The current measurements establish opportunity but do not prove safe savings. A proposed retrospective minimum worthwhile effect is one additional percentage point of shell-output reduction, equal to 14,455,264 characters in the frozen corpus. The maintainer must approve this threshold before it selects a release candidate.
+The retrospective minimum worthwhile effect is one additional percentage point of shell-output reduction, equal to 14,455,264 characters in the frozen corpus. The candidate removes 69,139,936 more characters than the branch baseline, a gain of 4.7830 percentage points. The measured effect clears the threshold; the maintainer still controls release approval.
 
 A candidate may ship only when all of these conditions hold:
 

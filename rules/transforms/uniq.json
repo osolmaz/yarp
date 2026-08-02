@@ -1,0 +1,10 @@
+{
+  "id": "pipeline/uniq",
+  "match": {
+    "program": ["uniq"]
+  },
+  "action": "transform",
+  "transform": {
+    "kind": "line_preserving"
+  }
+}

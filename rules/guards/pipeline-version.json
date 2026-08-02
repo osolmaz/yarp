@@ -1,0 +1,8 @@
+{
+  "id": "guards/pipeline-version",
+  "match": {
+    "program": ["cat", "tee", "head", "tail", "sort", "uniq"],
+    "argv_contains_all": ["--version"]
+  },
+  "action": "passthrough"
+}

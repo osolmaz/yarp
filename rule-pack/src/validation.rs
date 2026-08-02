@@ -76,14 +76,32 @@ pub fn validate_rule(rule: &Rule) -> Result<(), String> {
     validate_matcher(&rule.matcher)?;
     match rule.action {
         Action::Passthrough => {
+            if rule.transform.is_some()
+                || rule.reducer.is_some()
+                || rule.success.is_some()
+                || rule.failure.is_some()
+            {
+                return Err(format!(
+                    "passthrough rule {} must not define transform, reducer, or output policies",
+                    rule.id
+                ));
+            }
+        }
+        Action::Transform => {
+            if rule.transform.is_none() {
+                return Err(format!("transform rule {} is missing transform", rule.id));
+            }
             if rule.reducer.is_some() || rule.success.is_some() || rule.failure.is_some() {
                 return Err(format!(
-                    "passthrough rule {} must not define reducer or output policies",
+                    "transform rule {} must not define reducer or output policies",
                     rule.id
                 ));
             }
         }
         Action::Reduce => {
+            if rule.transform.is_some() {
+                return Err(format!("reduce rule {} must not define transform", rule.id));
+            }
             let reducer = rule
                 .reducer
                 .as_ref()
@@ -289,6 +307,7 @@ fn stream_memory_bound_parts(
     let summaries = success
         .max_output_bytes
         .checked_add(failure.max_output_bytes)
+        .and_then(|value| value.checked_mul(5))
         .ok_or_else(|| "summary memory bound overflowed".to_owned())?;
     let max_line = success.max_line_bytes.max(failure.max_line_bytes);
     let line_state = max_line
@@ -317,6 +336,15 @@ fn stream_memory_bound_parts(
         .checked_mul(5)
         .and_then(|value| value.checked_mul(max_line.saturating_add(64)))
         .ok_or_else(|| "diagnostic representative memory bound overflowed".to_owned())?;
+    let fingerprint_overhead = 2_usize
+        .checked_mul(5)
+        .and_then(|value| value.checked_mul(128))
+        .and_then(|value| value.checked_mul(96))
+        .ok_or_else(|| "fingerprint memory bound overflowed".to_owned())?;
+    let diversity_key_overhead = 2_usize
+        .checked_mul(128)
+        .and_then(|value| value.checked_mul(224))
+        .ok_or_else(|| "diversity key memory bound overflowed".to_owned())?;
     [
         raw,
         summaries,
@@ -324,6 +352,8 @@ fn stream_memory_bound_parts(
         pattern_state,
         record_overhead,
         diagnostic_representatives,
+        fingerprint_overhead,
+        diversity_key_overhead,
         8 * 1024,
         64 * 1024,
     ]
@@ -341,9 +371,9 @@ fn validate_policy(label: &str, policy: &OutputPolicy) -> Result<(), String> {
             "{label}.max_line_bytes must be between 1 and 1048576"
         ));
     }
-    if !(1..=4_194_304).contains(&policy.max_output_bytes) {
+    if !(704..=4_194_304).contains(&policy.max_output_bytes) {
         return Err(format!(
-            "{label}.max_output_bytes must be between 1 and 4194304"
+            "{label}.max_output_bytes must be between 704 and 4194304"
         ));
     }
     if policy.min_savings_bytes > 1_048_576 {
@@ -363,11 +393,11 @@ fn matcher_key(matcher: &CommandMatcher) -> String {
 
 fn reject_known_reduction_overlaps(rules: &[Rule]) -> Result<(), String> {
     for (index, left) in rules.iter().enumerate() {
-        if left.action != Action::Reduce {
+        if left.action == Action::Passthrough {
             continue;
         }
         for right in &rules[index + 1..] {
-            if right.action != Action::Reduce {
+            if right.action == Action::Passthrough {
                 continue;
             }
             if matchers_may_overlap(&left.matcher, &right.matcher) {
@@ -394,7 +424,7 @@ fn matchers_may_overlap(left: &CommandMatcher, right: &CommandMatcher) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{PatternCase, PatternKind, PatternTrim};
+    use crate::model::{PatternCase, PatternKind, PatternTrim, Transform};
 
     fn policy() -> OutputPolicy {
         OutputPolicy {
@@ -414,6 +444,7 @@ mod tests {
                 argv_contains_all: Vec::new(),
             },
             action: Action::Reduce,
+            transform: None,
             reducer: Some(Reducer::ListSummary),
             success: Some(policy()),
             failure: Some(policy()),
@@ -433,10 +464,38 @@ mod tests {
         guard.action = Action::Passthrough;
         guard.matcher.argv_contains_all = vec!["--json".to_owned()];
         guard.reducer = None;
+        guard.transform = None;
         guard.success = None;
         guard.failure = None;
         validate_rules(&[guard, rule("build", &["build"]), rule("test", &["test"])])
             .expect("valid rules");
+    }
+
+    #[test]
+    fn validates_transform_rule_contracts() {
+        let mut transform = rule("transform", &[]);
+        transform.action = Action::Transform;
+        transform.transform = Some(Transform::LinePreserving);
+        transform.reducer = None;
+        transform.success = None;
+        transform.failure = None;
+        validate_rule(&transform).expect("valid transform");
+
+        transform.reducer = Some(Reducer::ListSummary);
+        let error = validate_rule(&transform).expect_err("transform reducer conflict");
+        assert!(error.contains("must not define reducer"));
+    }
+
+    #[test]
+    fn rejects_policies_that_cannot_fit_mandatory_evidence() {
+        let mut undersized = rule("undersized", &["run"]);
+        undersized
+            .success
+            .as_mut()
+            .expect("success")
+            .max_output_bytes = 703;
+        let error = validate_rule(&undersized).expect_err("mandatory evidence budget");
+        assert!(error.contains("between 704"));
     }
 
     #[test]

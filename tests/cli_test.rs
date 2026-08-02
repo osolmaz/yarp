@@ -92,7 +92,7 @@ fn rejects_invalid_cli_and_disallowed_direct_execution() {
     assert_eq!(invalid.status.code(), Some(64));
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("rewrite requires"));
 
-    let disallowed = yarp(&["run", "--", "cat", ".env"]);
+    let disallowed = yarp(&["run", "--", "printf", "secret"]);
     assert_eq!(disallowed.status.code(), Some(64));
     assert!(String::from_utf8_lossy(&disallowed.stderr).contains("not on the YARP allowlist"));
 }

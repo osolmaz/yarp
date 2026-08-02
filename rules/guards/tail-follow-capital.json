@@ -1,0 +1,8 @@
+{
+  "id": "guards/tail-follow-capital",
+  "match": {
+    "program": ["tail"],
+    "argv_contains_all": ["-F"]
+  },
+  "action": "passthrough"
+}

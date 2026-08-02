@@ -39,6 +39,7 @@ pub struct CeilingReport {
     pub assumptions: Assumptions,
     pub totals: Totals,
     pub scenarios: Scenarios,
+    pub shell_syntax: Vec<SyntaxReport>,
     pub families: Vec<FamilyReport>,
 }
 
@@ -96,6 +97,20 @@ pub struct FamilyMetrics {
     pub removable_characters_at_budget: u64,
 }
 
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct SyntaxMetrics {
+    pub results: u64,
+    pub output_characters: u64,
+    pub eligible_results_at_budget: u64,
+    pub removable_characters_at_budget: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SyntaxReport {
+    pub id: &'static str,
+    pub metrics: SyntaxMetrics,
+}
+
 #[derive(Debug, Serialize)]
 pub struct FamilyReport {
     pub id: String,
@@ -137,6 +152,7 @@ struct FamilyKey {
 #[derive(Default)]
 struct Accumulator {
     totals: Totals,
+    shell_syntax: BTreeMap<&'static str, SyntaxMetrics>,
     families: BTreeMap<FamilyKey, FamilyMetrics>,
 }
 
@@ -201,6 +217,12 @@ impl Accumulator {
             .totals
             .shell_output_characters
             .saturating_add(output_characters);
+        for id in yarp_cli::shell::inspect_syntax(&command).labels() {
+            self.shell_syntax
+                .entry(id)
+                .or_default()
+                .observe(output_characters, options);
+        }
         let selection = benchmark_selection(&command);
         let succeeded = result_succeeded(is_error, output_json);
         let current = current_output(&selection, output, succeeded);
@@ -228,6 +250,18 @@ impl Accumulator {
     }
 
     fn finish(self, options: AnalysisOptions) -> CeilingReport {
+        let mut shell_syntax = self
+            .shell_syntax
+            .into_iter()
+            .map(|(id, metrics)| SyntaxReport { id, metrics })
+            .collect::<Vec<_>>();
+        shell_syntax.sort_by(|left, right| {
+            right
+                .metrics
+                .output_characters
+                .cmp(&left.metrics.output_characters)
+                .then_with(|| left.id.cmp(right.id))
+        });
         let mut classes = BTreeMap::<FamilyClass, FamilyMetrics>::new();
         let mut families = self
             .families
@@ -275,7 +309,22 @@ impl Accumulator {
                 review_candidates_and_unclear_at_budget: candidates_and_unclear,
                 all_unchanged_at_budget: all_unchanged,
             },
+            shell_syntax,
             families,
+        }
+    }
+}
+
+impl SyntaxMetrics {
+    fn observe(&mut self, output_characters: u64, options: AnalysisOptions) {
+        self.results = self.results.saturating_add(1);
+        self.output_characters = self.output_characters.saturating_add(output_characters);
+        let removable = budget_removal(output_characters, options);
+        if removable > 0 {
+            self.eligible_results_at_budget = self.eligible_results_at_budget.saturating_add(1);
+            self.removable_characters_at_budget = self
+                .removable_characters_at_budget
+                .saturating_add(removable);
         }
     }
 }
@@ -1268,6 +1317,11 @@ mod tests {
             ("exec_command", "make custom", "file\n".repeat(1_000)),
             ("exec_command", "cat private", "exact\n".repeat(1_000)),
             ("exec_command", "python private.py", "short\n".to_owned()),
+            (
+                "exec_command",
+                "rg secret . | head -50",
+                "src/file.rs:1: secret\n".repeat(1_000),
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -1306,9 +1360,9 @@ mod tests {
         drop(database);
 
         let report = run(&path, AnalysisOptions::default()).expect("analysis");
-        assert_eq!(report.totals.evaluated_results, 5);
-        assert_eq!(report.totals.shell_results, 4);
-        assert_eq!(report.totals.observed_changed_results, 1);
+        assert_eq!(report.totals.evaluated_results, 6);
+        assert_eq!(report.totals.shell_results, 5);
+        assert_eq!(report.totals.observed_changed_results, 2);
         assert_eq!(report.totals.unchanged_shell_results, 3);
         assert!(report.totals.observed_removed_characters > 0);
         assert!(
@@ -1317,10 +1371,17 @@ mod tests {
                 .iter()
                 .any(|family| family.id == "build/make")
         );
+        assert!(
+            report
+                .shell_syntax
+                .iter()
+                .any(|syntax| syntax.id == "pipeline" && syntax.metrics.results == 1)
+        );
         let encoded = serde_json::to_string(&report).expect("serialize");
         assert!(!encoded.contains("private path"));
         assert!(!encoded.contains("private.py"));
         assert!(!encoded.contains("file\\n"));
+        assert!(!encoded.contains("secret"));
     }
 
     #[test]

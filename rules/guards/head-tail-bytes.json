@@ -1,0 +1,8 @@
+{
+  "id": "guards/head-tail-bytes",
+  "match": {
+    "program": ["head", "tail"],
+    "argv_contains_all": ["-c"]
+  },
+  "action": "passthrough"
+}

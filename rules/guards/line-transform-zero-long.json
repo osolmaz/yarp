@@ -1,0 +1,8 @@
+{
+  "id": "guards/line-transform-zero-long",
+  "match": {
+    "program": ["head", "tail", "sort", "uniq"],
+    "argv_contains_all": ["--zero-terminated"]
+  },
+  "action": "passthrough"
+}
