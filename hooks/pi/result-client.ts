@@ -94,7 +94,7 @@ export class ResultReducerClient implements ResultReducer {
       if (!child.stdin.write(header)) await once(child.stdin, "drain")
       if (!child.stdin.write(body)) await once(child.stdin, "drain")
       child.stdin.end()
-      const [code, processSignal] = await once(child, "exit") as [number | null, NodeJS.Signals | null]
+      const [code, processSignal] = await once(child, "close") as [number | null, NodeJS.Signals | null]
       if (signal?.aborted) throw new Error("result-reducer request was aborted")
       if (failure !== null) throw failure
       if (code !== 0) {

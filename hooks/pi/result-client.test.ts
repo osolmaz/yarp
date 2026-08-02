@@ -34,7 +34,14 @@ class FakeResultProcess extends EventEmitter {
   kill(signal: NodeJS.Signals = "SIGTERM"): boolean {
     if (this.exitCode !== null) return false
     this.exitCode = 1
-    queueMicrotask(() => this.emit("exit", null, signal))
+    queueMicrotask(() => {
+      this.emit("exit", null, signal)
+      queueMicrotask(() => {
+        this.stdout.end()
+        this.stderr.end()
+        this.emit("close", null, signal)
+      })
+    })
     return true
   }
 
@@ -43,16 +50,24 @@ class FakeResultProcess extends EventEmitter {
     const value: unknown = JSON.parse(this.input.subarray(8, 8 + length).toString("utf8"))
     if (!isRecord(value)) throw new Error("invalid request")
     this.request = value
+    let frame: Buffer
     if (Buffer.isBuffer(this.response)) {
-      this.stdout.write(this.response)
+      frame = this.response
     } else {
       const body = Buffer.from(JSON.stringify(this.response))
       const header = Buffer.allocUnsafe(8)
       header.writeBigUInt64BE(BigInt(body.length), 0)
-      this.stdout.write(Buffer.concat([header, body]))
+      frame = Buffer.concat([header, body])
     }
     this.exitCode = 0
-    queueMicrotask(() => this.emit("exit", 0, null))
+    queueMicrotask(() => {
+      this.emit("exit", 0, null)
+      queueMicrotask(() => {
+        this.stdout.end(frame)
+        this.stderr.end()
+        this.emit("close", 0, null)
+      })
+    })
   }
 }
 
@@ -70,7 +85,7 @@ const request = {
   preferArchiveSource: false,
 }
 
-test("sends and validates one bounded framed result-reducer request", async () => {
+test("waits for reducer pipes after exit before parsing one bounded response", async () => {
   const process = new FakeResultProcess({
     schemaVersion: 1,
     changed: true,

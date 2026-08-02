@@ -2,12 +2,12 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
 use std::io::{Read, Seek, SeekFrom};
 
-use regex::{Regex, RegexBuilder};
+use regex::bytes::{Regex, RegexBuilder};
 
 use crate::archive::{Archive, SourceCompleteness, SourceName, VerifiedSource};
 use crate::reducers::filter::AnsiStripper;
 
-pub const SEARCH_HELP: &str = "Search one archived YARP call.\n\nExamples:\n  yarp search REF 'error|FAILED'\n  yarp search REF 'literal text' -F -i\n  yarp search REF 'warning' -v -C 3 -m 20\n  yarp read REF stdout 118:130\n\nUsage:\n  yarp search REF PATTERN [options]\n  yarp search REF -e PATTERN [-e PATTERN ...] [options]\n\nOptions: -e/--regexp -F/--fixed-strings -i/--ignore-case -w/--word-regexp\n         -v/--invert-match -A/--after-context -B/--before-context\n         -C/--context -m/--max-count --\n";
+pub const SEARCH_HELP: &str = "Search one archived YARP call.\n\nExamples:\n  yarp search REF 'error|FAILED'\n  yarp search REF 'literal text' -F -i\n  yarp search REF 'warning' -v -C 3 -m 20\n  yarp read REF stdout 118:130\n\nUsage:\n  yarp search REF PATTERN [options]\n  yarp search REF -e PATTERN [-e PATTERN ...] [options]\n\nOptions: -e/--regexp -F/--fixed-strings -i/--ignore-case\n         -w/--word-regexp (ASCII boundaries) -v/--invert-match\n         -A/--after-context -B/--before-context -C/--context\n         -m/--max-count --\n";
 
 const MAX_PATTERN_BYTES: usize = 1_024;
 const MAX_PATTERNS: usize = 8;
@@ -281,7 +281,7 @@ fn compile_matcher(options: &SearchOptions) -> Result<Regex, String> {
         .join("|");
     RegexBuilder::new(&alternatives)
         .case_insensitive(options.ignore_case)
-        .unicode(true)
+        .unicode(false)
         .size_limit(REGEX_SIZE_LIMIT)
         .dfa_size_limit(REGEX_SIZE_LIMIT)
         .build()
@@ -318,7 +318,7 @@ fn search_source(
             display.insert(line_number, normalized.clone(), false);
             after_remaining -= 1;
         }
-        let line_matches = matcher.is_match(&normalized);
+        let line_matches = matcher.is_match(normalized.as_bytes());
         let selected = if options.invert {
             !line_matches
         } else {
@@ -766,6 +766,35 @@ mod tests {
         assert_eq!(options.before, 3);
         assert_eq!(options.after, 3);
         assert_eq!(options.max_count, 20);
+    }
+
+    #[test]
+    fn ignore_case_uses_ascii_matching_without_unicode_features() {
+        let options = parse_search(&strings(&[
+            "yr_0123456789abcdef0123456789abcdef",
+            "error.*code",
+            "-i",
+        ]))
+        .expect("case-insensitive search options");
+        let matcher = compile_matcher(&options).expect("case-insensitive matcher");
+        assert!(matcher.is_match(b"ERROR 42 CODE"));
+        assert!(matcher.is_match("éERROR code".as_bytes()));
+    }
+
+    #[test]
+    fn word_regexp_uses_ascii_boundaries_without_unicode_features() {
+        let options = parse_search(&strings(&[
+            "yr_0123456789abcdef0123456789abcdef",
+            "error",
+            "-w",
+        ]))
+        .expect("word search options");
+        let matcher = compile_matcher(&options).expect("word matcher");
+        assert!(matcher.is_match(b"error"));
+        assert!(matcher.is_match(b"an error!"));
+        assert!(matcher.is_match("éerroré".as_bytes()));
+        assert!(!matcher.is_match(b"terror"));
+        assert!(!matcher.is_match(b"error_code"));
     }
 
     #[test]
