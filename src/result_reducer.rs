@@ -79,7 +79,8 @@ fn reduce(request: &ReduceRequest) -> Result<OwnedResponse, String> {
             .body
             .seek(SeekFrom::Start(0))
             .map_err(|error| format!("could not rewind source_output: {error}"))?;
-        let mut reducer = StreamReducer::new(rule)?;
+        let mut reducer =
+            StreamReducer::new_with_transform_diagnostics(rule, plan.transform_diagnostics)?;
         let mut hasher = Sha256::new();
         let mut buffer = [0_u8; 8 * 1024];
         loop {
@@ -116,7 +117,8 @@ fn reduce(request: &ReduceRequest) -> Result<OwnedResponse, String> {
         ));
     }
 
-    let mut reducer = StreamReducer::new(rule)?;
+    let mut reducer =
+        StreamReducer::new_with_transform_diagnostics(rule, plan.transform_diagnostics)?;
     for chunk in request.text.as_bytes().chunks(8 * 1024) {
         reducer.push(chunk);
     }

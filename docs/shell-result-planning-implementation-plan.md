@@ -174,12 +174,13 @@ enum StatusConfidence {
 struct ResultPlan {
     rule: Rule,
     status_confidence: StatusConfidence,
+    transform_diagnostics: TransformDiagnostics,
 }
 ```
 
 A plain `&&` chain has complete success information when the final status is zero. Semicolon chains and ordinary pipelines expose only the last relevant status. An `||` chain may contain an expected earlier failure. Plans with `FinalStageOnly` or `Conditional` status use the larger failure policy. Explicit `set -o pipefail` may restore complete pipeline status when the accepted syntax tree proves that it applies.
 
-Transport outcomes such as process exit messages, timeout notices, and session identifiers remain mandatory evidence.
+Transport outcomes such as process exit messages, timeout notices, and session identifiers remain mandatory evidence. The plan also records each accepted transform program. Lines with that program's standard diagnostic prefix, such as `tee:`, are ranked as command-specific diagnostics rather than upstream examples.
 
 ## Evidence selection
 

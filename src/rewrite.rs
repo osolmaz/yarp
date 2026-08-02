@@ -108,10 +108,46 @@ pub enum StatusConfidence {
     Conditional,
 }
 
+const TRANSFORM_DIAGNOSTIC_PREFIXES: [(&str, &[u8]); 6] = [
+    ("cat", b"cat:"),
+    ("tee", b"tee:"),
+    ("head", b"head:"),
+    ("tail", b"tail:"),
+    ("sort", b"sort:"),
+    ("uniq", b"uniq:"),
+];
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TransformDiagnostics(u8);
+
+impl TransformDiagnostics {
+    fn insert(&mut self, program: &str) {
+        if let Some(index) = TRANSFORM_DIAGNOSTIC_PREFIXES
+            .iter()
+            .position(|(candidate, _)| *candidate == program)
+        {
+            self.0 |= 1_u8 << index;
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+
+    #[must_use]
+    pub fn matches_line(self, line: &[u8]) -> bool {
+        TRANSFORM_DIAGNOSTIC_PREFIXES
+            .iter()
+            .enumerate()
+            .any(|(index, (_, prefix))| self.0 & (1_u8 << index) != 0 && line.starts_with(prefix))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResultPlan {
     pub rule: Rule,
     pub status_confidence: StatusConfidence,
+    pub transform_diagnostics: TransformDiagnostics,
 }
 
 /// Select one compatible typed plan for conservative post-result reduction.
@@ -124,6 +160,7 @@ pub fn select_result_plan(command: &str) -> Result<ResultPlan, String> {
     let program = shell::parse(command)?;
     let mut selected: Option<Rule> = None;
     let mut confidence = StatusConfidence::Complete;
+    let mut transform_diagnostics = TransformDiagnostics::default();
     let mut pipefail = Some(false);
     let mut previous_had_output = false;
 
@@ -147,7 +184,9 @@ pub fn select_result_plan(command: &str) -> Result<ResultPlan, String> {
                 if pipefail != Some(true) {
                     confidence = merge_confidence(confidence, StatusConfidence::FinalStageOnly);
                 }
-                (Some(select_pipeline(stages)?), false)
+                let (rule, diagnostics) = select_pipeline(stages)?;
+                transform_diagnostics.merge(diagnostics);
+                (Some(rule), false)
             }
         };
         let has_output = candidate.is_some();
@@ -177,6 +216,7 @@ pub fn select_result_plan(command: &str) -> Result<ResultPlan, String> {
     Ok(ResultPlan {
         rule,
         status_confidence: confidence,
+        transform_diagnostics,
     })
 }
 
@@ -209,8 +249,9 @@ fn select_simple(command: &SimpleCommand) -> Result<(Option<Rule>, bool), String
     }
 }
 
-fn select_pipeline(stages: &[SimpleCommand]) -> Result<Rule, String> {
+fn select_pipeline(stages: &[SimpleCommand]) -> Result<(Rule, TransformDiagnostics), String> {
     let mut selected = None;
+    let mut diagnostics = TransformDiagnostics::default();
     for stage in stages {
         if is_setup_command(&stage.words) || stage.words.iter().all(|word| is_assignment(word)) {
             return Err("pipeline contains a setup command".to_owned());
@@ -231,13 +272,16 @@ fn select_pipeline(stages: &[SimpleCommand]) -> Result<Rule, String> {
                 if selected.is_none() {
                     return Err("pipeline transform has no typed input".to_owned());
                 }
+                diagnostics.insert(&words[0]);
             }
             Selection::Passthrough(_) | Selection::Ambiguous(_) | Selection::Unsupported => {
                 return Err("pipeline contains an unsupported or guarded command".to_owned());
             }
         }
     }
-    selected.ok_or_else(|| "pipeline has no supported output command".to_owned())
+    selected
+        .map(|rule| (rule, diagnostics))
+        .ok_or_else(|| "pipeline has no supported output command".to_owned())
 }
 
 fn validate_line_preserving(words: &[String]) -> Result<(), String> {
