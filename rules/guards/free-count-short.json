@@ -1,0 +1,12 @@
+{
+  "id": "guards/free-count-short",
+  "match": {
+    "program": [
+      "free"
+    ],
+    "argv_contains_all": [
+      "-c"
+    ]
+  },
+  "action": "passthrough"
+}

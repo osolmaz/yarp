@@ -1,0 +1,12 @@
+{
+  "id": "guards/lsof-fields",
+  "match": {
+    "program": [
+      "lsof"
+    ],
+    "argv_contains_all": [
+      "-F"
+    ]
+  },
+  "action": "passthrough"
+}

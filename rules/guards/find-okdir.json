@@ -1,0 +1,12 @@
+{
+  "id": "guards/find-okdir",
+  "match": {
+    "program": [
+      "find"
+    ],
+    "argv_contains_all": [
+      "-okdir"
+    ]
+  },
+  "action": "passthrough"
+}

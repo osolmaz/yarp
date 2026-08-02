@@ -1,0 +1,12 @@
+{
+  "id": "guards/ls-zero",
+  "match": {
+    "program": [
+      "ls"
+    ],
+    "argv_contains_all": [
+      "--zero"
+    ]
+  },
+  "action": "passthrough"
+}

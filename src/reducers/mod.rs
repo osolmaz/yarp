@@ -182,7 +182,11 @@ impl StreamReducer {
                 self.registered_diagnostics.observe_slice(&tail);
             }
         }
-        let mut class = classify_line(&self.kind, line);
+        let mut class = if classify::is_tool_outcome(&line.prefix) {
+            EvidenceClass::Outcome
+        } else {
+            classify_line(&self.kind, line)
+        };
         if class == EvidenceClass::Diagnostic {
             self.diagnostic_context = DIAGNOSTIC_CONTEXT_LINES;
         } else if self.diagnostic_context > 0 {
@@ -305,6 +309,18 @@ mod tests {
         let failure = reduce_bytes(&rule(Reducer::ListSummary), input.as_bytes(), false)
             .expect("failure reduction");
         assert!(failure.len() > success.len());
+    }
+
+    #[test]
+    fn keeps_tool_session_identifiers_needed_for_follow_up() {
+        let input = format!(
+            "Chunk ID: abc\nProcess running with session ID 12345\n{}",
+            numbered_lines("path", 2_000)
+        );
+        let output =
+            reduce_bytes(&rule(Reducer::ListSummary), input.as_bytes(), true).expect("reduction");
+        let text = String::from_utf8(output).expect("UTF-8");
+        assert!(text.contains("Process running with session ID 12345"));
     }
 
     #[test]

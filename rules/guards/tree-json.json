@@ -1,0 +1,12 @@
+{
+  "id": "guards/tree-json",
+  "match": {
+    "program": [
+      "tree"
+    ],
+    "argv_contains_all": [
+      "-J"
+    ]
+  },
+  "action": "passthrough"
+}

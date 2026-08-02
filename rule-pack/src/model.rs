@@ -156,8 +156,10 @@ fn normalized_arguments<'a>(program: &str, arguments: &'a [String]) -> &'a [Stri
         let argument = arguments[index].as_str();
         let takes_value = match program {
             "git" => matches!(argument, "-C" | "-c" | "--git-dir" | "--work-tree"),
-            "npm" => matches!(argument, "--prefix"),
-            "pnpm" | "yarn" | "bun" => matches!(argument, "-C" | "--dir"),
+            "npm" => matches!(argument, "--prefix" | "-w" | "--workspace"),
+            "pnpm" | "yarn" | "bun" => {
+                matches!(argument, "-C" | "--dir" | "--filter")
+            }
             "uv" => matches!(argument, "--project"),
             "gh" => matches!(argument, "-R" | "--repo"),
             _ => false,
@@ -182,8 +184,26 @@ fn normalized_arguments<'a>(program: &str, arguments: &'a [String]) -> &'a [Stri
                             | "--noglob-pathspecs"
                     )
             }
-            "npm" => argument.starts_with("--prefix="),
-            "pnpm" | "yarn" | "bun" => argument.starts_with("--dir="),
+            "npm" => {
+                argument.starts_with("--prefix=")
+                    || argument.starts_with("--workspace=")
+                    || matches!(argument, "--workspaces" | "-ws" | "-s" | "--silent")
+            }
+            "pnpm" | "yarn" | "bun" => {
+                argument.starts_with("--dir=")
+                    || argument.starts_with("--filter=")
+                    || matches!(
+                        argument,
+                        "-r" | "--recursive"
+                            | "-w"
+                            | "--workspace-root"
+                            | "--parallel"
+                            | "--stream"
+                            | "--aggregate-output"
+                            | "-s"
+                            | "--silent"
+                    )
+            }
             "uv" => argument.starts_with("--project="),
             "gh" => argument.starts_with("--repo="),
             "cargo" => argument.starts_with('+') && argument.len() > 1,
@@ -254,6 +274,15 @@ mod tests {
         assert!(
             matcher("pnpm", &["test"]).matches(&arguments(&["pnpm", "-C", "frontend", "test"]))
         );
+        assert!(matcher("pnpm", &["lint"]).matches(&arguments(&[
+            "pnpm", "--filter", "web", "-r", "--silent", "lint"
+        ])));
+        assert!(matcher("npm", &["run", "test"]).matches(&arguments(&[
+            "npm",
+            "--workspaces",
+            "run",
+            "test"
+        ])));
         assert!(matcher("cargo", &["test"]).matches(&arguments(&["cargo", "+nightly", "test"])));
     }
 

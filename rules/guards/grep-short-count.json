@@ -2,7 +2,9 @@
   "id": "guards/grep-short-count",
   "match": {
     "program": [
-      "grep"
+      "grep",
+      "egrep",
+      "fgrep"
     ],
     "argv_contains_all": [
       "-c"

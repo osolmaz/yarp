@@ -1,0 +1,15 @@
+{
+  "id": "guards/git-reflog-format",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "reflog"
+    ],
+    "argv_contains_all": [
+      "--format"
+    ]
+  },
+  "action": "passthrough"
+}

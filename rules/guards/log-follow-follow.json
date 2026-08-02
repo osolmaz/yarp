@@ -4,6 +4,7 @@
     "program": [
       "journalctl",
       "docker",
+      "podman",
       "kubectl"
     ],
     "argv_contains_all": [

@@ -1,0 +1,12 @@
+{
+  "id": "guards/tree-output",
+  "match": {
+    "program": [
+      "tree"
+    ],
+    "argv_contains_all": [
+      "-o"
+    ]
+  },
+  "action": "passthrough"
+}

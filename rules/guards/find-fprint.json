@@ -1,0 +1,12 @@
+{
+  "id": "guards/find-fprint",
+  "match": {
+    "program": [
+      "find"
+    ],
+    "argv_contains_all": [
+      "-fprint"
+    ]
+  },
+  "action": "passthrough"
+}

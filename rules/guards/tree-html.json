@@ -1,0 +1,12 @@
+{
+  "id": "guards/tree-html",
+  "match": {
+    "program": [
+      "tree"
+    ],
+    "argv_contains_all": [
+      "-H"
+    ]
+  },
+  "action": "passthrough"
+}

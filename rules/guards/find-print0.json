@@ -1,0 +1,12 @@
+{
+  "id": "guards/find-print0",
+  "match": {
+    "program": [
+      "find"
+    ],
+    "argv_contains_all": [
+      "-print0"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,13 @@
+{
+  "id": "guards/git-reflog-expire",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "reflog",
+      "expire"
+    ]
+  },
+  "action": "passthrough"
+}

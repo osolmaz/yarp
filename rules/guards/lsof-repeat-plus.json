@@ -1,0 +1,12 @@
+{
+  "id": "guards/lsof-repeat-plus",
+  "match": {
+    "program": [
+      "lsof"
+    ],
+    "argv_contains_all": [
+      "+r"
+    ]
+  },
+  "action": "passthrough"
+}

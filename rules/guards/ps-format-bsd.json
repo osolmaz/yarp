@@ -1,0 +1,12 @@
+{
+  "id": "guards/ps-format-bsd",
+  "match": {
+    "program": [
+      "ps"
+    ],
+    "argv_contains_all": [
+      "o"
+    ]
+  },
+  "action": "passthrough"
+}

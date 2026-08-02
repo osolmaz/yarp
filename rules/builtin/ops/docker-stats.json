@@ -2,7 +2,8 @@
   "id": "ops/docker-stats",
   "match": {
     "program": [
-      "docker"
+      "docker",
+      "podman"
     ],
     "argv_prefix": [
       "stats",

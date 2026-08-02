@@ -1,0 +1,12 @@
+{
+  "id": "guards/find-delete",
+  "match": {
+    "program": [
+      "find"
+    ],
+    "argv_contains_all": [
+      "-delete"
+    ]
+  },
+  "action": "passthrough"
+}

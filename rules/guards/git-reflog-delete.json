@@ -1,0 +1,13 @@
+{
+  "id": "guards/git-reflog-delete",
+  "match": {
+    "program": [
+      "git"
+    ],
+    "argv_prefix": [
+      "reflog",
+      "delete"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "guards/free-seconds-long",
+  "match": {
+    "program": [
+      "free"
+    ],
+    "argv_contains_all": [
+      "--seconds"
+    ]
+  },
+  "action": "passthrough"
+}

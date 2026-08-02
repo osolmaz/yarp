@@ -1,0 +1,12 @@
+{
+  "id": "guards/ps-format-preloaded",
+  "match": {
+    "program": [
+      "ps"
+    ],
+    "argv_contains_all": [
+      "-O"
+    ]
+  },
+  "action": "passthrough"
+}

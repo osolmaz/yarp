@@ -2,7 +2,9 @@
   "id": "guards/grep-null-data",
   "match": {
     "program": [
-      "grep"
+      "grep",
+      "egrep",
+      "fgrep"
     ],
     "argv_contains_all": [
       "--null-data"

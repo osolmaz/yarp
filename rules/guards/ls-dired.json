@@ -1,0 +1,12 @@
+{
+  "id": "guards/ls-dired",
+  "match": {
+    "program": [
+      "ls"
+    ],
+    "argv_contains_all": [
+      "--dired"
+    ]
+  },
+  "action": "passthrough"
+}

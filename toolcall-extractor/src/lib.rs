@@ -14,6 +14,7 @@
 
 pub mod adapters;
 pub mod benchmark;
+pub mod ceiling;
 pub mod database;
 pub mod error;
 pub mod keys;

@@ -22,7 +22,7 @@ Both commands install from the public GitHub repository.
 
 ## Use
 
-The Pi extension handles supported `bash` and `exec_command` calls automatically. Built-in rules cover common repository inspection, search, test, build, lint, and package-script commands. They also cover CI inspection plus container and cluster commands. Exact-output forms such as structured JSON, NUL-delimited output, and Git object inspection stay untouched.
+The Pi extension handles supported `bash` and `exec_command` calls automatically. Built-in rules cover common repository inspection, search, test, build, lint, and package-script commands. Search coverage includes `rg`, `grep`, `egrep`, `fgrep`, and `git grep`. File and system coverage includes `ls`, `find`, `fd`, `tree`, `du`, `df`, `free`, `lsof`, and common `ps` listings. YARP also handles common Git and GitHub lists, container inventories, and Kubernetes inspection. Exact-output forms such as structured JSON, NUL-delimited output, custom process columns, child-executing file searches, streaming output, and Git object inspection stay untouched.
 
 Run a supported command directly when needed:
 
@@ -152,6 +152,15 @@ target/release/toolcall-extractor verify
 target/release/toolcall-extractor benchmark-yarp
 ```
 
+Measure how much unchanged shell output belongs to reviewable command families without printing commands or tool content:
+
+```sh
+target/release/toolcall-extractor analyze-ceiling \
+  --output "$HOME/.local/share/toolcall-extractor/analysis/reduction-ceiling.json"
+```
+
+The report is written atomically under a mode-`0700` directory as a mode-`0600` file. It contains aggregate counts and fixed public family labels only. See the [reduction ceiling analysis](docs/reduction-ceiling-analysis.md) for the report fields and review process.
+
 For a different Unix user, run only the reader under that identity and keep the DuckDB writer under your own account:
 
 ```sh
@@ -164,7 +173,7 @@ This sends framed normalized records through the pipe and creates no intermediat
 
 The default database is `~/.local/share/toolcall-extractor/toolcalls.duckdb`. Tool inputs and outputs can contain secrets, so its directory and files are private. The extractor reads agent state without modifying it, has no network code, and stops before its files reach 10,000,000,000 bytes. See [the implementation plan](docs/toolcall-extractor-implementation-plan.md) for supported formats and privacy boundaries.
 
-A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The production matcher evaluated all 371,241 stored shell results. Typed summaries changed 29,348 results and removed 305,675,304 characters: 93.0069% of eligible output, 21.1463% of shell output, and 15.7425% of all rendered output. No ambiguous reduction or registered diagnostic veto occurred. The generated database, transcripts, and report remain outside the repository.
+A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The production matcher evaluated all 371,241 stored shell results. Typed summaries changed 29,439 results and removed 306,302,222 characters: 92.2887% of eligible output, 21.1897% of shell output, and 15.7748% of all rendered output. No ambiguous reduction or registered diagnostic veto occurred. The generated database, transcripts, and report remain outside the repository.
 
 ## Limits
 

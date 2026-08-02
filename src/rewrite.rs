@@ -446,8 +446,19 @@ mod tests {
         );
         assert!(rewrite("pytest -q").is_some());
         assert!(rewrite("rg -n needle .").is_some());
+        assert!(rewrite("egrep -n needle file").is_some());
+        assert!(rewrite("fgrep needle file").is_some());
+        assert!(rewrite("podman ps").is_some());
+        assert!(rewrite("git reflog --date=iso").is_some());
+        assert!(rewrite("git remote show origin").is_some());
+        assert!(rewrite("gh repo view osolmaz/yarp").is_some());
+        assert!(rewrite("pnpm -s build").is_some());
         assert!(rewrite("git -C /repo diff --check").is_some());
         assert!(rewrite("pnpm -C frontend test").is_some());
+        assert!(rewrite("pnpm --filter web -r lint").is_some());
+        assert!(rewrite("ls -la").is_some());
+        assert!(rewrite("find src -name '*.rs'").is_some());
+        assert!(rewrite("ps aux").is_some());
     }
 
     #[test]
@@ -486,12 +497,33 @@ mod tests {
             "rg -0l needle .",
             "grep -l needle file",
             "grep -lZ needle file",
+            "egrep -l needle file",
+            "fgrep --count needle file",
             "git status -sbz",
             "git grep -l needle",
             "git grep -lz needle",
             "git log --oneline -z",
-            "ls -la",
-            "du -sh .",
+            "ls --zero",
+            "find . -print0",
+            "find . -exec echo {} +",
+            "fd -0 needle .",
+            "fd -x echo {}",
+            "tree -J .",
+            "du --null .",
+            "df --output=source,target",
+            "lsof -F pcfn",
+            "free --seconds 1",
+            "ps aux -o pid=",
+            "cmake -S . -B build --trace",
+            "git worktree list --porcelain",
+            "git tag --list -z",
+            "git reflog delete main@{0}",
+            "git reflog --format=%H",
+            "gh workflow view ci.yml --yaml",
+            "docker ps --format json",
+            "docker images --quiet",
+            "podman ps --format json",
+            "podman logs --follow container",
             "journalctl --output=json",
             "systemctl status -o json sshd",
             "ninja -t compdb",
