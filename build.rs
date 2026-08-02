@@ -190,11 +190,13 @@ const fn action_expression(action: Action) -> &'static str {
 
 fn reducer_expression(reducer: &Reducer) -> String {
     match reducer {
-        Reducer::HeadTail => "yarp_rule_pack::Reducer::HeadTail".to_owned(),
-        Reducer::CargoTest => "yarp_rule_pack::Reducer::CargoTest".to_owned(),
-        Reducer::GitDiff => "yarp_rule_pack::Reducer::GitDiff".to_owned(),
-        Reducer::GitStatus => "yarp_rule_pack::Reducer::GitStatus".to_owned(),
-        Reducer::Search => "yarp_rule_pack::Reducer::Search".to_owned(),
+        Reducer::SearchSummary => "yarp_rule_pack::Reducer::SearchSummary".to_owned(),
+        Reducer::DiffSummary => "yarp_rule_pack::Reducer::DiffSummary".to_owned(),
+        Reducer::TestSummary => "yarp_rule_pack::Reducer::TestSummary".to_owned(),
+        Reducer::BuildSummary => "yarp_rule_pack::Reducer::BuildSummary".to_owned(),
+        Reducer::LogSummary => "yarp_rule_pack::Reducer::LogSummary".to_owned(),
+        Reducer::StatusSummary => "yarp_rule_pack::Reducer::StatusSummary".to_owned(),
+        Reducer::ListSummary => "yarp_rule_pack::Reducer::ListSummary".to_owned(),
         Reducer::LineFilter {
             strip_ansi,
             drop,
@@ -253,12 +255,11 @@ fn option_policy(policy: Option<&OutputPolicy>) -> String {
         || "None".to_owned(),
         |policy| {
             format!(
-                "Some(yarp_rule_pack::OutputPolicy {{ head_lines: {}, tail_lines: {}, max_line_bytes: {}, max_output_bytes: {}, min_savings_bytes: {} }})",
-                rust_number(policy.head_lines),
-                rust_number(policy.tail_lines),
+                "Some(yarp_rule_pack::OutputPolicy {{ max_line_bytes: {}, max_output_bytes: {}, min_savings_bytes: {}, min_savings_basis_points: {} }})",
                 rust_number(policy.max_line_bytes),
                 rust_number(policy.max_output_bytes),
                 rust_number(policy.min_savings_bytes),
+                rust_number(usize::from(policy.min_savings_basis_points)),
             )
         },
     )

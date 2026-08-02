@@ -1,4 +1,5 @@
 use crate::rules::{PackRequest, Registry, Selection, digest_hex};
+use yarp_rule_pack::{OutputPolicy, Rule};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Quote {
@@ -104,6 +105,256 @@ pub fn select_builtin_command(command: &str) -> Result<(Vec<String>, Selection),
 /// Returns an error only when the embedded registry cannot read a selected record.
 pub fn select_builtin_argv(arguments: &[String]) -> Result<Selection, String> {
     Registry::builtins_only().select(arguments)
+}
+
+/// Select one compatible typed rule for conservative post-result reduction.
+///
+/// # Errors
+///
+/// Returns an error when shell syntax is ambiguous, guarded, unsupported, or mixes reducer
+/// families. Callers fail open on every error.
+pub fn select_result_rule(command: &str) -> Result<Rule, String> {
+    let normalized = strip_safe_stream_redirects(command)
+        .ok_or_else(|| "unsupported compound shell syntax".to_owned())?;
+    let segments = split_compound(&normalized)
+        .ok_or_else(|| "unsupported compound shell syntax".to_owned())?;
+    let mut selected: Option<Rule> = None;
+    for segment in segments {
+        let words =
+            parse_words(segment).ok_or_else(|| "unsupported compound command".to_owned())?;
+        let Some(words) = normalize_result_words(words)? else {
+            continue;
+        };
+        let mut registry = Registry::builtins_only();
+        let Selection::Reduce(candidate) = registry
+            .select(&words)
+            .map_err(|error| format!("could not classify compound command: {error}"))?
+        else {
+            return Err("compound command contains an unsupported or guarded command".to_owned());
+        };
+        if let Some(existing) = &mut selected {
+            if existing.reducer != candidate.rule.reducer {
+                return Err("compound command mixes reducer families".to_owned());
+            }
+            let Some(existing_success) = existing.success else {
+                return Err("selected rule has no success policy".to_owned());
+            };
+            let Some(candidate_success) = candidate.rule.success else {
+                return Err("candidate rule has no success policy".to_owned());
+            };
+            let Some(existing_failure) = existing.failure else {
+                return Err("selected rule has no failure policy".to_owned());
+            };
+            let Some(candidate_failure) = candidate.rule.failure else {
+                return Err("candidate rule has no failure policy".to_owned());
+            };
+            existing.success = Some(merge_policy(existing_success, candidate_success));
+            existing.failure = Some(merge_policy(existing_failure, candidate_failure));
+        } else {
+            selected = Some((*candidate.rule).clone());
+        }
+    }
+    selected.ok_or_else(|| "compound command has no supported output command".to_owned())
+}
+
+fn merge_policy(left: OutputPolicy, right: OutputPolicy) -> OutputPolicy {
+    OutputPolicy {
+        max_line_bytes: left.max_line_bytes.max(right.max_line_bytes),
+        max_output_bytes: left.max_output_bytes.max(right.max_output_bytes),
+        min_savings_bytes: left.min_savings_bytes.max(right.min_savings_bytes),
+        min_savings_basis_points: left
+            .min_savings_basis_points
+            .max(right.min_savings_basis_points),
+    }
+}
+
+fn strip_safe_stream_redirects(command: &str) -> Option<String> {
+    let mut output = Vec::with_capacity(command.len());
+    let bytes = command.as_bytes();
+    let mut quote = Quote::None;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match quote {
+            Quote::Single if byte == b'\'' => quote = Quote::None,
+            Quote::Double if byte == b'"' => quote = Quote::None,
+            Quote::Double | Quote::None if byte == b'\\' => {
+                output.push(byte);
+                index = index.checked_add(1)?;
+                output.push(*bytes.get(index)?);
+                index += 1;
+                continue;
+            }
+            Quote::None if byte == b'\'' => quote = Quote::Single,
+            Quote::None if byte == b'"' => quote = Quote::Double,
+            Quote::None => {
+                let token = bytes.get(index..index.saturating_add(4));
+                let boundary_before =
+                    index == 0 || bytes.get(index - 1).is_some_and(u8::is_ascii_whitespace);
+                let boundary_after = bytes
+                    .get(index + 4)
+                    .is_none_or(|next| next.is_ascii_whitespace() || matches!(next, b';' | b'&'));
+                if boundary_before
+                    && boundary_after
+                    && (token == Some(&b"2>&1"[..]) || token == Some(&b"1>&2"[..]))
+                {
+                    index += 4;
+                    continue;
+                }
+            }
+            Quote::Single | Quote::Double => {}
+        }
+        output.push(byte);
+        index += 1;
+    }
+    if quote != Quote::None {
+        return None;
+    }
+    String::from_utf8(output).ok()
+}
+
+fn normalize_result_words(mut words: Vec<String>) -> Result<Option<Vec<String>>, String> {
+    if is_setup_command(&words) {
+        return Ok(None);
+    }
+    while words.first().is_some_and(|word| is_assignment(word)) {
+        words.remove(0);
+    }
+    let Some(program) = words.first().map(String::as_str) else {
+        return Ok(None);
+    };
+    match program {
+        "env" => {
+            words.remove(0);
+            if words.first().is_some_and(|word| word == "--") {
+                words.remove(0);
+            }
+            while words.first().is_some_and(|word| is_assignment(word)) {
+                words.remove(0);
+            }
+        }
+        "command" | "exec" => {
+            words.remove(0);
+            if words.first().is_some_and(|word| word == "--") {
+                words.remove(0);
+            }
+        }
+        "time" if words.get(1).is_some_and(|word| !word.starts_with('-')) => {
+            words.remove(0);
+        }
+        "timeout"
+            if words.len() >= 3 && words.get(1).is_some_and(|word| !word.starts_with('-')) =>
+        {
+            words.drain(0..2);
+        }
+        _ => {}
+    }
+    if words.is_empty() {
+        return Ok(None);
+    }
+    if words.first().is_some_and(|word| {
+        matches!(
+            word.as_str(),
+            "env" | "command" | "exec" | "time" | "timeout"
+        )
+    }) {
+        return Err("compound command uses an unsupported command wrapper".to_owned());
+    }
+    Ok(Some(words))
+}
+
+fn is_setup_command(words: &[String]) -> bool {
+    match words {
+        [program] if matches!(program.as_str(), ":" | "true" | "false") => true,
+        [program, path] if program == "cd" && !path.starts_with('-') => true,
+        [program, flag] if program == "set" && flag.starts_with('-') => true,
+        [program, flag, value]
+            if program == "set" && flag.starts_with('-') && value == "pipefail" =>
+        {
+            true
+        }
+        [program, ..] if matches!(program.as_str(), "export" | "umask") && words.len() > 1 => true,
+        _ => false,
+    }
+}
+
+fn is_assignment(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
+fn split_compound(command: &str) -> Option<Vec<&str>> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut quote = Quote::None;
+    let bytes = command.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match quote {
+            Quote::Single if byte == b'\'' => quote = Quote::None,
+            Quote::Double if byte == b'"' => quote = Quote::None,
+            Quote::Double if byte == b'\\' => {
+                index = index.checked_add(1)?;
+                if index >= bytes.len() {
+                    return None;
+                }
+            }
+            Quote::Double if matches!(byte, b'$' | b'`') => return None,
+            Quote::None if byte == b'\'' => quote = Quote::Single,
+            Quote::None if byte == b'"' => quote = Quote::Double,
+            Quote::None if byte == b'\\' => {
+                index = index.checked_add(1)?;
+                if index >= bytes.len() {
+                    return None;
+                }
+            }
+            Quote::None if byte == b';' => {
+                push_segment(command, start, index, &mut segments)?;
+                start = index + 1;
+            }
+            Quote::None if matches!(byte, b'&' | b'|') && bytes.get(index + 1) == Some(&byte) => {
+                push_segment(command, start, index, &mut segments)?;
+                index += 1;
+                start = index + 1;
+            }
+            Quote::None
+                if matches!(
+                    byte,
+                    b'\n' | b'\r' | b'|' | b'&' | b'<' | b'>' | b'(' | b')' | b'`' | b'$' | b'#'
+                ) =>
+            {
+                return None;
+            }
+            Quote::Single | Quote::Double | Quote::None => {}
+        }
+        index += 1;
+    }
+    if quote != Quote::None {
+        return None;
+    }
+    push_segment(command, start, bytes.len(), &mut segments)?;
+    Some(segments)
+}
+
+fn push_segment<'a>(
+    command: &'a str,
+    start: usize,
+    end: usize,
+    segments: &mut Vec<&'a str>,
+) -> Option<()> {
+    let segment = command.get(start..end)?.trim();
+    if segment.is_empty() {
+        return None;
+    }
+    segments.push(segment);
+    Some(())
 }
 
 fn parse_words(command: &str) -> Option<Vec<String>> {
@@ -262,6 +513,7 @@ mod tests {
             "git diff --stat",
             "kubectl get pods -ojson",
             "npm test -- --reporter=json",
+            "codex review --json --base main",
             "yarp run -- git status",
         ] {
             assert_eq!(rewrite(command), None, "accepted {command:?}");
@@ -283,6 +535,38 @@ mod tests {
         ] {
             assert_eq!(rewrite(command), None, "accepted {command:?}");
         }
+    }
+
+    #[test]
+    fn classifies_only_compatible_compound_results() {
+        let rule = select_result_rule("cd repo && cargo check; cargo build")
+            .expect("compatible build result");
+        assert_eq!(rule.action, yarp_rule_pack::Action::Reduce);
+        assert!(matches!(
+            rule.reducer,
+            Some(yarp_rule_pack::Reducer::BuildSummary)
+        ));
+        assert!(select_result_rule("cargo test && cargo build").is_err());
+        assert!(matches!(
+            select_result_rule("GOWORK=off go test ./... 2>&1 || true")
+                .expect("assignment and stream merge"),
+            Rule {
+                reducer: Some(yarp_rule_pack::Reducer::TestSummary),
+                ..
+            }
+        ));
+        assert!(matches!(
+            select_result_rule("env CI=1 pnpm build && :").expect("environment wrapper"),
+            Rule {
+                reducer: Some(yarp_rule_pack::Reducer::BuildSummary),
+                ..
+            }
+        ));
+        assert!(select_result_rule("cargo test | cat").is_err());
+        assert!(select_result_rule("cargo test > result.log").is_err());
+        assert!(select_result_rule("cargo test && echo done").is_err());
+        assert!(select_result_rule("set && cargo test").is_err());
+        assert!(select_result_rule("yarp search ref error").is_err());
     }
 
     #[test]

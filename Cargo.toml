@@ -23,7 +23,9 @@ all = "deny"
 pedantic = "deny"
 
 [dependencies]
-rusqlite = { version = "=0.39.0", features = ["bundled", "blob"] }
+fs2 = "0.4"
+regex = { version = "=1.13.1", default-features = false, features = ["std"] }
+rusqlite = { version = "=0.39.0", features = ["backup", "bundled", "blob"] }
 serde = { version = "1", features = ["derive"] }
 serde_jcs = "0.2"
 serde_json = "1"

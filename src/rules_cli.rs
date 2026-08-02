@@ -242,12 +242,14 @@ fn combined_requests(paths: &[PathBuf]) -> Result<Vec<PackRequest>, String> {
 
 fn reducer_name(reducer: &Reducer) -> &'static str {
     match reducer {
-        Reducer::HeadTail => "head_tail",
+        Reducer::SearchSummary => "search_summary",
+        Reducer::DiffSummary => "diff_summary",
+        Reducer::TestSummary => "test_summary",
+        Reducer::BuildSummary => "build_summary",
+        Reducer::LogSummary => "log_summary",
+        Reducer::StatusSummary => "status_summary",
+        Reducer::ListSummary => "list_summary",
         Reducer::LineFilter { .. } => "line_filter",
-        Reducer::CargoTest => "cargo_test",
-        Reducer::GitDiff => "git_diff",
-        Reducer::GitStatus => "git_status",
-        Reducer::Search => "search",
     }
 }
 

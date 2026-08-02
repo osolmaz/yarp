@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 
 pub mod archive;
+pub mod archive_query;
 pub mod reducers;
+mod result_reducer;
 pub mod rewrite;
 pub mod rules;
 mod rules_cli;
@@ -9,10 +11,11 @@ pub mod runner;
 
 use rewrite::ArchiveCommandRef;
 use std::io;
+use std::io::Write as _;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-const HELP: &str = "YARP prunes developer command output and archives Pi tool calls.\n\nUsage:\n  yarp rewrite [--rule-pack <path>]... <shell-command>\n  yarp run [--rule-pack <path>]... -- <command> [arguments...]\n  yarp rules check <source-pack>\n  yarp rules compile <source-pack> --output <compiled-pack>\n  yarp rules verify <compiled-pack>\n  yarp rules list [--rule-pack <path>]... [--json]\n  yarp rules explain [--rule-pack <path>]... [--json] -- <command> [arguments...]\n  yarp archive stats\n  yarp archive verify\n  yarp archive prune --before <UTC timestamp>\n  yarp archive ingest\n  yarp --help\n  yarp --version\n";
+const HELP: &str = "YARP prunes developer command output and archives Pi tool calls.\n\nUsage:\n  yarp rewrite [--rule-pack <path>]... <shell-command>\n  yarp run [--rule-pack <path>]... -- <command> [arguments...]\n  yarp rules check <source-pack>\n  yarp rules compile <source-pack> --output <compiled-pack>\n  yarp rules verify <compiled-pack>\n  yarp rules list [--rule-pack <path>]... [--json]\n  yarp rules explain [--rule-pack <path>]... [--json] -- <command> [arguments...]\n  yarp search REF PATTERN [options]\n  yarp read REF [SOURCE] START:END\n  yarp read REF SOURCE --bytes START:END\n  yarp archive stats\n  yarp archive verify\n  yarp archive prune --before <UTC timestamp>\n  yarp archive ingest\n  yarp --help\n  yarp --version\n";
 
 /// Run the command-line interface and return the process exit code.
 #[must_use]
@@ -44,6 +47,17 @@ pub fn run_cli(arguments: &[String]) -> i32 {
             Err(error) => usage_error(&error),
         },
         [command, rest @ ..] if command == "rules" => rules_cli::run(rest),
+        [command, rest @ ..] if command == "search" => archive_search(rest),
+        [command, rest @ ..] if command == "read" => archive_read(rest),
+        [command] if command == "result-reduce" => {
+            match result_reducer::run(io::stdin().lock(), io::stdout().lock()) {
+                Ok(()) => 0,
+                Err(error) => {
+                    eprintln!("yarp: {error}");
+                    65
+                }
+            }
+        }
         [command, subcommand] if command == "archive" && subcommand == "stats" => archive_stats(),
         [command, subcommand] if command == "archive" && subcommand == "verify" => archive_verify(),
         [command, subcommand] if command == "archive" && subcommand == "ingest" => {
@@ -81,6 +95,45 @@ fn rewrite(
         Err(error) => {
             eprintln!("yarp: {error}");
             3
+        }
+    }
+}
+
+fn archive_search(arguments: &[String]) -> i32 {
+    match archive_query::search(arguments) {
+        Ok(archive_query::SearchOutcome::Matches(output)) => {
+            if let Err(error) = io::stdout().write_all(&output) {
+                eprintln!("yarp: could not write search output: {error}");
+                return 74;
+            }
+            0
+        }
+        Ok(archive_query::SearchOutcome::NoMatches(output)) => {
+            if let Err(error) = io::stdout().write_all(&output) {
+                eprintln!("yarp: could not write search output: {error}");
+                return 74;
+            }
+            1
+        }
+        Err(error) => {
+            eprintln!("yarp: {error}");
+            65
+        }
+    }
+}
+
+fn archive_read(arguments: &[String]) -> i32 {
+    match archive_query::read(arguments) {
+        Ok(output) => match io::stdout().write_all(&output) {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("yarp: could not write exact archive range: {error}");
+                74
+            }
+        },
+        Err(error) => {
+            eprintln!("yarp: {error}");
+            65
         }
     }
 }
@@ -125,7 +178,7 @@ fn archive_verify() -> i32 {
         }
         Err(error) => {
             eprintln!("yarp: {error}");
-            74
+            65
         }
     }
 }

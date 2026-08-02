@@ -1,23 +1,84 @@
 mod bounded;
-mod filter;
-mod git_diff;
+mod build;
+mod classify;
+mod diff;
+mod evidence;
+pub(crate) mod filter;
+mod list;
+mod log;
+mod search;
+mod status;
+mod test;
 
-use bounded::{LineAccumulator, LineView, Retention, ShortRaw};
-use filter::{AnsiStripper, cargo_test_keeps, line_filter_keeps};
-use git_diff::GitDiffState;
+use bounded::{LineAccumulator, LineView, ShortRaw};
+pub use evidence::RecoveryMarker;
+use evidence::{EvidenceClass, EvidenceCollector};
+use filter::{AnsiStripper, line_filter_keeps};
 use yarp_rule_pack::{Action, OutputPolicy, Reducer, Rule};
+
+const DIAGNOSTIC_CONTEXT_LINES: usize = 6;
+
+#[derive(Debug, Default)]
+struct RegisteredDiagnosticTracker {
+    matched: [bool; 5],
+    window: u128,
+}
+
+impl RegisteredDiagnosticTracker {
+    fn push(&mut self, byte: u8) {
+        let lower = byte.to_ascii_lowercase();
+        self.window = (self.window << 8) | u128::from(lower);
+        match lower {
+            b'e' if tail_matches(self.window, FAILURE) => self.matched[0] = true,
+            b'c' if tail_matches(self.window, PANIC) => self.matched[1] = true,
+            b'r' if tail_matches(self.window, ERROR) => self.matched[2] = true,
+            b'g' if tail_matches(self.window, WARNING) => self.matched[3] = true,
+            b't' if tail_matches(self.window, TEST_RESULT) => self.matched[4] = true,
+            _ => {}
+        }
+    }
+
+    fn observe_slice(&mut self, body: &[u8]) {
+        for (matched, term) in self
+            .matched
+            .iter_mut()
+            .zip(classify::REGISTERED_DIAGNOSTICS)
+        {
+            if !*matched && classify::contains_ascii_insensitive(body, term) {
+                *matched = true;
+            }
+        }
+    }
+
+    fn end_line(&mut self) {
+        self.window = 0;
+    }
+}
+
+const FAILURE: (u128, usize) = (0x66_61_69_6c_75_72_65, 56);
+const PANIC: (u128, usize) = (0x70_61_6e_69_63, 40);
+const ERROR: (u128, usize) = (0x65_72_72_6f_72, 40);
+const WARNING: (u128, usize) = (0x77_61_72_6e_69_6e_67, 56);
+const TEST_RESULT: (u128, usize) = (0x74_65_73_74_20_72_65_73_75_6c_74, 88);
+
+fn tail_matches(window: u128, term: (u128, usize)) -> bool {
+    let mask = (1_u128 << term.1) - 1;
+    window & mask == term.0
+}
 
 #[derive(Debug)]
 pub struct StreamReducer {
     kind: Reducer,
     success_policy: OutputPolicy,
     failure_policy: OutputPolicy,
-    success: Retention,
-    failure: Retention,
+    success: EvidenceCollector,
+    failure: EvidenceCollector,
     raw: ShortRaw,
     line: LineAccumulator,
     ansi: Option<AnsiStripper>,
-    diff: Option<GitDiffState>,
+    line_number: u64,
+    diagnostic_context: usize,
+    registered_diagnostics: RegisteredDiagnosticTracker,
 }
 
 impl StreamReducer {
@@ -50,45 +111,35 @@ impl StreamReducer {
         let max_line = success_policy
             .max_line_bytes
             .max(failure_policy.max_line_bytes);
-        let pattern_tail = match &kind {
-            Reducer::LineFilter { drop, keep, .. } => drop
-                .iter()
-                .chain(keep)
-                .map(|pattern| pattern.value.len())
-                .max()
-                .unwrap_or(0),
-            _ => 0,
-        };
-        let needs_tail = matches!(kind, Reducer::Search)
-            || matches!(&kind, Reducer::LineFilter { drop, keep, .. } if drop.iter().chain(keep).any(|pattern| matches!(pattern.kind, yarp_rule_pack::PatternKind::Suffix)));
-        let tail_limit = usize::from(needs_tail).saturating_mul(max_line.max(pattern_tail));
-        let strip_ansi = matches!(
+        let strip_ansi = !matches!(
             kind,
             Reducer::LineFilter {
-                strip_ansi: true,
+                strip_ansi: false,
                 ..
-            } | Reducer::CargoTest
-                | Reducer::GitDiff
-                | Reducer::GitStatus
-                | Reducer::Search
+            }
         );
+        let family = family_name(&kind);
         Ok(Self {
-            kind: kind.clone(),
+            kind,
             success_policy,
             failure_policy,
-            success: Retention::new(success_policy),
-            failure: Retention::new(failure_policy),
+            success: EvidenceCollector::new(family, success_policy),
+            failure: EvidenceCollector::new(family, failure_policy),
             raw: ShortRaw::new(success_policy, failure_policy),
-            line: LineAccumulator::new(max_line, tail_limit),
+            line: LineAccumulator::new(max_line, max_line),
             ansi: strip_ansi.then(AnsiStripper::new),
-            diff: matches!(kind, Reducer::GitDiff).then(GitDiffState::default),
+            line_number: 0,
+            diagnostic_context: 0,
+            registered_diagnostics: RegisteredDiagnosticTracker::default(),
         })
     }
 
     pub fn push(&mut self, chunk: &[u8]) {
         self.raw.push(chunk);
         for byte in chunk {
-            self.line.observe_source(*byte);
+            if self.line.observe_source(*byte) {
+                self.registered_diagnostics.push(*byte);
+            }
             let output = self
                 .ansi
                 .as_mut()
@@ -98,67 +149,83 @@ impl StreamReducer {
             }
             if *byte == b'\n' {
                 let line = self.line.take();
-                self.process_line(line);
+                self.process_line(&line);
             }
         }
     }
 
     #[must_use]
-    pub fn finish(mut self, success: bool) -> Vec<u8> {
+    pub fn finish(mut self, success: bool, recovery: Option<RecoveryMarker<'_>>) -> Vec<u8> {
         if !self.line.is_empty() {
             let line = self.line.take();
-            self.process_line(line);
+            self.process_line(&line);
         }
-        if let Some(diff) = self.diff.take() {
-            let mut kept = Vec::new();
-            diff.finish(|line| kept.push(line));
-            for line in kept {
-                self.observe(&line, true);
-            }
-        }
-        let (retention, policy) = if success {
+        let (collector, policy) = if success {
             (self.success, self.success_policy)
         } else {
             (self.failure, self.failure_policy)
         };
-        self.raw.choose(retention.render(), policy)
+        self.raw.choose(
+            collector.render(recovery, self.registered_diagnostics.matched),
+            policy,
+        )
     }
 
-    fn process_line(&mut self, line: LineView) {
-        match &self.kind {
-            Reducer::HeadTail | Reducer::GitStatus | Reducer::Search => {
-                self.observe(&line, true);
-            }
-            Reducer::CargoTest => {
-                let keep = cargo_test_keeps(&line);
-                self.observe(&line, keep);
-            }
-            Reducer::LineFilter { drop, keep, .. } => {
-                let retain = line_filter_keeps(&line, drop, keep);
-                self.observe(&line, retain);
-            }
-            Reducer::GitDiff => {
-                let mut kept = Vec::new();
-                let mut omitted = Vec::new();
-                self.diff.as_mut().expect("git diff reducer state").push(
-                    line,
-                    |line| kept.push(line),
-                    |line| omitted.push(line),
-                );
-                for line in omitted {
-                    self.observe(&line, false);
-                }
-                for line in kept {
-                    self.observe(&line, true);
-                }
+    fn process_line(&mut self, line: &LineView) {
+        self.line_number = self.line_number.saturating_add(1);
+        if classify::has_registered_diagnostic(&line.prefix) {
+            self.registered_diagnostics.observe_slice(&line.prefix);
+        }
+        if line.truncated {
+            let tail = line.tail_bytes();
+            if classify::has_registered_diagnostic(&tail) {
+                self.registered_diagnostics.observe_slice(&tail);
             }
         }
+        let mut class = classify_line(&self.kind, line);
+        if class == EvidenceClass::Diagnostic {
+            self.diagnostic_context = DIAGNOSTIC_CONTEXT_LINES;
+        } else if self.diagnostic_context > 0 {
+            if class == EvidenceClass::Noise || class == EvidenceClass::Example {
+                class = EvidenceClass::Context;
+            }
+            self.diagnostic_context -= 1;
+        }
+        self.registered_diagnostics.end_line();
+        self.success.observe(self.line_number, line, class);
+        self.failure.observe(self.line_number, line, class);
     }
+}
 
-    fn observe(&mut self, line: &LineView, keep: bool) {
-        let two_sided = matches!(self.kind, Reducer::Search);
-        self.success.observe(line, keep, two_sided);
-        self.failure.observe(line, keep, two_sided);
+fn family_name(kind: &Reducer) -> &'static str {
+    match kind {
+        Reducer::SearchSummary => "search",
+        Reducer::DiffSummary => "diff",
+        Reducer::TestSummary => "test",
+        Reducer::BuildSummary => "build",
+        Reducer::LogSummary => "log",
+        Reducer::StatusSummary => "status",
+        Reducer::ListSummary => "list",
+        Reducer::LineFilter { .. } => "line filter",
+    }
+}
+
+fn classify_line(kind: &Reducer, line: &LineView) -> EvidenceClass {
+    match kind {
+        Reducer::SearchSummary => search::classify(&line.prefix),
+        Reducer::DiffSummary => diff::classify(&line.prefix),
+        Reducer::TestSummary => test::classify(&line.prefix),
+        Reducer::BuildSummary => build::classify(&line.prefix),
+        Reducer::LogSummary => log::classify(&line.prefix),
+        Reducer::StatusSummary => status::classify(&line.prefix),
+        Reducer::ListSummary => list::classify(&line.prefix),
+        Reducer::LineFilter { drop, keep, .. } => {
+            if line_filter_keeps(line, drop, keep) {
+                EvidenceClass::Example
+            } else {
+                EvidenceClass::Noise
+            }
+        }
     }
 }
 
@@ -168,11 +235,25 @@ impl StreamReducer {
 ///
 /// Returns an error when the supplied rule is not a complete reduction rule.
 pub fn reduce_bytes(rule: &Rule, input: &[u8], success: bool) -> Result<Vec<u8>, String> {
+    reduce_bytes_with_recovery(rule, input, success, None)
+}
+
+/// Reduce one in-memory stream and include a committed recovery reference in the savings decision.
+///
+/// # Errors
+///
+/// Returns an error when the supplied rule is not a complete reduction rule.
+pub fn reduce_bytes_with_recovery(
+    rule: &Rule,
+    input: &[u8],
+    success: bool,
+    recovery: Option<RecoveryMarker<'_>>,
+) -> Result<Vec<u8>, String> {
     let mut reducer = StreamReducer::new(rule)?;
     for chunk in input.chunks(8 * 1024) {
         reducer.push(chunk);
     }
-    Ok(reducer.finish(success))
+    Ok(reducer.finish(success, recovery))
 }
 
 /// Calculate a conservative retained-memory bound for one stream.
@@ -192,13 +273,12 @@ mod tests {
 
     use super::*;
 
-    fn policy(head: usize, tail: usize, max: usize, savings: usize) -> OutputPolicy {
+    fn policy(max: usize, savings: usize) -> OutputPolicy {
         OutputPolicy {
-            head_lines: head,
-            tail_lines: tail,
             max_line_bytes: 256,
             max_output_bytes: max,
             min_savings_bytes: savings,
+            min_savings_basis_points: 1_000,
         }
     }
 
@@ -212,30 +292,29 @@ mod tests {
             },
             action: Action::Reduce,
             reducer: Some(reducer),
-            success: Some(policy(2, 1, 1_024, 8)),
-            failure: Some(policy(4, 2, 2_048, 8)),
+            success: Some(policy(1_024, 8)),
+            failure: Some(policy(2_048, 8)),
         }
     }
 
     #[test]
     fn uses_real_exit_status_policy() {
-        let input = numbered_lines("line", 20);
-        let success = reduce_bytes(&rule(Reducer::HeadTail), input.as_bytes(), true)
+        let input = numbered_lines("line", 200);
+        let success = reduce_bytes(&rule(Reducer::ListSummary), input.as_bytes(), true)
             .expect("success reduction");
-        let failure = reduce_bytes(&rule(Reducer::HeadTail), input.as_bytes(), false)
+        let failure = reduce_bytes(&rule(Reducer::ListSummary), input.as_bytes(), false)
             .expect("failure reduction");
         assert!(failure.len() > success.len());
     }
 
     #[test]
     fn rejects_rules_above_the_stream_memory_limit() {
-        let mut oversized = rule(Reducer::HeadTail);
+        let mut oversized = rule(Reducer::ListSummary);
         let policy = OutputPolicy {
-            head_lines: 10_000,
-            tail_lines: 10_000,
             max_line_bytes: 1_048_576,
-            max_output_bytes: 16_777_216,
+            max_output_bytes: 4_194_304,
             min_savings_bytes: 1_048_576,
+            min_savings_basis_points: 1_000,
         };
         oversized.success = Some(policy);
         oversized.failure = Some(policy);
@@ -245,30 +324,58 @@ mod tests {
 
     #[test]
     fn output_is_independent_of_chunk_boundaries() {
-        let input = numbered_lines("line", 40);
-        let rule = rule(Reducer::Search);
+        let input = numbered_lines("path:1:match", 400);
+        let rule = rule(Reducer::SearchSummary);
         let expected = reduce_bytes(&rule, input.as_bytes(), true).expect("reduction");
         for chunk_size in 1..32 {
             let mut reducer = StreamReducer::new(&rule).expect("reducer");
             for chunk in input.as_bytes().chunks(chunk_size) {
                 reducer.push(chunk);
             }
-            assert_eq!(reducer.finish(true), expected, "chunk size {chunk_size}");
+            assert_eq!(
+                reducer.finish(true, None),
+                expected,
+                "chunk size {chunk_size}"
+            );
         }
     }
 
     #[test]
-    fn cargo_filter_keeps_failures_and_drops_progress() {
+    fn test_summary_keeps_failures_and_drops_progress() {
         let input = format!(
             "{}error: build failed\ntest result: FAILED\n",
-            "   Compiling crate\n".repeat(100)
+            "test routine ... ok\n".repeat(1_000)
         );
         let output =
-            reduce_bytes(&rule(Reducer::CargoTest), input.as_bytes(), false).expect("reduction");
+            reduce_bytes(&rule(Reducer::TestSummary), input.as_bytes(), false).expect("reduction");
         let text = String::from_utf8(output).expect("UTF-8");
-        assert!(!text.contains("Compiling"));
+        assert!(!text.contains("test routine"));
         assert!(text.contains("error: build failed"));
         assert!(text.contains("test result: FAILED"));
+    }
+
+    #[test]
+    fn keeps_registered_diagnostics_from_the_tail_of_a_bounded_long_line() {
+        let mut compact = rule(Reducer::SearchSummary);
+        compact.success.as_mut().expect("policy").max_line_bytes = 256;
+        compact.failure.as_mut().expect("policy").max_line_bytes = 256;
+        let input = format!("{} warning: tail evidence\n", "x".repeat(1_024));
+        let output = reduce_bytes(&compact, input.as_bytes(), true).expect("reduction");
+        assert!(String::from_utf8_lossy(&output).contains("warning"));
+    }
+
+    #[test]
+    fn records_registered_diagnostics_from_the_middle_of_an_oversized_line() {
+        let mut compact = rule(Reducer::SearchSummary);
+        compact.success.as_mut().expect("policy").max_line_bytes = 256;
+        compact.failure.as_mut().expect("policy").max_line_bytes = 256;
+        let input = format!(
+            "{} warning: middle evidence {}\n",
+            "x".repeat(1_024),
+            "y".repeat(1_024)
+        );
+        let output = reduce_bytes(&compact, input.as_bytes(), true).expect("reduction");
+        assert!(String::from_utf8_lossy(&output).contains("source_terms=warning"));
     }
 
     #[test]
@@ -348,7 +455,7 @@ mod tests {
     fn unknown_binary_bytes_are_processed_without_utf8() {
         let mut input = vec![0xff; 4_096];
         input.push(b'\n');
-        let output = reduce_bytes(&rule(Reducer::Search), &input, true).expect("reduction");
+        let output = reduce_bytes(&rule(Reducer::SearchSummary), &input, true).expect("reduction");
         assert!(output.len() <= 1_024);
     }
 }

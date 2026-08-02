@@ -1,5 +1,8 @@
 # Indexed output summaries implementation plan
 
+Status: implementation and the in-place archive schema change were approved by
+Onur Solmaz on 2026-08-01.
+
 YARP should keep the exact command output locally and give the model a smaller,
 command-specific summary when that summary is useful. The summary must show what
 happened, preserve the evidence needed for the next action, and include one
@@ -9,6 +12,42 @@ line range when search context is not enough.
 This replaces broad head-and-tail pruning with typed summaries. It does not add
 a fixed 10,000-character threshold. Small output stays exact whenever a summary
 does not meet the rule's minimum savings requirements.
+
+## Implemented result
+
+The production matcher evaluated all 371,241 frozen shell results after the
+final semantic pass. Of 62,357 eligible results, 29,348 changed and 9,641
+matched an explicit pass-through rule. No result was ambiguous. YARP removed
+305,675,304 of 1,445,526,406 shell-output characters, or 21.1463%. This is
+93.0069% of eligible output and 15.7425% of all rendered tool output. The
+registered diagnostic veto count was zero.
+
+A private review covered the 100 largest changed results for each of the seven
+typed reducer families. Generic occurrences of `failure`, `panic`, `error`,
+`warning`, and `test result` are rendered as `source_terms` and source-term
+samples. A command-specific parser labels a line as a diagnostic only when its
+output syntax provides stronger evidence. The final marker-length review kept
+every diagnostic, outcome, and structure line; only bounded context, examples,
+and source-term samples changed. The private cases and report remain outside
+Git.
+
+A 20-case held-out run with `openai-codex/gpt-5.6-terra` produced 20 valid first
+`yarp search` commands. Nineteen cases recovered the requested evidence on the
+first retrieval, and the remaining case recovered it on the second. The marker
+uses `term|alternate` to demonstrate the search engine's unescaped alternation
+syntax without adding another command or persistent instruction. The private
+prompts, model responses, archive, and report remain outside Git.
+
+The direct benchmark measured 137.49 MB/s with a 551,616-byte configured stream
+bound. Built-in matching stayed below one microsecond at p95. Search over a 1
+MiB source measured 9.391 ms p95, a 12 KiB exact read measured 3.752 ms p95, and
+the one-shot 16 KiB result reducer measured 1.799 ms p95. Each latency result
+uses 100 measured repetitions after warmup.
+
+The 50,000-call migration rehearsal added about 212 database bytes per call,
+kept every reference unique, and passed SQLite integrity checks. Restoring the
+private pre-migration backup returned the archive to the original table shape
+and `user_version = 1`.
 
 ## Goal
 
@@ -102,9 +141,10 @@ For a selected command, YARP will:
 
 For example, a test summary will keep failing test names, error blocks,
 warnings, and final totals. It will count or omit routine passing-test progress.
-A search summary will keep diagnostics, file groups, match counts, and
-representative matches. It will not treat an arbitrary line containing the word
-`error` as a diagnostic without command-specific evidence.
+A search summary will keep command diagnostics and representative matches. All
+reducers track registered source terms independently. They show generic matches
+as source-term samples rather than treating an arbitrary line containing the
+word `error` as a typed diagnostic.
 
 A summary may arrange sections by usefulness. It does not reorder the archived
 output. Logs retain chronology, and diffs retain file and hunk order within each
@@ -282,7 +322,7 @@ A generated omission marker has this shape:
 
 ```text
 [yarp: omitted 2,418 lines; ref=yr_4f91d03ab8d44712a48fa8b0d671e3d2; source complete]
-Search omitted output: yarp search yr_4f91d03ab8d44712a48fa8b0d671e3d2 'pattern'
+Search omitted output: yarp search yr_4f91d03ab8d44712a48fa8b0d671e3d2 'term|alternate'
 ```
 
 The marker is emitted only when the reference resolves to the exact source used
@@ -568,10 +608,8 @@ event and commit it before returning the compact result. Rebuild the version 1
 one database. Do not retain a reader for the superseded table shape.
 
 The `archive_ref`, `result_text`, and `source_completeness` changes share one
-reviewed in-place migration. This persistent schema change requires explicit
-maintainer approval before implementation. Reducer work can proceed without it,
-but model-facing retrieval and post-result summaries cannot ship until it is
-approved.
+reviewed in-place migration. The maintainer explicitly approved this persistent
+schema change for the end-to-end implementation.
 
 ### Pi integration
 
@@ -929,10 +967,10 @@ parallel pair.
   compact text returned by the documented hook. YARP does not append, rewrite,
   or migrate Pi session entries directly.
 - **Other persistent data:** the existing YARP archive gains
-  `tool_calls.archive_ref`, the proposed `result_text` snapshot subject, and its
+  `tool_calls.archive_ref`, the `result_text` snapshot subject, and its
   bounded `source_completeness` value in place. No second database, search
-  index, plaintext mirror, or sidecar is added. This change needs explicit
-  maintainer approval before implementation.
+  index, plaintext mirror, or sidecar is added. The maintainer explicitly
+  approved this in-place change for this implementation.
 - **Pi internals:** none.
 - **Public API:** documented `tool_call`, `tool_result`, `tool_execution_end`,
   `message_end`, `session_start`, and `session_shutdown` events and their

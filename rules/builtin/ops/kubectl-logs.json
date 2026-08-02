@@ -10,20 +10,18 @@
   },
   "action": "reduce",
   "reducer": {
-    "kind": "head_tail"
+    "kind": "log_summary"
   },
   "success": {
-    "head_lines": 80,
-    "tail_lines": 200,
     "max_line_bytes": 32768,
-    "max_output_bytes": 196608,
-    "min_savings_bytes": 512
+    "max_output_bytes": 704,
+    "min_savings_bytes": 512,
+    "min_savings_basis_points": 1500
   },
   "failure": {
-    "head_lines": 100,
-    "tail_lines": 260,
     "max_line_bytes": 32768,
-    "max_output_bytes": 262144,
-    "min_savings_bytes": 512
+    "max_output_bytes": 704,
+    "min_savings_bytes": 512,
+    "min_savings_basis_points": 500
   }
 }

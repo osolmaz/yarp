@@ -105,6 +105,7 @@
     "guards/package-watch-all.json",
     "guards/package-watch-dash.json",
     "guards/gh-json.json",
+    "guards/codex-json.json",
     "guards/gh-template.json",
     "guards/log-follow-short-follow.json",
     "guards/log-follow-follow.json",
@@ -142,7 +143,9 @@
     "builtin/js/test.json",
     "builtin/js/run-test.json",
     "builtin/js/run-check.json",
+    "builtin/js/check-alias.json",
     "builtin/js/run-build.json",
+    "builtin/js/build-alias.json",
     "builtin/js/run-lint.json",
     "builtin/js/run-typecheck.json",
     "builtin/js/run-coverage.json",
@@ -194,6 +197,7 @@
     "builtin/ops/kubectl-describe.json",
     "builtin/ops/journalctl.json",
     "builtin/ops/systemctl-status.json",
-    "builtin/ops/systemctl-user-status.json"
+    "builtin/ops/systemctl-user-status.json",
+    "builtin/reviews/codex-review.json"
   ]
 }

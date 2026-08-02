@@ -1,8 +1,8 @@
 # YARP
 
-YARP is a command-output pruner and local tool-call archive for Pi. It applies a bounded reducer chosen for each supported command before output enters Pi's context, and it stores every Pi tool call before and after YARP processing.
+YARP is a command-output pruner and local tool-call archive for Pi. It applies a bounded typed summary chosen for each supported command before output enters Pi's context, stores every Pi tool call before and after processing, and keeps exact omitted output available through short local references.
 
-YARP leaves unknown or ambiguous commands unchanged. Structured-output and exact-inspection commands also stay unchanged. Shell pipelines and commands with redirects, substitutions, or compound syntax pass through. Wrapped commands keep their exit codes, and stdout never mixes with stderr.
+YARP leaves unknown or ambiguous commands unchanged. Structured-output and exact-inspection commands also stay unchanged. It never rewrites pipelines, redirects, substitutions, or compound shell source. The Pi extension may summarize the result of a conservatively classified compound command after execution, without replaying or changing it. Wrapped commands keep their exit codes, and stdout never mixes with stderr.
 
 ## Install
 
@@ -64,20 +64,18 @@ Create an external source pack when a project has another repetitive command. A 
   "id": "example/check",
   "match": { "program": ["example-check"] },
   "action": "reduce",
-  "reducer": { "kind": "head_tail" },
+  "reducer": { "kind": "test_summary" },
   "success": {
-    "head_lines": 20,
-    "tail_lines": 10,
     "max_line_bytes": 16384,
     "max_output_bytes": 32768,
-    "min_savings_bytes": 256
+    "min_savings_bytes": 256,
+    "min_savings_basis_points": 1500
   },
   "failure": {
-    "head_lines": 80,
-    "tail_lines": 60,
     "max_line_bytes": 32768,
     "max_output_bytes": 131072,
-    "min_savings_bytes": 256
+    "min_savings_bytes": 256,
+    "min_savings_basis_points": 500
   }
 }
 ```
@@ -93,7 +91,7 @@ yarp rewrite --rule-pack ./example-rules.yrp "example-check"
 
 Set `YARP_RULE_PACKS` to an operating-system path list for global packs. A trusted Pi project may instead keep a compiled pack at `.yarp/rules.yrp`; the extension ignores that path until Pi reports the project as trusted. YARP does not scan for source packs, compile them automatically, download rules, or execute code from a rule.
 
-See the [command-aware pruning plan](docs/command-aware-pruning-implementation-plan.md) for the complete source schema, limits, matching rules, and fail-open behavior.
+See the [indexed output summary plan](docs/indexed-output-summaries-implementation-plan.md) and the checked-in JSON schemas under `rules/schema/` for the complete reducer contract, matching rules, limits, and fail-open behavior.
 
 ## Archive
 
@@ -104,6 +102,13 @@ YARP stores tool calls in one local SQLite database:
 ```
 
 Inputs and results are stored before and after YARP processing. Wrapped shell commands also store exact stdout and stderr before and after pruning. Identical snapshots share one compressed payload.
+
+Typed summaries include an opaque reference when omitted output is recoverable. Search one archived call, then copy an exact range printed by the search result:
+
+```sh
+yarp search yr_0123456789abcdef0123456789abcdef 'error|FAILED'
+yarp read yr_0123456789abcdef0123456789abcdef stderr 118:130
+```
 
 Inspect the archive without printing tool content:
 
@@ -159,10 +164,10 @@ This sends framed normalized records through the pipe and creates no intermediat
 
 The default database is `~/.local/share/toolcall-extractor/toolcalls.duckdb`. Tool inputs and outputs can contain secrets, so its directory and files are private. The extractor reads agent state without modifying it, has no network code, and stops before its files reach 10,000,000,000 bytes. See [the implementation plan](docs/toolcall-extractor-implementation-plan.md) for supported formats and privacy boundaries.
 
-A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The command-aware rules removed 67,524,246 characters from stored shell outputs. This is 24.7838% of eligible output and 3.47755% of all rendered output. The eligible set is broader than the earlier generic policy because more commands now have explicit rules. The generated database and transcripts are not included in the repository.
+A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The production matcher evaluated all 371,241 stored shell results. Typed summaries changed 29,348 results and removed 305,675,304 characters: 93.0069% of eligible output, 21.1463% of shell output, and 15.7425% of all rendered output. No ambiguous reduction or registered diagnostic veto occurred. The generated database, transcripts, and report remain outside the repository.
 
 ## Limits
 
-Each rule has separate success and failure limits for head lines, tail lines, one line, total output, and minimum useful savings. Processing is streaming and bounded. Short output remains byte-for-byte exact when compacting it would not save enough space.
+Each rule selects a typed search, diff, test, build, log, status, list, or literal-filter summary. Success and failure policies independently bound one line and total output and require both an absolute and proportional saving. Generic words such as `error` are shown as source-term samples unless the command-specific parser has enough evidence to label a diagnostic. Processing is streaming and bounded below 4 MiB per stream or result. Short output remains byte-for-byte exact when compacting it would not save enough space.
 
 YARP does not collect usage data or access the network. Archive capture is local and enabled by default. The offline extractor writes only when invoked explicitly.

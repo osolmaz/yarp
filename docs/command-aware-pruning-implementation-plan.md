@@ -1,5 +1,10 @@
 # Command-aware pruning implementation plan
 
+> The command matching, integrity, and fail-open design in this document remains
+> current. The generic head-and-tail reducer and output-policy fields have been
+> replaced by the typed reducer contract in
+> [Indexed output summaries](indexed-output-summaries-implementation-plan.md).
+
 Command-Aware Pruning will replace YARP's single head-and-tail policy with a compiled rule engine. Each approved command will select one bounded streaming reducer before execution. Built-in rules will be embedded in the Rust binary, while users may compile their own declarative rules into one indexed local pack without rebuilding YARP.
 
 The feature keeps YARP's existing safety contract. Unsupported or ambiguous commands run unchanged. Child exit codes remain exact, stdout and stderr stay separate, and archive failures continue to follow `docs/tool-call-archive-spec.md`. Rules contain data only. They cannot execute code, fetch remote content, expand environment values, or change the child command.
@@ -14,7 +19,7 @@ Command-Aware Pruning will improve coverage and reduction while retaining the cu
 
 ## Implemented result
 
-The implementation now uses 193 independently authored built-in rules. Built-ins compile into indexed Rust data during the build. External source packs use strict JSON, compile explicitly into one indexed `.yrp` file, and load without a server or cache. The runtime has bounded byte-stream reducers for head-and-tail retention, literal line filtering, Cargo tests, Git diffs, Git status, and search output.
+The implementation now uses 197 independently authored built-in rules. Built-ins compile into indexed Rust data during the build. External source packs use strict JSON, compile explicitly into one indexed `.yrp` file, and load without a server or cache. The runtime has bounded byte-stream reducers for typed search, diff, test, build, log, status, list, and literal line-filter summaries.
 
 The production engine was evaluated on the same 371,241 stored shell results as the baseline:
 

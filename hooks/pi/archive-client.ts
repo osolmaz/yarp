@@ -33,7 +33,7 @@ export interface ArchiveSink {
     inputBefore: unknown,
     inputAfter: unknown,
     capturedAtMs: number,
-  ): Promise<void>
+  ): Promise<string>
   resultBefore(
     session: ArchiveSession,
     sourceCallId: string,
@@ -41,6 +41,13 @@ export interface ArchiveSink {
     capturedAtMs: number,
     fullOutputPath?: string,
   ): Promise<void>
+  resultText(
+    session: ArchiveSession,
+    sourceCallId: string,
+    text: string,
+    sourceCompleteness: "complete" | "incomplete" | "unknown",
+    capturedAtMs: number,
+  ): Promise<string>
   stageResult(
     session: ArchiveSession,
     sourceCallId: string,
@@ -77,7 +84,7 @@ export interface ArchiveWriterProcess extends EventEmitter {
 type SpawnWriter = () => ArchiveWriterProcess
 
 type Pending = {
-  resolve: () => void
+  resolve: (archiveRef: string | undefined) => void
   reject: (error: Error) => void
 }
 
@@ -86,6 +93,7 @@ class ArchiveRejectedError extends Error {}
 type Ack = {
   requestId: number
   ok: boolean
+  archiveRef?: string
   error?: string
 }
 
@@ -110,7 +118,7 @@ export class ArchiveClient implements ArchiveSink {
     inputBefore: unknown,
     inputAfter: unknown,
     capturedAtMs: number,
-  ): Promise<void> {
+  ): Promise<string> {
     return this.send({
       operation: "begin_call",
       session,
@@ -118,7 +126,7 @@ export class ArchiveClient implements ArchiveSink {
       inputBefore,
       inputAfter,
       capturedAtMs,
-    })
+    }).then(requireArchiveRef)
   }
 
   resultBefore(
@@ -135,7 +143,24 @@ export class ArchiveClient implements ArchiveSink {
       result,
       capturedAtMs,
       ...(fullOutputPath === undefined ? {} : { fullOutputPath }),
-    })
+    }).then(ignoreAck)
+  }
+
+  resultText(
+    session: ArchiveSession,
+    sourceCallId: string,
+    text: string,
+    sourceCompleteness: "complete" | "incomplete" | "unknown",
+    capturedAtMs: number,
+  ): Promise<string> {
+    return this.send({
+      operation: "result_text",
+      session,
+      sourceCallId,
+      text,
+      sourceCompleteness,
+      capturedAtMs,
+    }).then(requireArchiveRef)
   }
 
   stageResult(
@@ -152,7 +177,7 @@ export class ArchiveClient implements ArchiveSink {
       result,
       isError,
       capturedAtMs,
-    })
+    }).then(ignoreAck)
   }
 
   finishCall(
@@ -171,7 +196,7 @@ export class ArchiveClient implements ArchiveSink {
       isError,
       requirePreResult,
       finishedAtMs,
-    })
+    }).then(ignoreAck)
   }
 
   updateFinalResult(
@@ -188,7 +213,7 @@ export class ArchiveClient implements ArchiveSink {
       result,
       isError,
       finishedAtMs,
-    })
+    }).then(ignoreAck)
   }
 
   async close(): Promise<void> {
@@ -206,26 +231,26 @@ export class ArchiveClient implements ArchiveSink {
     }
   }
 
-  private send(operation: Record<string, unknown>): Promise<void> {
+  private send(operation: Record<string, unknown>): Promise<string | undefined> {
     if (this.closing) return Promise.reject(new Error("YARP archive client is closing"))
     const requestId = this.nextRequestId++
     const request = { ...operation, requestId, schemaVersion: INGEST_SCHEMA_VERSION }
     const task = this.queue.then(() => this.sendWithRetry(requestId, request))
-    this.queue = task.catch(() => undefined)
+    this.queue = task.then(ignoreAck, () => undefined)
     return task
   }
 
   private async sendWithRetry(
     requestId: number,
     request: Record<string, unknown>,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     try {
-      await this.sendOnce(requestId, request)
+      return await this.sendOnce(requestId, request)
     } catch (firstError) {
       if (firstError instanceof ArchiveRejectedError) throw firstError
       await this.stopBrokenChild()
       try {
-        await this.sendOnce(requestId, request)
+        return await this.sendOnce(requestId, request)
       } catch (secondError) {
         const first = errorMessage(firstError)
         const second = errorMessage(secondError)
@@ -237,7 +262,7 @@ export class ArchiveClient implements ArchiveSink {
   private async sendOnce(
     requestId: number,
     request: Record<string, unknown>,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const body = Buffer.from(JSON.stringify(request), "utf8")
     if (body.length === 0 || body.length > this.maxFrameBytes) {
       throw new ArchiveRejectedError(
@@ -248,7 +273,7 @@ export class ArchiveClient implements ArchiveSink {
     const header = Buffer.allocUnsafe(8)
     header.writeBigUInt64BE(BigInt(body.length), 0)
 
-    const acknowledgement = new Promise<void>((resolve, reject) => {
+    const acknowledgement = new Promise<string | undefined>((resolve, reject) => {
       const timer = setTimeout(() => {
         const pending = this.pending.get(requestId)
         if (pending === undefined) return
@@ -257,9 +282,9 @@ export class ArchiveClient implements ArchiveSink {
         if (this.child === child) child.kill("SIGTERM")
       }, this.ackTimeoutMs)
       this.pending.set(requestId, {
-        resolve: () => {
+        resolve: (archiveRef) => {
           clearTimeout(timer)
-          resolve()
+          resolve(archiveRef)
         },
         reject: (error) => {
           clearTimeout(timer)
@@ -335,7 +360,7 @@ export class ArchiveClient implements ArchiveSink {
       const pending = this.pending.get(ack.requestId)
       if (pending === undefined) continue
       this.pending.delete(ack.requestId)
-      if (ack.ok) pending.resolve()
+      if (ack.ok) pending.resolve(ack.archiveRef)
       else pending.reject(new ArchiveRejectedError(ack.error ?? "archive writer rejected the request"))
     }
   }
@@ -373,13 +398,29 @@ function parseAck(line: string): Ack | null {
   if (!isRecord(value)) return null
   const requestId = value["requestId"]
   const ok = value["ok"]
+  const archiveRef = value["archiveRef"]
   const error = value["error"]
   if (typeof requestId !== "number" || !Number.isSafeInteger(requestId)) return null
   if (typeof ok !== "boolean") return null
+  if (archiveRef !== undefined && !isArchiveRef(archiveRef)) return null
   if (error !== undefined && typeof error !== "string") return null
-  return error === undefined
-    ? { requestId, ok }
-    : { requestId, ok, error }
+  return {
+    requestId,
+    ok,
+    ...(archiveRef === undefined ? {} : { archiveRef }),
+    ...(error === undefined ? {} : { error }),
+  }
+}
+
+function requireArchiveRef(value: string | undefined): string {
+  if (value === undefined) throw new Error("archive writer omitted the call reference")
+  return value
+}
+
+function ignoreAck(_value: string | undefined): void {}
+
+function isArchiveRef(value: unknown): value is string {
+  return typeof value === "string" && /^yr_[0-9a-f]{32}$/u.test(value)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

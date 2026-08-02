@@ -11,20 +11,18 @@
   },
   "action": "reduce",
   "reducer": {
-    "kind": "head_tail"
+    "kind": "list_summary"
   },
   "success": {
-    "head_lines": 120,
-    "tail_lines": 60,
     "max_line_bytes": 32768,
-    "max_output_bytes": 98304,
-    "min_savings_bytes": 256
+    "max_output_bytes": 704,
+    "min_savings_bytes": 256,
+    "min_savings_basis_points": 1500
   },
   "failure": {
-    "head_lines": 160,
-    "tail_lines": 80,
     "max_line_bytes": 32768,
-    "max_output_bytes": 131072,
-    "min_savings_bytes": 256
+    "max_output_bytes": 704,
+    "min_savings_bytes": 256,
+    "min_savings_basis_points": 500
   }
 }

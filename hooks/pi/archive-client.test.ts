@@ -49,7 +49,15 @@ class FakeProcess extends EventEmitter implements ArchiveWriterProcess {
   acknowledge(request: Request, ok = true, error?: string): void {
     const requestId = request.requestId
     assert.equal(typeof requestId, "number")
-    this.stdout.write(`${JSON.stringify({ requestId, ok, error })}\n`)
+    const returnsReference = request.operation === "begin_call" || request.operation === "result_text"
+    this.stdout.write(`${JSON.stringify({
+      requestId,
+      ok,
+      ...(ok && returnsReference
+        ? { archiveRef: "yr_0123456789abcdef0123456789abcdef" }
+        : {}),
+      ...(error === undefined ? {} : { error }),
+    })}\n`)
   }
 
   exit(code: number | null, signal: NodeJS.Signals | null): void {
@@ -92,7 +100,8 @@ const call = {
 test("sends framed requests and waits for acknowledgements", async () => {
   const process = new FakeProcess((request, writer) => writer.acknowledge(request))
   const client = new ArchiveClient(() => process)
-  await client.beginCall(session, call, { path: "a" }, { path: "a" }, 2)
+  const archiveRef = await client.beginCall(session, call, { path: "a" }, { path: "a" }, 2)
+  assert.equal(archiveRef, "yr_0123456789abcdef0123456789abcdef")
   assert.equal(process.requests.length, 1)
   assert.equal(process.requests[0]?.operation, "begin_call")
   assert.equal(process.requests[0]?.requestId, 1)

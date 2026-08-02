@@ -22,7 +22,7 @@ fn source_pack(directory: &TempDir, pack_id: &str, unknown_field: bool) {
     fs::write(
         directory.path().join("rules/custom.json"),
         format!(
-            "{{\"id\":\"custom/check\",\"match\":{{\"program\":[\"customcheck\"]{extra}}},\"action\":\"reduce\",\"reducer\":{{\"kind\":\"head_tail\"}},\"success\":{{\"head_lines\":2,\"tail_lines\":1,\"max_line_bytes\":256,\"max_output_bytes\":1024,\"min_savings_bytes\":8}},\"failure\":{{\"head_lines\":4,\"tail_lines\":2,\"max_line_bytes\":256,\"max_output_bytes\":2048,\"min_savings_bytes\":8}}}}"
+            "{{\"id\":\"custom/check\",\"match\":{{\"program\":[\"customcheck\"]{extra}}},\"action\":\"reduce\",\"reducer\":{{\"kind\":\"list_summary\"}},\"success\":{{\"max_line_bytes\":256,\"max_output_bytes\":1024,\"min_savings_bytes\":8,\"min_savings_basis_points\":1000}},\"failure\":{{\"max_line_bytes\":256,\"max_output_bytes\":2048,\"min_savings_bytes\":8,\"min_savings_basis_points\":500}}}}"
         ),
     )
     .expect("rule");

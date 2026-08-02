@@ -11,6 +11,7 @@ const EXTERNAL_RULES: usize = 1_000;
 const MATCH_SAMPLES: usize = 200;
 const BUILTIN_TARGET_US: u128 = 100;
 const EXTERNAL_TARGET_US: u128 = 5_000;
+const STREAM_TARGET_MEGABYTES_PER_SECOND: f64 = 100.0;
 
 fn main() -> Result<(), String> {
     let builtin = benchmark_builtin()?;
@@ -33,6 +34,11 @@ fn main() -> Result<(), String> {
     if external.as_micros() > EXTERNAL_TARGET_US {
         return Err(format!(
             "external pack p95 exceeded {EXTERNAL_TARGET_US} microseconds"
+        ));
+    }
+    if throughput < STREAM_TARGET_MEGABYTES_PER_SECOND {
+        return Err(format!(
+            "stream throughput fell below {STREAM_TARGET_MEGABYTES_PER_SECOND:.0} MB/s"
         ));
     }
     Ok(())
@@ -68,7 +74,7 @@ fn benchmark_external() -> Result<(Duration, Duration, usize), String> {
         let id = format!("bench/rule-{index:04}");
         let program = format!("bench{index:04}");
         let body = format!(
-            "{{\"id\":{id:?},\"match\":{{\"program\":[{program:?}]}},\"action\":\"reduce\",\"reducer\":{{\"kind\":\"head_tail\"}},\"success\":{{\"head_lines\":10,\"tail_lines\":10,\"max_line_bytes\":16384,\"max_output_bytes\":32768,\"min_savings_bytes\":120}},\"failure\":{{\"head_lines\":20,\"tail_lines\":20,\"max_line_bytes\":16384,\"max_output_bytes\":65536,\"min_savings_bytes\":120}}}}"
+            "{{\"id\":{id:?},\"match\":{{\"program\":[{program:?}]}},\"action\":\"reduce\",\"reducer\":{{\"kind\":\"list_summary\"}},\"success\":{{\"max_line_bytes\":16384,\"max_output_bytes\":32768,\"min_savings_bytes\":120,\"min_savings_basis_points\":1000}},\"failure\":{{\"max_line_bytes\":16384,\"max_output_bytes\":65536,\"min_savings_bytes\":120,\"min_savings_basis_points\":500}}}}"
         );
         fs::write(source_root.join(&relative), body).map_err(|error| error.to_string())?;
         paths.push(relative);
@@ -130,7 +136,7 @@ fn benchmark_stream() -> Result<(f64, usize), String> {
         reducer.push(black_box(&chunk));
         processed += chunk.len();
     }
-    black_box(reducer.finish(true));
+    black_box(reducer.finish(true, None));
     let processed = u32::try_from(processed)
         .map_err(|_| "stream benchmark byte count does not fit u32".to_owned())?;
     let throughput = f64::from(processed) / 1_000_000.0 / started.elapsed().as_secs_f64();

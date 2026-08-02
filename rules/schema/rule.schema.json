@@ -65,12 +65,6 @@
         "trim": { "enum": ["none", "start", "both"] }
       }
     },
-    "headTail": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind"],
-      "properties": { "kind": { "const": "head_tail" } }
-    },
     "lineFilter": {
       "type": "object",
       "additionalProperties": false,
@@ -98,13 +92,20 @@
       "required": ["kind"],
       "properties": {
         "kind": {
-          "enum": ["cargo_test", "git_diff", "git_status", "search"]
+          "enum": [
+            "search_summary",
+            "diff_summary",
+            "test_summary",
+            "build_summary",
+            "log_summary",
+            "status_summary",
+            "list_summary"
+          ]
         }
       }
     },
     "reducer": {
       "oneOf": [
-        { "$ref": "#/$defs/headTail" },
         { "$ref": "#/$defs/lineFilter" },
         { "$ref": "#/$defs/typedReducer" }
       ]
@@ -113,18 +114,16 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "head_lines",
-        "tail_lines",
         "max_line_bytes",
         "max_output_bytes",
-        "min_savings_bytes"
+        "min_savings_bytes",
+        "min_savings_basis_points"
       ],
       "properties": {
-        "head_lines": { "type": "integer", "minimum": 0, "maximum": 10000 },
-        "tail_lines": { "type": "integer", "minimum": 0, "maximum": 10000 },
-        "max_line_bytes": { "type": "integer", "minimum": 256, "maximum": 1048576 },
-        "max_output_bytes": { "type": "integer", "minimum": 1024, "maximum": 16777216 },
-        "min_savings_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 }
+        "max_line_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "max_output_bytes": { "type": "integer", "minimum": 1, "maximum": 4194304 },
+        "min_savings_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+        "min_savings_basis_points": { "type": "integer", "minimum": 0, "maximum": 10000 }
       }
     },
     "reduceRule": {

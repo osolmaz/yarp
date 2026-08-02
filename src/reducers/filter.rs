@@ -61,30 +61,6 @@ pub fn line_filter_keeps(line: &LineView, drop: &[LinePattern], keep: &[LinePatt
 }
 
 #[must_use]
-pub fn cargo_test_keeps(line: &LineView) -> bool {
-    let body = trim_start(strip_line_ending(&line.prefix));
-    let routine = [
-        &b"Compiling "[..],
-        &b"Checking "[..],
-        &b"Fresh "[..],
-        &b"Downloaded "[..],
-        &b"Downloading "[..],
-    ];
-    let diagnostic = [
-        &b"error"[..],
-        &b"failed"[..],
-        &b"failure"[..],
-        &b"warning"[..],
-        &b"panic"[..],
-        &b"test result"[..],
-    ];
-    !routine.iter().any(|prefix| body.starts_with(prefix))
-        || diagnostic
-            .iter()
-            .any(|needle| contains_ascii_insensitive(body, needle))
-}
-
-#[must_use]
 pub fn pattern_matches(pattern: &LinePattern, line: &LineView) -> bool {
     match pattern.kind {
         PatternKind::Exact => line.full_bytes().is_some_and(|body| {
