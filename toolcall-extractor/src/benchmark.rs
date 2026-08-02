@@ -117,27 +117,39 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
         shell_results = shell_results.saturating_add(1);
         shell_output_characters = shell_output_characters
             .saturating_add(u64::try_from(output.chars().count()).unwrap_or(u64::MAX));
-        let (rule, rule_label, status_confidence, transform_diagnostics) =
-            match benchmark_selection(&command) {
-                BenchmarkSelection::Reduce {
-                    rule,
-                    label,
-                    status_confidence,
-                    transform_diagnostics,
-                } => (rule, label, status_confidence, transform_diagnostics),
-                BenchmarkSelection::Passthrough { .. } => {
-                    passthrough_results = passthrough_results.saturating_add(1);
-                    continue;
-                }
-                BenchmarkSelection::Ambiguous { .. } => {
-                    ambiguous_results = ambiguous_results.saturating_add(1);
-                    continue;
-                }
-                BenchmarkSelection::Unsupported => {
-                    unsupported_results = unsupported_results.saturating_add(1);
-                    continue;
-                }
-            };
+        let (
+            rule,
+            rule_label,
+            status_confidence,
+            transform_diagnostics,
+            fail_open_setup_diagnostics,
+        ) = match benchmark_selection(&command) {
+            BenchmarkSelection::Reduce {
+                rule,
+                label,
+                status_confidence,
+                transform_diagnostics,
+                fail_open_setup_diagnostics,
+            } => (
+                rule,
+                label,
+                status_confidence,
+                transform_diagnostics,
+                fail_open_setup_diagnostics,
+            ),
+            BenchmarkSelection::Passthrough { .. } => {
+                passthrough_results = passthrough_results.saturating_add(1);
+                continue;
+            }
+            BenchmarkSelection::Ambiguous { .. } => {
+                ambiguous_results = ambiguous_results.saturating_add(1);
+                continue;
+            }
+            BenchmarkSelection::Unsupported => {
+                unsupported_results = unsupported_results.saturating_add(1);
+                continue;
+            }
+        };
         let Some(reducer) = rule.reducer.as_ref() else {
             unsupported_results = unsupported_results.saturating_add(1);
             continue;
@@ -148,18 +160,24 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
             unknown_status_results = unknown_status_results.saturating_add(1);
         }
         let success_policy = use_success_policy(succeeded, status_confidence);
-        let pruned = yarp_cli::reducers::reduce_bytes_with_recovery_and_transform_diagnostics(
-            &rule,
-            output.as_bytes(),
-            success_policy,
-            Some(yarp_cli::reducers::RecoveryMarker {
-                archive_ref: "yr_0123456789abcdef0123456789abcdef",
-                source: "result_text",
-                completeness: "unknown",
-            }),
-            transform_diagnostics,
-        )
-        .unwrap_or_else(|_| output.as_bytes().to_vec());
+        let pruned = if fail_open_setup_diagnostics
+            && yarp_cli::rewrite::contains_setup_diagnostic(output.as_bytes())
+        {
+            output.as_bytes().to_vec()
+        } else {
+            yarp_cli::reducers::reduce_bytes_with_recovery_and_transform_diagnostics(
+                &rule,
+                output.as_bytes(),
+                success_policy,
+                Some(yarp_cli::reducers::RecoveryMarker {
+                    archive_ref: "yr_0123456789abcdef0123456789abcdef",
+                    source: "result_text",
+                    completeness: "unknown",
+                }),
+                transform_diagnostics,
+            )
+            .unwrap_or_else(|_| output.as_bytes().to_vec())
+        };
         let metrics = measure(&output, &pruned);
         if metrics.affected_results > 0 && !has_recovery_marker(&pruned) {
             missing_recovery_markers = missing_recovery_markers.saturating_add(1);
@@ -277,6 +295,7 @@ pub(crate) enum BenchmarkSelection {
         label: String,
         status_confidence: StatusConfidence,
         transform_diagnostics: TransformDiagnostics,
+        fail_open_setup_diagnostics: bool,
     },
     Passthrough {
         labels: Vec<String>,
@@ -301,6 +320,7 @@ pub(crate) fn benchmark_selection(command: &str) -> BenchmarkSelection {
             rule: Box::new((*selected.rule).clone()),
             status_confidence: StatusConfidence::Complete,
             transform_diagnostics: TransformDiagnostics::default(),
+            fail_open_setup_diagnostics: false,
         },
         Ok((_, yarp_cli::rules::Selection::Passthrough(labels))) => {
             BenchmarkSelection::Passthrough { labels }
@@ -322,6 +342,7 @@ pub(crate) fn benchmark_selection(command: &str) -> BenchmarkSelection {
                     rule: Box::new(plan.rule),
                     status_confidence: plan.status_confidence,
                     transform_diagnostics: plan.transform_diagnostics,
+                    fail_open_setup_diagnostics: plan.fail_open_setup_diagnostics,
                 }
             }
             Err(_) => BenchmarkSelection::Unsupported,

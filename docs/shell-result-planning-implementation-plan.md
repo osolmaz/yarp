@@ -20,7 +20,7 @@ Shell operators and syntax account for a large part of the unchanged output. The
 
 Before this implementation, the classifier accepted simple `;`, `&&`, and `||` chains when every output command selected the same reducer family. It selected 3,958 compound results. Of those, 1,486 changed and removed 11,782,428 characters. Pipelines passed through.
 
-The finished planner selects 16,945 compound results. Of those, 10,093 change and remove 82,731,268 characters. The full candidate changes 37,466 shell results and removes 375,125,749 characters, or 25.9508% of shell output.
+The finished planner selects 16,945 compound results. Of those, 10,086 change and remove 82,457,471 characters. The full candidate changes 37,459 shell results and removes 374,851,952 characters, or 25.9319% of shell output.
 
 ## Required result
 
@@ -175,12 +175,13 @@ struct ResultPlan {
     rule: Rule,
     status_confidence: StatusConfidence,
     transform_diagnostics: TransformDiagnostics,
+    fail_open_setup_diagnostics: bool,
 }
 ```
 
 A plain `&&` chain has complete success information when the final status is zero. Semicolon chains and ordinary pipelines expose only the last relevant status. An `||` chain may contain an expected earlier failure. Plans with `FinalStageOnly` or `Conditional` status use the larger failure policy. Explicit `set -o pipefail` may restore complete pipeline status when the accepted syntax tree proves that it applies.
 
-Transport outcomes such as process exit messages, timeout notices, and session identifiers remain mandatory evidence. The plan also records each accepted transform program. Lines with that program's standard diagnostic prefix, such as `tee:`, are ranked as command-specific diagnostics rather than upstream examples.
+Transport outcomes such as process exit messages, timeout notices, and session identifiers remain mandatory evidence. A plan with fallible setup commands preserves the original result when their shell diagnostics are present. The plan also records each accepted transform program. Lines with that program's standard diagnostic prefix, such as `tee:`, are ranked as command-specific diagnostics rather than upstream examples.
 
 ## Evidence selection
 
@@ -318,7 +319,7 @@ The configured stream memory bound remains below 4 MiB per stream. Parser limits
 
 ## Release decision
 
-The retrospective minimum worthwhile effect is one additional percentage point of shell-output reduction, equal to 14,455,264 characters in the frozen corpus. The candidate removes 68,823,527 more characters than the branch baseline, a gain of 4.7611 percentage points. The measured effect clears the threshold; the maintainer still controls release approval.
+The retrospective minimum worthwhile effect is one additional percentage point of shell-output reduction, equal to 14,455,264 characters in the frozen corpus. The candidate removes 68,549,730 more characters than the branch baseline, a gain of 4.7422 percentage points. The measured effect clears the threshold; the maintainer still controls release approval.
 
 A candidate may ship only when all of these conditions hold:
 

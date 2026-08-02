@@ -413,11 +413,17 @@ fn current_output(
         rule,
         status_confidence,
         transform_diagnostics,
+        fail_open_setup_diagnostics,
         ..
     } = selection
     else {
         return output.as_bytes().to_vec();
     };
+    if *fail_open_setup_diagnostics
+        && yarp_cli::rewrite::contains_setup_diagnostic(output.as_bytes())
+    {
+        return output.as_bytes().to_vec();
+    }
     yarp_cli::reducers::reduce_bytes_with_recovery_and_transform_diagnostics(
         rule,
         output.as_bytes(),
@@ -1390,6 +1396,7 @@ mod tests {
                 rule: Box::new((*selected.rule).clone()),
                 status_confidence: yarp_cli::rewrite::StatusConfidence::Complete,
                 transform_diagnostics: yarp_cli::rewrite::TransformDiagnostics::default(),
+                fail_open_setup_diagnostics: false,
             },
             _ => panic!("expected reducer"),
         };
