@@ -16,7 +16,7 @@ target/release/toolcall-extractor analyze-ceiling \
 
 The default database remains `$HOME/.local/share/toolcall-extractor/toolcalls.duckdb`. Use `--database` to select another extracted corpus.
 
-The output directory must have mode `0700`. The command creates a missing directory with that mode, writes the report atomically with mode `0600`, and rejects symlink destinations. It prints only a completion message to standard output.
+The output directory must have mode `0700`. The command walks and creates parent directories with descriptor-relative no-follow operations, writes the report atomically with mode `0600`, and rejects symlinks in every path component. It prints only a completion message to standard output.
 
 ## Scope
 

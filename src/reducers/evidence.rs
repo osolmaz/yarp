@@ -489,16 +489,6 @@ impl EvidenceCollector {
         success: bool,
     ) -> Vec<u8> {
         let has_typed_diagnostics = self.buckets.first().is_some_and(|bucket| bucket.total > 0);
-        let compact = success
-            && !has_typed_diagnostics
-            && !registered_diagnostics.iter().any(|present| *present);
-        let output_limit = if compact {
-            self.policy
-                .max_output_bytes
-                .min(COMPACT_SUCCESS_SUMMARY_BYTES)
-        } else {
-            self.policy.max_output_bytes
-        };
         let mut priority_terms = self
             .priority_terms
             .iter()
@@ -512,12 +502,6 @@ impl EvidenceCollector {
             .map(|record| record.span.first_line)
             .collect::<BTreeSet<_>>();
         let source_term_samples = render_source_term_samples(&priority_terms, &self.newline);
-        let structural_markers = render_structural_markers(
-            self.noise_lines,
-            self.truncated_lines,
-            &self.newline,
-            recovery.is_none(),
-        );
         let mandatory_bytes = source_term_samples.len();
         let registered = registered_diagnostics
             .into_iter()
@@ -537,6 +521,26 @@ impl EvidenceCollector {
             self.truncated_lines,
             recovery,
             &self.newline,
+        );
+        let compact_limit = self
+            .policy
+            .max_output_bytes
+            .min(COMPACT_SUCCESS_SUMMARY_BYTES);
+        let compact = success
+            && !has_typed_diagnostics
+            && registered.is_empty()
+            && priority_terms.is_empty()
+            && provisional_prefix.len().saturating_add(mandatory_bytes) <= compact_limit;
+        let output_limit = if compact {
+            compact_limit
+        } else {
+            self.policy.max_output_bytes
+        };
+        let structural_markers = render_structural_markers(
+            self.noise_lines,
+            self.truncated_lines,
+            &self.newline,
+            recovery.is_none(),
         );
         let available = output_limit
             .saturating_sub(provisional_prefix.len())
@@ -876,6 +880,43 @@ mod tests {
             "Search omitted output: yarp search yr_0123456789abcdef0123456789abcdef 'term|alternate'"
         ));
         assert!(text.contains("L1: src/file0.rs:0: match"));
+    }
+
+    #[test]
+    fn source_term_samples_disable_the_compact_cap_without_tracker_matches() {
+        let mut compact = policy();
+        compact.max_output_bytes = 704;
+        let mut collector = EvidenceCollector::new("test", compact);
+        for (index, value) in [
+            "failure from source text",
+            "panic from source text",
+            "error from source text",
+            "warning from source text",
+            "test result from source text",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            collector.observe(
+                u64::try_from(index + 1).expect("line"),
+                &line(&format!("prefix {value} with enough surrounding detail\n")),
+                EvidenceClass::Example,
+            );
+        }
+        let output = String::from_utf8_lossy(&collector.render(
+            Some(RecoveryMarker {
+                archive_ref: "yr_0123456789abcdef0123456789abcdef",
+                source: "result_text",
+                completeness: "complete",
+            }),
+            [false; 5],
+            true,
+        ))
+        .to_ascii_lowercase();
+        for term in ["failure", "panic", "error", "warning", "test result"] {
+            assert!(output.contains(term), "missing {term}: {output}");
+        }
+        assert!(output.len() <= 704);
     }
 
     #[test]
