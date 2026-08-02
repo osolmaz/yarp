@@ -68,8 +68,6 @@ struct DatabaseArgs {
 struct CeilingArgs {
     #[arg(long)]
     database: Option<PathBuf>,
-    #[arg(long)]
-    output: PathBuf,
     #[arg(long, default_value_t = 704)]
     summary_character_budget: u64,
     #[arg(long, default_value_t = 256)]
@@ -165,10 +163,7 @@ fn analyze_ceiling(arguments: CeilingArgs) -> Result<()> {
             minimum_savings_basis_points: arguments.minimum_savings_basis_points,
         },
     )?;
-    let mut encoded = serde_json::to_vec_pretty(&report)?;
-    encoded.push(b'\n');
-    private_fs::write_private(&arguments.output, &encoded)?;
-    println!("ceiling analysis complete");
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 
