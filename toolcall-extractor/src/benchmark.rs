@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 use serde_json::Value;
+use yarp_cli::rewrite::StatusConfidence;
 use yarp_cli::rules::{Reducer, Rule};
 
 use crate::database::Database;
@@ -116,8 +117,12 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
         shell_results = shell_results.saturating_add(1);
         shell_output_characters = shell_output_characters
             .saturating_add(u64::try_from(output.chars().count()).unwrap_or(u64::MAX));
-        let (rule, rule_label) = match benchmark_selection(&command) {
-            BenchmarkSelection::Reduce { rule, label } => (rule, label),
+        let (rule, rule_label, status_confidence) = match benchmark_selection(&command) {
+            BenchmarkSelection::Reduce {
+                rule,
+                label,
+                status_confidence,
+            } => (rule, label, status_confidence),
             BenchmarkSelection::Passthrough { .. } => {
                 passthrough_results = passthrough_results.saturating_add(1);
                 continue;
@@ -140,10 +145,11 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
         if succeeded.is_none() {
             unknown_status_results = unknown_status_results.saturating_add(1);
         }
+        let success_policy = use_success_policy(succeeded, status_confidence);
         let pruned = yarp_cli::reducers::reduce_bytes_with_recovery(
             &rule,
             output.as_bytes(),
-            succeeded.unwrap_or(false),
+            success_policy,
             Some(yarp_cli::reducers::RecoveryMarker {
                 archive_ref: "yr_0123456789abcdef0123456789abcdef",
                 source: "result_text",
@@ -263,10 +269,25 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
 }
 
 pub(crate) enum BenchmarkSelection {
-    Reduce { rule: Box<Rule>, label: String },
-    Passthrough { labels: Vec<String> },
-    Ambiguous { labels: Vec<String> },
+    Reduce {
+        rule: Box<Rule>,
+        label: String,
+        status_confidence: StatusConfidence,
+    },
+    Passthrough {
+        labels: Vec<String>,
+    },
+    Ambiguous {
+        labels: Vec<String>,
+    },
     Unsupported,
+}
+
+pub(crate) const fn use_success_policy(
+    succeeded: Option<bool>,
+    status_confidence: StatusConfidence,
+) -> bool {
+    matches!(succeeded, Some(true)) && matches!(status_confidence, StatusConfidence::Complete)
 }
 
 pub(crate) fn benchmark_selection(command: &str) -> BenchmarkSelection {
@@ -274,6 +295,7 @@ pub(crate) fn benchmark_selection(command: &str) -> BenchmarkSelection {
         Ok((_, yarp_cli::rules::Selection::Reduce(selected))) => BenchmarkSelection::Reduce {
             label: format!("{}/{}", selected.pack_id, selected.rule.id),
             rule: Box::new((*selected.rule).clone()),
+            status_confidence: StatusConfidence::Complete,
         },
         Ok((_, yarp_cli::rules::Selection::Passthrough(labels))) => {
             BenchmarkSelection::Passthrough { labels }
@@ -285,14 +307,15 @@ pub(crate) fn benchmark_selection(command: &str) -> BenchmarkSelection {
             _,
             yarp_cli::rules::Selection::Transform(_) | yarp_cli::rules::Selection::Unsupported,
         ))
-        | Err(_) => match yarp_cli::rewrite::select_result_rule(command) {
-            Ok(rule) => {
-                let Some(reducer) = rule.reducer.as_ref() else {
+        | Err(_) => match yarp_cli::rewrite::select_result_plan(command) {
+            Ok(plan) => {
+                let Some(reducer) = plan.rule.reducer.as_ref() else {
                     return BenchmarkSelection::Unsupported;
                 };
                 BenchmarkSelection::Reduce {
                     label: format!("compound/{}", reducer_name(reducer)),
-                    rule: Box::new(rule),
+                    rule: Box::new(plan.rule),
+                    status_confidence: plan.status_confidence,
                 }
             }
             Err(_) => BenchmarkSelection::Unsupported,
@@ -557,6 +580,38 @@ mod tests {
             b"yarp search yr_0123456789abcdef0123456789abcdef 'error'"
         ));
         assert!(!has_recovery_marker(b"yr_0123456789abcdef0123456789abcdef"));
+    }
+
+    #[test]
+    fn preserves_runtime_status_confidence() {
+        for (command, expected, expected_success_policy) in [
+            ("cargo test", StatusConfidence::Complete, true),
+            (
+                "cargo test | head -100",
+                StatusConfidence::FinalStageOnly,
+                false,
+            ),
+            (
+                "set -o pipefail && cargo test | head -100",
+                StatusConfidence::Complete,
+                true,
+            ),
+        ] {
+            let BenchmarkSelection::Reduce {
+                status_confidence, ..
+            } = benchmark_selection(command)
+            else {
+                panic!("expected reduction for {command:?}");
+            };
+            assert_eq!(status_confidence, expected, "{command:?}");
+            assert_eq!(
+                use_success_policy(Some(true), status_confidence),
+                expected_success_policy,
+                "{command:?}"
+            );
+            assert!(!use_success_policy(Some(false), status_confidence));
+            assert!(!use_success_policy(None, status_confidence));
+        }
     }
 
     #[test]

@@ -840,6 +840,37 @@ mod tests {
     }
 
     #[test]
+    fn rejects_packs_from_the_previous_engine_abi() {
+        let directory = source_pack();
+        let source = SourcePack::load(directory.path()).expect("source");
+        let mut bytes = compile(&source).expect("compile");
+        let mut header: [u8; HEADER_LEN] = bytes[..HEADER_LEN].try_into().expect("compiled header");
+        let previous_abi = ENGINE_ABI_VERSION.checked_sub(1).expect("previous ABI");
+        put_u16(&mut header, 10, previous_abi);
+        put_u16(&mut header, 12, previous_abi);
+        let pack_id_len = get_u32(&header, 20) as usize;
+        let index_len = usize::try_from(get_u64(&header, 32)).expect("index length");
+        let pack_id_end = HEADER_LEN + pack_id_len;
+        let index_end = pack_id_end + index_len;
+        let digest = header_index_digest(
+            &header,
+            &bytes[HEADER_LEN..pack_id_end],
+            &bytes[pack_id_end..index_end],
+        );
+        header[DIGEST_OFFSET..DIGEST_OFFSET + DIGEST_LEN].copy_from_slice(&digest);
+        bytes[..HEADER_LEN].copy_from_slice(&header);
+
+        let mut file = NamedTempFile::new().expect("pack file");
+        file.write_all(&bytes).expect("write pack");
+        file.flush().expect("flush pack");
+        assert!(
+            CompiledPack::open(file.path(), None, None)
+                .expect_err("previous ABI")
+                .contains("outside supported range")
+        );
+    }
+
+    #[test]
     fn detects_changes_after_the_pack_was_opened() {
         let directory = source_pack();
         let source = SourcePack::load(directory.path()).expect("source");

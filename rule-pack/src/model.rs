@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const SOURCE_SCHEMA_VERSION: u32 = 1;
-pub const ENGINE_ABI_VERSION: u16 = 1;
+pub const ENGINE_ABI_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

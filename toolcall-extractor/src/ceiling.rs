@@ -5,7 +5,9 @@ use serde::Serialize;
 use yarp_cli::reducers::RecoveryMarker;
 use yarp_cli::rules::Reducer;
 
-use crate::benchmark::{BenchmarkSelection, benchmark_selection, result_succeeded, shell_command};
+use crate::benchmark::{
+    BenchmarkSelection, benchmark_selection, result_succeeded, shell_command, use_success_policy,
+};
 use crate::database::Database;
 use crate::error::Result;
 
@@ -407,13 +409,18 @@ fn current_output(
     output: &str,
     succeeded: Option<bool>,
 ) -> Vec<u8> {
-    let BenchmarkSelection::Reduce { rule, .. } = selection else {
+    let BenchmarkSelection::Reduce {
+        rule,
+        status_confidence,
+        ..
+    } = selection
+    else {
         return output.as_bytes().to_vec();
     };
     yarp_cli::reducers::reduce_bytes_with_recovery(
         rule,
         output.as_bytes(),
-        succeeded.unwrap_or(false),
+        use_success_policy(succeeded, *status_confidence),
         Some(RecoveryMarker {
             archive_ref: RECOVERY_REFERENCE,
             source: RECOVERY_SOURCE,
@@ -425,7 +432,7 @@ fn current_output(
 
 fn family_for_unchanged(selection: &BenchmarkSelection, command: &str) -> FamilyKey {
     match selection {
-        BenchmarkSelection::Reduce { rule, label } => FamilyKey {
+        BenchmarkSelection::Reduce { rule, label, .. } => FamilyKey {
             id: format!("existing/{label}"),
             class: FamilyClass::ExistingRule,
             suggested_reducer: rule.reducer.as_ref().map(suggested_reducer),
@@ -1278,6 +1285,7 @@ mod tests {
             yarp_cli::rules::Selection::Reduce(selected) => BenchmarkSelection::Reduce {
                 label: format!("{}/{}", selected.pack_id, selected.rule.id),
                 rule: Box::new((*selected.rule).clone()),
+                status_confidence: yarp_cli::rewrite::StatusConfidence::Complete,
             },
             _ => panic!("expected reducer"),
         };
