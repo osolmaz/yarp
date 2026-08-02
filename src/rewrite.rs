@@ -151,11 +151,14 @@ pub fn select_result_plan(command: &str) -> Result<ResultPlan, String> {
             }
         };
         let has_output = candidate.is_some();
+        let may_have_setup_diagnostics =
+            setup && matches!(item, ShellItem::Simple(command) if setup_may_emit(&command.words));
+        let may_have_visible_output = has_output || may_have_setup_diagnostics;
         match connector {
             Some(Connector::Sequence) if previous_had_output => {
                 confidence = merge_confidence(confidence, StatusConfidence::FinalStageOnly);
             }
-            Some(Connector::Or) if previous_had_output || has_output => {
+            Some(Connector::Or) if previous_had_output || may_have_visible_output => {
                 confidence = merge_confidence(confidence, StatusConfidence::Conditional);
             }
             None if index > 0 => {
@@ -166,9 +169,7 @@ pub fn select_result_plan(command: &str) -> Result<ResultPlan, String> {
         if let Some(candidate) = candidate {
             merge_rule(&mut selected, candidate)?;
         }
-        if !setup {
-            previous_had_output = previous_had_output || has_output;
-        }
+        previous_had_output = previous_had_output || may_have_visible_output;
     }
 
     let rule =
@@ -657,14 +658,19 @@ fn is_setup_command(words: &[String]) -> bool {
     }
 }
 
+fn setup_may_emit(words: &[String]) -> bool {
+    words.iter().all(|word| is_assignment(word))
+        || words
+            .first()
+            .is_some_and(|program| matches!(program.as_str(), "cd" | "export" | "umask"))
+}
+
 fn is_quiet_set_flag(value: &str) -> bool {
     matches!(
         value,
         "-e" | "+e"
             | "-u"
             | "+u"
-            | "-x"
-            | "+x"
             | "-f"
             | "+f"
             | "-C"
@@ -675,8 +681,6 @@ fn is_quiet_set_flag(value: &str) -> bool {
             | "+b"
             | "-n"
             | "+n"
-            | "-v"
-            | "+v"
             | "-E"
             | "+E"
             | "-T"
@@ -928,6 +932,19 @@ mod tests {
 
         let sequence = select_result_plan("cargo test; cargo test").expect("test sequence");
         assert_eq!(sequence.status_confidence, StatusConfidence::FinalStageOnly);
+        for command in [
+            "cd missing; cargo test",
+            "export CI=1; cargo test",
+            "VALUE=1; cargo test",
+            "umask invalid; cargo test",
+        ] {
+            let plan = select_result_plan(command).expect("fallible setup sequence");
+            assert_eq!(
+                plan.status_confidence,
+                StatusConfidence::FinalStageOnly,
+                "{command:?}"
+            );
+        }
         let conjunction = select_result_plan("cargo test && cargo test").expect("test conjunction");
         assert_eq!(conjunction.status_confidence, StatusConfidence::Complete);
         let multiline = select_result_plan("cargo test\ncargo test").expect("multiline tests");
@@ -951,6 +968,8 @@ mod tests {
             "find . -print0 | xargs -0 echo",
             "cat source.rs | sed 's/x/y/'",
             "set -o; cargo test",
+            "set -x; cargo test",
+            "set -v; cargo test",
             "export -p; cargo test",
             "umask -S; cargo test",
             "echo \"$VALUE\" | rg x",
