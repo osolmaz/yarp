@@ -3,7 +3,7 @@ use std::process::{Command, Stdio};
 
 use tempfile::NamedTempFile;
 
-use crate::reducers::StreamReducer;
+use crate::reducers::{RecoveryMarker, StreamReducer};
 use crate::rules::{PackRequest, Registry, SelectedRule, Selection};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -219,13 +219,38 @@ fn finish_run(
     let mut stdout = join_capture(stdout_thread, "stdout")?;
     let mut stderr = join_capture(stderr_thread, "stderr")?;
     let succeeded = status.success();
+    let archive_ref = if passthrough {
+        None
+    } else if let Some(key) = archive_key {
+        match crate::archive::Archive::open_read_only().and_then(|archive| archive.archive_ref(key))
+        {
+            Ok(value) => Some(value),
+            Err(error) => {
+                restore_after_capture_error(&mut stdout, &mut stderr, passthrough)?;
+                eprintln!("yarp: archive failed after command execution: {error}");
+                return Ok(exit_code(status));
+            }
+        }
+    } else {
+        None
+    };
     let stdout_after = finish_output(
         std::mem::replace(&mut stdout.output, CapturedOutput::Passthrough),
         succeeded,
+        archive_ref.as_deref().map(|archive_ref| RecoveryMarker {
+            archive_ref,
+            source: "stdout",
+            completeness: "complete",
+        }),
     );
     let stderr_after = finish_output(
         std::mem::replace(&mut stderr.output, CapturedOutput::Passthrough),
         succeeded,
+        archive_ref.as_deref().map(|archive_ref| RecoveryMarker {
+            archive_ref,
+            source: "stderr",
+            completeness: "complete",
+        }),
     );
     let capture_errors = capture_errors(&stdout, &stderr);
     if !capture_errors.is_empty() {
@@ -427,9 +452,13 @@ fn capture(
     })
 }
 
-fn finish_output(output: CapturedOutput, success: bool) -> Option<Vec<u8>> {
+fn finish_output(
+    output: CapturedOutput,
+    success: bool,
+    recovery: Option<RecoveryMarker<'_>>,
+) -> Option<Vec<u8>> {
     match output {
-        CapturedOutput::Reduced(reducer) => Some((*reducer).finish(success)),
+        CapturedOutput::Reduced(reducer) => Some((*reducer).finish(success, recovery)),
         CapturedOutput::Passthrough => None,
     }
 }
@@ -521,7 +550,7 @@ mod tests {
             CapturedOutput::Reduced(Box::new(reducer)),
         )
         .expect("capture");
-        let output = finish_output(captured.output, true).expect("reduced output");
+        let output = finish_output(captured.output, true, None).expect("reduced output");
         assert!(output.len() < input.len());
     }
 
@@ -537,7 +566,7 @@ mod tests {
         )
         .expect("capture");
         assert_eq!(output, input);
-        assert!(finish_output(captured.output, true).is_none());
+        assert!(finish_output(captured.output, true, None).is_none());
     }
 
     #[test]

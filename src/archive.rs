@@ -1,3 +1,4 @@
+use rusqlite::backup::Backup;
 use rusqlite::blob::Blob;
 use rusqlite::{
     Connection, ErrorCode, MAIN_DB, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
@@ -18,6 +19,8 @@ const COMPRESSION_PERCENT: u64 = 95;
 const MAX_FRAME_BYTES: u64 = 256 * 1024 * 1024;
 const INGEST_SCHEMA_VERSION: u32 = 1;
 const ARCHIVE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const ARCHIVE_REF_PREFIX: &str = "yr_";
+const ARCHIVE_REF_LEN: usize = 35;
 
 const SCHEMA: &str = r"
 CREATE TABLE sessions (
@@ -33,6 +36,11 @@ CREATE TABLE tool_calls (
     id                INTEGER PRIMARY KEY,
     session_id        INTEGER NOT NULL REFERENCES sessions(id),
     source_call_id    TEXT NOT NULL,
+    archive_ref       TEXT NOT NULL UNIQUE CHECK (
+        length(archive_ref) = 35
+        AND substr(archive_ref, 1, 3) = 'yr_'
+        AND substr(archive_ref, 4) NOT GLOB '*[^0-9a-f]*'
+    ),
     tool_name         TEXT NOT NULL,
     provider          TEXT,
     model             TEXT,
@@ -55,12 +63,17 @@ CREATE TABLE payloads (
 
 CREATE TABLE snapshots (
     tool_call_id   INTEGER NOT NULL REFERENCES tool_calls(id) ON DELETE CASCADE,
-    subject        TEXT NOT NULL CHECK (subject IN ('input', 'result', 'source_output', 'stdout', 'stderr')),
+    subject        TEXT NOT NULL CHECK (subject IN ('input', 'result', 'result_text', 'source_output', 'stdout', 'stderr')),
     stage          TEXT NOT NULL CHECK (stage IN ('before', 'after')),
     media_type     TEXT NOT NULL,
+    source_completeness TEXT CHECK (source_completeness IN ('complete', 'incomplete', 'unknown')),
     captured_at_ms INTEGER NOT NULL,
     payload_sha256 BLOB NOT NULL REFERENCES payloads(sha256),
-    PRIMARY KEY (tool_call_id, subject, stage)
+    PRIMARY KEY (tool_call_id, subject, stage),
+    CHECK (
+        (subject = 'result_text' AND stage = 'before' AND source_completeness IS NOT NULL)
+        OR (subject <> 'result_text' AND source_completeness IS NULL)
+    )
 );
 
 CREATE INDEX tool_calls_started_at_idx ON tool_calls(started_at_ms);
@@ -95,6 +108,53 @@ pub struct ArchiveKey {
     pub source_call_id: String,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceCompleteness {
+    Complete,
+    Incomplete,
+    Unknown,
+}
+
+impl SourceCompleteness {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Incomplete => "incomplete",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceName {
+    Stdout,
+    Stderr,
+    SourceOutput,
+    ResultText,
+}
+
+impl SourceName {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+            Self::SourceOutput => "source_output",
+            Self::ResultText => "result_text",
+        }
+    }
+}
+
+pub struct VerifiedSource {
+    pub name: SourceName,
+    pub completeness: SourceCompleteness,
+    pub media_type: String,
+    pub body: std::fs::File,
+    pub byte_length: u64,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(
     tag = "operation",
@@ -119,6 +179,15 @@ enum IngestOperation {
         source_call_id: String,
         result: Value,
         full_output_path: Option<PathBuf>,
+        captured_at_ms: i64,
+    },
+    ResultText {
+        request_id: u64,
+        schema_version: u32,
+        session: SessionIdentity,
+        source_call_id: String,
+        text: String,
+        source_completeness: SourceCompleteness,
         captured_at_ms: i64,
     },
     StageResult {
@@ -156,6 +225,7 @@ impl IngestOperation {
         match self {
             Self::BeginCall { request_id, .. }
             | Self::ResultBefore { request_id, .. }
+            | Self::ResultText { request_id, .. }
             | Self::StageResult { request_id, .. }
             | Self::FinishCall { request_id, .. }
             | Self::UpdateFinalResult { request_id, .. } => *request_id,
@@ -166,6 +236,7 @@ impl IngestOperation {
         match self {
             Self::BeginCall { schema_version, .. }
             | Self::ResultBefore { schema_version, .. }
+            | Self::ResultText { schema_version, .. }
             | Self::StageResult { schema_version, .. }
             | Self::FinishCall { schema_version, .. }
             | Self::UpdateFinalResult { schema_version, .. } => *schema_version,
@@ -178,6 +249,8 @@ impl IngestOperation {
 struct IngestAck<'a> {
     request_id: u64,
     ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archive_ref: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<&'a str>,
 }
@@ -223,6 +296,7 @@ impl Archive {
     /// Returns an error when the archive is missing, unreadable, or uses another schema version.
     pub fn open_read_only() -> Result<Self, String> {
         let path = archive_path()?;
+        require_private_archive_path(&path)?;
         let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| {
                 format!(
@@ -240,6 +314,12 @@ impl Archive {
             return Err(format!(
                 "archive schema version {version}, expected {SCHEMA_VERSION}"
             ));
+        }
+        if !schema_is_current(&connection)? {
+            return Err(
+                "archive schema requires migration; open it with a writable YARP command first"
+                    .to_owned(),
+            );
         }
         Ok(Self { connection, path })
     }
@@ -276,7 +356,7 @@ impl Archive {
             .map_err(|error| format!("could not read archive schema version: {error}"))?;
         match version {
             0 => initialize_schema(&mut connection)?,
-            SCHEMA_VERSION => {}
+            SCHEMA_VERSION => ensure_current_schema(&mut connection, &path)?,
             newer if newer > SCHEMA_VERSION => {
                 return Err(format!(
                     "archive schema version {newer} is newer than supported version {SCHEMA_VERSION}"
@@ -304,12 +384,13 @@ impl Archive {
         input_before: &Value,
         input_after: &Value,
         captured_at_ms: i64,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         let before = canonical_json(input_before)?;
         let after = canonical_json(input_after)?;
         let transaction = self.transaction()?;
         let session_id = ensure_session(&transaction, session)?;
         let call_id = ensure_call(&transaction, session_id, call)?;
+        let archive_ref = call_archive_ref(&transaction, call_id)?;
         insert_snapshot_bytes(
             &transaction,
             call_id,
@@ -330,7 +411,8 @@ impl Archive {
         )?;
         transaction
             .commit()
-            .map_err(|error| format!("could not commit tool call: {error}"))
+            .map_err(|error| format!("could not commit tool call: {error}"))?;
+        Ok(archive_ref)
     }
 
     /// Store the result exposed before YARP result processing.
@@ -404,6 +486,128 @@ impl Archive {
         transaction
             .commit()
             .map_err(|error| format!("could not commit pre-YARP result: {error}"))
+    }
+
+    /// Store the exact host-exposed result text selected for post-result reduction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the call is missing, completeness is invalid, or the snapshot cannot
+    /// be committed.
+    pub fn result_text(
+        &mut self,
+        session: &SessionIdentity,
+        source_call_id: &str,
+        text: &str,
+        completeness: SourceCompleteness,
+        captured_at_ms: i64,
+    ) -> Result<String, String> {
+        let transaction = self.transaction()?;
+        let call_id = find_call(&transaction, session, source_call_id)?;
+        insert_snapshot_reader_with_completeness(
+            &transaction,
+            call_id,
+            "result_text",
+            "before",
+            "text/plain; charset=utf-8",
+            Some(completeness.as_str()),
+            captured_at_ms,
+            &mut Cursor::new(text.as_bytes()),
+        )?;
+        let archive_ref = call_archive_ref(&transaction, call_id)?;
+        transaction
+            .commit()
+            .map_err(|error| format!("could not commit result text: {error}"))?;
+        Ok(archive_ref)
+    }
+
+    /// Resolve the stable reference for one internally identified call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the call or reference is missing.
+    pub fn archive_ref(&self, key: &ArchiveKey) -> Result<String, String> {
+        self.connection
+            .query_row(
+                "SELECT c.archive_ref
+                 FROM tool_calls c
+                 JOIN sessions s ON s.id = c.session_id
+                 WHERE s.agent = ?1 AND s.account = ?2 AND s.source_session_id = ?3
+                   AND c.source_call_id = ?4",
+                params![
+                    key.session.agent,
+                    key.session.account,
+                    key.session.source_session_id,
+                    key.source_call_id
+                ],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("could not resolve archive call reference: {error}"))
+    }
+
+    /// Resolve and verify the canonical recovery sources for one call reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reference is malformed, missing, or any selected payload fails
+    /// integrity verification.
+    pub fn searchable_sources(&self, archive_ref: &str) -> Result<Vec<VerifiedSource>, String> {
+        validate_archive_ref(archive_ref)?;
+        let call_id: i64 = self
+            .connection
+            .query_row(
+                "SELECT id FROM tool_calls WHERE archive_ref = ?1",
+                [archive_ref],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("could not find archive reference {archive_ref}: {error}"))?;
+        let stdout = self.snapshot_exists(call_id, "stdout", "before")?;
+        let stderr = self.snapshot_exists(call_id, "stderr", "before")?;
+        if stdout || stderr {
+            let mut sources = Vec::with_capacity(2);
+            if stdout {
+                sources.push(self.verified_source(
+                    call_id,
+                    SourceName::Stdout,
+                    SourceCompleteness::Complete,
+                )?);
+            }
+            if stderr {
+                sources.push(self.verified_source(
+                    call_id,
+                    SourceName::Stderr,
+                    SourceCompleteness::Complete,
+                )?);
+            }
+            return Ok(sources);
+        }
+        if self.snapshot_exists(call_id, "source_output", "before")? {
+            return Ok(vec![self.verified_source(
+                call_id,
+                SourceName::SourceOutput,
+                SourceCompleteness::Complete,
+            )?]);
+        }
+        if self.snapshot_exists(call_id, "result_text", "before")? {
+            let value: String = self
+                .connection
+                .query_row(
+                    "SELECT source_completeness FROM snapshots
+                     WHERE tool_call_id = ?1 AND subject = 'result_text' AND stage = 'before'",
+                    [call_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("could not read result text completeness: {error}"))?;
+            let completeness = parse_completeness(&value)?;
+            return Ok(vec![self.verified_source(
+                call_id,
+                SourceName::ResultText,
+                completeness,
+            )?]);
+        }
+        Err(format!(
+            "archive reference {archive_ref} has no searchable source"
+        ))
     }
 
     /// Store the provisional post-YARP result while leaving the call incomplete.
@@ -893,8 +1097,14 @@ impl Archive {
             ),
             (
                 "SELECT count(*) FROM snapshots
-                 WHERE subject NOT IN ('input', 'result', 'source_output', 'stdout', 'stderr')",
+                 WHERE subject NOT IN ('input', 'result', 'result_text', 'source_output', 'stdout', 'stderr')",
                 "snapshot(s) with invalid subject",
+            ),
+            (
+                "SELECT count(*) FROM snapshots
+                 WHERE (subject = 'result_text' AND (stage != 'before' OR source_completeness NOT IN ('complete', 'incomplete', 'unknown')))
+                    OR (subject != 'result_text' AND source_completeness IS NOT NULL)",
+                "snapshot(s) with invalid source completeness",
             ),
             (
                 "SELECT count(*) FROM snapshots WHERE stage NOT IN ('before', 'after')",
@@ -903,8 +1113,16 @@ impl Archive {
             (
                 "SELECT count(*) FROM snapshots
                  WHERE (subject IN ('input', 'result') AND media_type != 'application/json')
+                    OR (subject = 'result_text' AND media_type != 'text/plain; charset=utf-8')
                     OR (subject IN ('source_output', 'stdout', 'stderr') AND media_type NOT IN ('text/plain; charset=utf-8', 'application/octet-stream'))",
                 "snapshot(s) with invalid media type",
+            ),
+            (
+                "SELECT count(*) FROM tool_calls
+                 WHERE length(archive_ref) != 35
+                    OR substr(archive_ref, 1, 3) != 'yr_'
+                    OR substr(archive_ref, 4) GLOB '*[^0-9a-f]*'",
+                "tool call(s) with invalid archive reference",
             ),
             (
                 "SELECT count(*) FROM payloads
@@ -971,6 +1189,49 @@ impl Archive {
             }
         }
         Ok(())
+    }
+
+    fn snapshot_exists(&self, call_id: i64, subject: &str, stage: &str) -> Result<bool, String> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM snapshots
+                    WHERE tool_call_id = ?1 AND subject = ?2 AND stage = ?3
+                )",
+                params![call_id, subject, stage],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("could not inspect {subject}/{stage} snapshot: {error}"))
+    }
+
+    fn verified_source(
+        &self,
+        call_id: i64,
+        name: SourceName,
+        completeness: SourceCompleteness,
+    ) -> Result<VerifiedSource, String> {
+        let subject = name.as_str();
+        let (media_type, byte_length): (String, i64) = self
+            .connection
+            .query_row(
+                "SELECT s.media_type, p.uncompressed_byte_length
+                 FROM snapshots s
+                 JOIN payloads p ON p.sha256 = s.payload_sha256
+                 WHERE s.tool_call_id = ?1 AND s.subject = ?2 AND s.stage = 'before'",
+                params![call_id, subject],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|error| format!("could not inspect {subject}/before snapshot: {error}"))?;
+        let byte_length = u64::try_from(byte_length)
+            .map_err(|_| format!("invalid {subject}/before byte length"))?;
+        let body = self.verified_snapshot(call_id, subject, "before")?;
+        Ok(VerifiedSource {
+            name,
+            completeness,
+            media_type,
+            body,
+            byte_length,
+        })
     }
 
     fn verified_snapshot(
@@ -1148,10 +1409,12 @@ fn run_ingest_with_archive(
             .map_err(|error| format!("invalid ingest frame: {error}"))?;
         let request_id = operation.request_id();
         let result = apply_operation(&mut archive, operation);
+        let archive_ref = result.as_ref().ok().and_then(|value| value.as_deref());
         let error = result.as_ref().err().map(String::as_str);
         let ack = IngestAck {
             request_id,
             ok: result.is_ok(),
+            archive_ref,
             error,
         };
         serde_json::to_writer(&mut output, &ack)
@@ -1163,7 +1426,10 @@ fn run_ingest_with_archive(
     }
 }
 
-fn apply_operation(archive: &mut Archive, operation: IngestOperation) -> Result<(), String> {
+fn apply_operation(
+    archive: &mut Archive,
+    operation: IngestOperation,
+) -> Result<Option<String>, String> {
     let schema_version = operation.schema_version();
     if schema_version != INGEST_SCHEMA_VERSION {
         return Err(format!(
@@ -1178,7 +1444,9 @@ fn apply_operation(archive: &mut Archive, operation: IngestOperation) -> Result<
             input_after,
             captured_at_ms,
             ..
-        } => archive.begin_call(&session, &call, &input_before, &input_after, captured_at_ms),
+        } => archive
+            .begin_call(&session, &call, &input_before, &input_after, captured_at_ms)
+            .map(Some),
         IngestOperation::ResultBefore {
             session,
             source_call_id,
@@ -1186,13 +1454,31 @@ fn apply_operation(archive: &mut Archive, operation: IngestOperation) -> Result<
             full_output_path,
             captured_at_ms,
             ..
-        } => archive.result_before(
-            &session,
-            &source_call_id,
-            &result,
-            full_output_path.as_deref(),
+        } => archive
+            .result_before(
+                &session,
+                &source_call_id,
+                &result,
+                full_output_path.as_deref(),
+                captured_at_ms,
+            )
+            .map(|()| None),
+        IngestOperation::ResultText {
+            session,
+            source_call_id,
+            text,
+            source_completeness,
             captured_at_ms,
-        ),
+            ..
+        } => archive
+            .result_text(
+                &session,
+                &source_call_id,
+                &text,
+                source_completeness,
+                captured_at_ms,
+            )
+            .map(Some),
         IngestOperation::StageResult {
             session,
             source_call_id,
@@ -1200,7 +1486,9 @@ fn apply_operation(archive: &mut Archive, operation: IngestOperation) -> Result<
             is_error,
             captured_at_ms,
             ..
-        } => archive.stage_result(&session, &source_call_id, &result, is_error, captured_at_ms),
+        } => archive
+            .stage_result(&session, &source_call_id, &result, is_error, captured_at_ms)
+            .map(|()| None),
         IngestOperation::FinishCall {
             session,
             source_call_id,
@@ -1209,14 +1497,16 @@ fn apply_operation(archive: &mut Archive, operation: IngestOperation) -> Result<
             require_pre_result,
             finished_at_ms,
             ..
-        } => archive.finish_call(
-            &session,
-            &source_call_id,
-            &result,
-            is_error,
-            require_pre_result,
-            finished_at_ms,
-        ),
+        } => archive
+            .finish_call(
+                &session,
+                &source_call_id,
+                &result,
+                is_error,
+                require_pre_result,
+                finished_at_ms,
+            )
+            .map(|()| None),
         IngestOperation::UpdateFinalResult {
             session,
             source_call_id,
@@ -1224,13 +1514,9 @@ fn apply_operation(archive: &mut Archive, operation: IngestOperation) -> Result<
             is_error,
             finished_at_ms,
             ..
-        } => archive.update_final_result(
-            &session,
-            &source_call_id,
-            &result,
-            is_error,
-            finished_at_ms,
-        ),
+        } => archive
+            .update_final_result(&session, &source_call_id, &result, is_error, finished_at_ms)
+            .map(|()| None),
     }
 }
 
@@ -1313,6 +1599,254 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), String> {
         .map_err(|error| format!("could not commit archive schema: {error}"))
 }
 
+fn schema_is_current(connection: &Connection) -> Result<bool, String> {
+    let archive_ref = table_has_column(connection, "tool_calls", "archive_ref")?;
+    let source_completeness = table_has_column(connection, "snapshots", "source_completeness")?;
+    if archive_ref != source_completeness {
+        return Err("archive schema has a partial indexed-output migration".to_owned());
+    }
+    if !archive_ref {
+        return Ok(false);
+    }
+    let snapshots_sql: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'snapshots'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("could not inspect snapshots schema: {error}"))?;
+    Ok(snapshots_sql.contains("result_text") && snapshots_sql.contains("source_completeness"))
+}
+
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let query = format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1");
+    connection
+        .query_row(&query, [column], |row| row.get::<_, i64>(0))
+        .map(|count| count == 1)
+        .map_err(|error| format!("could not inspect {table}.{column}: {error}"))
+}
+
+fn ensure_current_schema(connection: &mut Connection, path: &Path) -> Result<(), String> {
+    if schema_is_current(connection)? {
+        return Ok(());
+    }
+    create_migration_backup(connection, path)?;
+    migrate_indexed_output_schema(connection)
+}
+
+fn create_migration_backup(connection: &Connection, path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "archive path has no parent for migration backup".to_owned())?;
+    let required = archive_file_bytes(path)?.saturating_mul(2);
+    let available = fs2::available_space(parent)
+        .map_err(|error| format!("could not measure archive backup space: {error}"))?;
+    if available < required {
+        return Err(format!(
+            "archive migration needs at least {required} free bytes, found {available}"
+        ));
+    }
+    let mut backup_name = path
+        .file_name()
+        .ok_or_else(|| "archive path has no file name".to_owned())?
+        .to_os_string();
+    backup_name.push(".pre-indexed-output-v1.backup");
+    let backup_path = parent.join(backup_name);
+    if backup_path.exists() {
+        return Err(format!(
+            "archive migration backup already exists: {}",
+            backup_path.display()
+        ));
+    }
+    let temporary = NamedTempFile::new_in(parent)
+        .map_err(|error| format!("could not create migration backup: {error}"))?;
+    set_file_mode(temporary.path(), 0o600)?;
+    let mut destination = Connection::open(temporary.path())
+        .map_err(|error| format!("could not open migration backup: {error}"))?;
+    let backup = Backup::new(connection, &mut destination)
+        .map_err(|error| format!("could not start archive backup: {error}"))?;
+    backup
+        .run_to_completion(128, Duration::from_millis(10), None)
+        .map_err(|error| format!("could not write archive backup: {error}"))?;
+    drop(backup);
+    let integrity: String = destination
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .map_err(|error| format!("could not verify migration backup: {error}"))?;
+    if integrity != "ok" {
+        return Err(format!(
+            "migration backup integrity check failed: {integrity}"
+        ));
+    }
+    destination
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .map_err(|error| format!("could not checkpoint migration backup: {error}"))?;
+    drop(destination);
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("could not sync migration backup: {error}"))?;
+    temporary
+        .persist(&backup_path)
+        .map_err(|error| format!("could not install migration backup: {}", error.error))?;
+    set_file_mode(&backup_path, 0o600)?;
+    sync_directory(parent)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the migration is one ordered transaction with shared invariants and rollback"
+)]
+fn migrate_indexed_output_schema(connection: &mut Connection) -> Result<(), String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Exclusive)
+        .map_err(|error| format!("could not start indexed-output migration: {error}"))?;
+    if table_has_column(&transaction, "tool_calls", "archive_ref")?
+        || table_has_column(&transaction, "snapshots", "source_completeness")?
+    {
+        return Err("archive schema changed while preparing indexed-output migration".to_owned());
+    }
+    let calls_before: i64 = transaction
+        .query_row("SELECT count(*) FROM tool_calls", [], |row| row.get(0))
+        .map_err(|error| format!("could not count calls before migration: {error}"))?;
+    let snapshots_before: i64 = transaction
+        .query_row("SELECT count(*) FROM snapshots", [], |row| row.get(0))
+        .map_err(|error| format!("could not count snapshots before migration: {error}"))?;
+    transaction
+        .execute_batch("ALTER TABLE tool_calls ADD COLUMN archive_ref TEXT")
+        .map_err(|error| format!("could not add archive references: {error}"))?;
+    transaction
+        .execute(
+            "UPDATE tool_calls SET archive_ref = 'yr_' || lower(hex(randomblob(16)))",
+            [],
+        )
+        .map_err(|error| format!("could not backfill archive references: {error}"))?;
+    for _ in 0..3 {
+        let duplicates: i64 = transaction
+            .query_row(
+                "SELECT count(*) - count(DISTINCT archive_ref) FROM tool_calls",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("could not check archive reference collisions: {error}"))?;
+        if duplicates == 0 {
+            break;
+        }
+        transaction
+            .execute(
+                "UPDATE tool_calls
+                 SET archive_ref = 'yr_' || lower(hex(randomblob(16)))
+                 WHERE id IN (
+                     SELECT later.id
+                     FROM tool_calls later
+                     JOIN tool_calls earlier
+                       ON earlier.archive_ref = later.archive_ref AND earlier.id < later.id
+                 )",
+                [],
+            )
+            .map_err(|error| format!("could not retry archive reference collisions: {error}"))?;
+    }
+    let duplicates: i64 = transaction
+        .query_row(
+            "SELECT count(*) - count(DISTINCT archive_ref) FROM tool_calls",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("could not verify archive reference uniqueness: {error}"))?;
+    if duplicates != 0 {
+        return Err("archive reference collisions remained after three retries".to_owned());
+    }
+    transaction
+        .execute_batch(
+            "CREATE TABLE tool_calls_new (
+                id                INTEGER PRIMARY KEY,
+                session_id        INTEGER NOT NULL REFERENCES sessions(id),
+                source_call_id    TEXT NOT NULL,
+                archive_ref       TEXT NOT NULL UNIQUE CHECK (
+                    length(archive_ref) = 35
+                    AND substr(archive_ref, 1, 3) = 'yr_'
+                    AND substr(archive_ref, 4) NOT GLOB '*[^0-9a-f]*'
+                ),
+                tool_name         TEXT NOT NULL,
+                provider          TEXT,
+                model             TEXT,
+                working_directory TEXT,
+                started_at_ms     INTEGER NOT NULL,
+                requires_streams  INTEGER NOT NULL CHECK (requires_streams IN (0, 1)),
+                finished_at_ms    INTEGER,
+                status            TEXT NOT NULL CHECK (status IN ('started', 'finished')),
+                is_error          INTEGER CHECK (is_error IN (0, 1)),
+                executed          INTEGER CHECK (executed IN (0, 1)),
+                UNIQUE (session_id, source_call_id)
+            );
+            INSERT INTO tool_calls_new
+            SELECT id, session_id, source_call_id, archive_ref, tool_name, provider, model,
+                   working_directory, started_at_ms, requires_streams, finished_at_ms, status,
+                   is_error, executed
+            FROM tool_calls;
+            CREATE TABLE snapshots_new (
+                tool_call_id   INTEGER NOT NULL REFERENCES tool_calls_new(id) ON DELETE CASCADE,
+                subject        TEXT NOT NULL CHECK (subject IN ('input', 'result', 'result_text', 'source_output', 'stdout', 'stderr')),
+                stage          TEXT NOT NULL CHECK (stage IN ('before', 'after')),
+                media_type     TEXT NOT NULL,
+                source_completeness TEXT CHECK (source_completeness IN ('complete', 'incomplete', 'unknown')),
+                captured_at_ms INTEGER NOT NULL,
+                payload_sha256 BLOB NOT NULL REFERENCES payloads(sha256),
+                PRIMARY KEY (tool_call_id, subject, stage),
+                CHECK (
+                    (subject = 'result_text' AND stage = 'before' AND source_completeness IS NOT NULL)
+                    OR (subject <> 'result_text' AND source_completeness IS NULL)
+                )
+            );
+            INSERT INTO snapshots_new (
+                tool_call_id, subject, stage, media_type, source_completeness,
+                captured_at_ms, payload_sha256
+            )
+            SELECT tool_call_id, subject, stage, media_type, NULL,
+                   captured_at_ms, payload_sha256
+            FROM snapshots;
+            DROP TABLE snapshots;
+            DROP TABLE tool_calls;
+            ALTER TABLE tool_calls_new RENAME TO tool_calls;
+            ALTER TABLE snapshots_new RENAME TO snapshots;
+            CREATE INDEX tool_calls_started_at_idx ON tool_calls(started_at_ms);
+            CREATE INDEX tool_calls_tool_name_idx ON tool_calls(tool_name);
+            CREATE INDEX snapshots_payload_idx ON snapshots(payload_sha256);",
+        )
+        .map_err(|error| format!("could not rebuild indexed-output tables: {error}"))?;
+    let calls_after: i64 = transaction
+        .query_row("SELECT count(*) FROM tool_calls", [], |row| row.get(0))
+        .map_err(|error| format!("could not count calls after migration: {error}"))?;
+    let snapshots_after: i64 = transaction
+        .query_row("SELECT count(*) FROM snapshots", [], |row| row.get(0))
+        .map_err(|error| format!("could not count snapshots after migration: {error}"))?;
+    if calls_before != calls_after || snapshots_before != snapshots_after {
+        return Err("archive row counts changed during migration".to_owned());
+    }
+    let invalid_refs: i64 = transaction
+        .query_row(
+            "SELECT count(*) FROM tool_calls
+             WHERE length(archive_ref) != 35
+                OR substr(archive_ref, 1, 3) != 'yr_'
+                OR substr(archive_ref, 4) GLOB '*[^0-9a-f]*'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("could not verify migrated archive references: {error}"))?;
+    let foreign_keys: i64 = transaction
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| format!("could not verify migrated foreign keys: {error}"))?;
+    if invalid_refs != 0 || foreign_keys != 0 {
+        return Err(format!(
+            "archive migration verification failed: {invalid_refs} invalid references, {foreign_keys} foreign key violations"
+        ));
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("could not commit indexed-output migration: {error}"))
+}
+
 fn ensure_session(transaction: &Transaction<'_>, session: &SessionIdentity) -> Result<i64, String> {
     transaction
         .execute(
@@ -1342,49 +1876,77 @@ fn ensure_call(
     session_id: i64,
     call: &CallIdentity,
 ) -> Result<i64, String> {
-    transaction
-        .execute(
-            "INSERT INTO tool_calls (
-                session_id, source_call_id, tool_name, provider, model,
-                working_directory, started_at_ms, requires_streams, status
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'started')
-             ON CONFLICT(session_id, source_call_id) DO NOTHING",
-            params![
-                session_id,
-                call.source_call_id,
-                call.tool_name,
-                call.provider,
-                call.model,
-                call.working_directory,
-                call.started_at_ms,
-                i64::from(call.requires_streams)
-            ],
+    let existing: Option<i64> = transaction
+        .query_row(
+            "SELECT id FROM tool_calls WHERE session_id = ?1 AND source_call_id = ?2",
+            params![session_id, call.source_call_id],
+            |row| row.get(0),
         )
-        .map_err(|error| format!("could not store tool call: {error}"))?;
+        .optional()
+        .map_err(|error| format!("could not check stored tool call: {error}"))?;
+    if existing.is_none() {
+        let mut inserted = false;
+        for _ in 0..3 {
+            let archive_ref = random_archive_ref(transaction)?;
+            match transaction.execute(
+                "INSERT INTO tool_calls (
+                    session_id, source_call_id, archive_ref, tool_name, provider, model,
+                    working_directory, started_at_ms, requires_streams, status
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'started')",
+                params![
+                    session_id,
+                    call.source_call_id,
+                    archive_ref,
+                    call.tool_name,
+                    call.provider,
+                    call.model,
+                    call.working_directory,
+                    call.started_at_ms,
+                    i64::from(call.requires_streams)
+                ],
+            ) {
+                Ok(1) => {
+                    inserted = true;
+                    break;
+                }
+                Ok(_) => return Err("could not store tool call".to_owned()),
+                Err(rusqlite::Error::SqliteFailure(inner, _))
+                    if inner.code == ErrorCode::ConstraintViolation => {}
+                Err(error) => return Err(format!("could not store tool call: {error}")),
+            }
+        }
+        if !inserted {
+            return Err(
+                "could not allocate a unique archive reference after three attempts".to_owned(),
+            );
+        }
+    }
     let stored = transaction
         .query_row(
-            "SELECT id, tool_name, provider, model, working_directory, started_at_ms, requires_streams
+            "SELECT id, archive_ref, tool_name, provider, model, working_directory, started_at_ms, requires_streams
              FROM tool_calls WHERE session_id = ?1 AND source_call_id = ?2",
             params![session_id, call.source_call_id],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(2)?,
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, Option<String>>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, bool>(6)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, bool>(7)?,
                 ))
             },
         )
         .map_err(|error| format!("could not find stored tool call: {error}"))?;
-    if stored.1 != call.tool_name
-        || stored.2 != call.provider
-        || stored.3 != call.model
-        || stored.4 != call.working_directory
-        || stored.5 != call.started_at_ms
-        || stored.6 != call.requires_streams
+    validate_archive_ref(&stored.1)?;
+    if stored.2 != call.tool_name
+        || stored.3 != call.provider
+        || stored.4 != call.model
+        || stored.5 != call.working_directory
+        || stored.6 != call.started_at_ms
+        || stored.7 != call.requires_streams
     {
         return Err(format!(
             "tool call {} was already stored with different metadata",
@@ -1392,6 +1954,51 @@ fn ensure_call(
         ));
     }
     Ok(stored.0)
+}
+
+fn random_archive_ref(transaction: &Transaction<'_>) -> Result<String, String> {
+    let archive_ref: String = transaction
+        .query_row("SELECT 'yr_' || lower(hex(randomblob(16)))", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| format!("could not generate archive reference: {error}"))?;
+    validate_archive_ref(&archive_ref)?;
+    Ok(archive_ref)
+}
+
+fn validate_archive_ref(archive_ref: &str) -> Result<(), String> {
+    if archive_ref.len() != ARCHIVE_REF_LEN
+        || !archive_ref.starts_with(ARCHIVE_REF_PREFIX)
+        || !archive_ref[ARCHIVE_REF_PREFIX.len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(
+            "archive reference must be yr_ followed by 32 lowercase hexadecimal digits".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn call_archive_ref(transaction: &Transaction<'_>, call_id: i64) -> Result<String, String> {
+    let archive_ref: String = transaction
+        .query_row(
+            "SELECT archive_ref FROM tool_calls WHERE id = ?1",
+            [call_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("could not read archive reference: {error}"))?;
+    validate_archive_ref(&archive_ref)?;
+    Ok(archive_ref)
+}
+
+fn parse_completeness(value: &str) -> Result<SourceCompleteness, String> {
+    match value {
+        "complete" => Ok(SourceCompleteness::Complete),
+        "incomplete" => Ok(SourceCompleteness::Incomplete),
+        "unknown" => Ok(SourceCompleteness::Unknown),
+        _ => Err(format!("invalid source completeness {value}")),
+    }
 }
 
 fn find_call(
@@ -1546,27 +2153,63 @@ fn insert_snapshot_reader(
     captured_at_ms: i64,
     reader: &mut (impl Read + Seek),
 ) -> Result<(), String> {
+    insert_snapshot_reader_with_completeness(
+        transaction,
+        call_id,
+        subject,
+        stage,
+        media_type,
+        None,
+        captured_at_ms,
+        reader,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "snapshot identity and source metadata are one strict database record"
+)]
+fn insert_snapshot_reader_with_completeness(
+    transaction: &Transaction<'_>,
+    call_id: i64,
+    subject: &str,
+    stage: &str,
+    media_type: &str,
+    source_completeness: Option<&str>,
+    captured_at_ms: i64,
+    reader: &mut (impl Read + Seek),
+) -> Result<(), String> {
     let sha = insert_payload(transaction, reader)?;
     let inserted = transaction
         .execute(
             "INSERT INTO snapshots (
-                tool_call_id, subject, stage, media_type, captured_at_ms, payload_sha256
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                tool_call_id, subject, stage, media_type, source_completeness,
+                captured_at_ms, payload_sha256
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(tool_call_id, subject, stage) DO NOTHING",
-            params![call_id, subject, stage, media_type, captured_at_ms, sha],
+            params![
+                call_id,
+                subject,
+                stage,
+                media_type,
+                source_completeness,
+                captured_at_ms,
+                sha
+            ],
         )
         .map_err(|error| format!("could not store {subject}/{stage} snapshot: {error}"))?;
     if inserted == 0 {
-        let existing: Vec<u8> = transaction
+        let existing: (Vec<u8>, Option<String>) = transaction
             .query_row(
-                "SELECT payload_sha256 FROM snapshots WHERE tool_call_id = ?1 AND subject = ?2 AND stage = ?3",
+                "SELECT payload_sha256, source_completeness FROM snapshots
+                 WHERE tool_call_id = ?1 AND subject = ?2 AND stage = ?3",
                 params![call_id, subject, stage],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|error| format!("could not check existing snapshot: {error}"))?;
-        if existing != sha {
+        if existing != (sha, source_completeness.map(str::to_owned)) {
             return Err(format!(
-                "snapshot {subject}/{stage} already exists with different content"
+                "snapshot {subject}/{stage} already exists with different content or completeness"
             ));
         }
     }
@@ -1723,6 +2366,14 @@ fn stream_media_type(reader: &mut (impl Read + Seek)) -> Result<&'static str, St
     })
 }
 
+fn sync_directory(path: &Path) -> Result<(), String> {
+    let directory = fs::File::open(path)
+        .map_err(|error| format!("could not open {} for sync: {error}", path.display()))?;
+    directory
+        .sync_all()
+        .map_err(|error| format!("could not sync {}: {error}", path.display()))
+}
+
 fn archive_file_bytes(path: &Path) -> Result<u64, String> {
     let main = fs::metadata(path)
         .map_err(|error| format!("could not stat archive {}: {error}", path.display()))?
@@ -1778,6 +2429,36 @@ fn create_archive_directory(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(unix)]
+fn require_private_archive_path(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    require_private_directory(
+        path.parent()
+            .ok_or_else(|| format!("archive path {} has no parent", path.display()))?,
+    )?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("could not inspect archive {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "archive {} must be a regular non-symlink file",
+            path.display()
+        ));
+    }
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(format!(
+            "archive {} has mode {mode:o}, expected 600",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn require_private_archive_path(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(unix)]
 fn require_private_directory(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt as _;
     let mode = fs::metadata(path)
@@ -1787,7 +2468,7 @@ fn require_private_directory(path: &Path) -> Result<(), String> {
         & 0o777;
     if mode & 0o077 != 0 {
         return Err(format!(
-            "archive directory {} has mode {mode:o}; use a private directory or a directory named yarp",
+            "archive directory {} has mode {mode:o}, expected 700; use a private directory",
             path.display()
         ));
     }
@@ -1848,6 +2529,8 @@ fn verify_permissions(_path: &Path, _report: &mut VerifyReport) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
     use tempfile::TempDir;
 
     fn archive() -> (TempDir, Archive) {
@@ -2215,6 +2898,132 @@ mod tests {
         let stats = archive.stats().expect("stats");
         assert_eq!(stats.calls, 0);
         assert_eq!(stats.logical_payload_bytes, 0);
+    }
+
+    #[test]
+    fn migrates_the_original_version_one_schema_in_place_with_a_private_backup() {
+        let directory = TempDir::new().expect("temp directory");
+        let path = directory.path().join("yarp/tool-calls.sqlite3");
+        fs::create_dir(path.parent().expect("parent")).expect("archive directory");
+        set_file_mode(path.parent().expect("parent"), 0o700).expect("private directory");
+        let connection = Connection::open(&path).expect("old database");
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 PRAGMA user_version = 1;
+                 CREATE TABLE sessions (
+                     id INTEGER PRIMARY KEY,
+                     agent TEXT NOT NULL,
+                     account TEXT NOT NULL,
+                     source_session_id TEXT NOT NULL,
+                     started_at_ms INTEGER,
+                     UNIQUE (agent, account, source_session_id)
+                 );
+                 CREATE TABLE tool_calls (
+                     id INTEGER PRIMARY KEY,
+                     session_id INTEGER NOT NULL REFERENCES sessions(id),
+                     source_call_id TEXT NOT NULL,
+                     tool_name TEXT NOT NULL,
+                     provider TEXT,
+                     model TEXT,
+                     working_directory TEXT,
+                     started_at_ms INTEGER NOT NULL,
+                     requires_streams INTEGER NOT NULL CHECK (requires_streams IN (0, 1)),
+                     finished_at_ms INTEGER,
+                     status TEXT NOT NULL CHECK (status IN ('started', 'finished')),
+                     is_error INTEGER CHECK (is_error IN (0, 1)),
+                     executed INTEGER CHECK (executed IN (0, 1)),
+                     UNIQUE (session_id, source_call_id)
+                 );
+                 CREATE TABLE payloads (
+                     sha256 BLOB PRIMARY KEY CHECK (length(sha256) = 32),
+                     compression TEXT NOT NULL CHECK (compression IN ('none', 'zstd')),
+                     uncompressed_byte_length INTEGER NOT NULL CHECK (uncompressed_byte_length >= 0),
+                     body BLOB NOT NULL
+                 );
+                 CREATE TABLE snapshots (
+                     tool_call_id INTEGER NOT NULL REFERENCES tool_calls(id) ON DELETE CASCADE,
+                     subject TEXT NOT NULL CHECK (subject IN ('input', 'result', 'source_output', 'stdout', 'stderr')),
+                     stage TEXT NOT NULL CHECK (stage IN ('before', 'after')),
+                     media_type TEXT NOT NULL,
+                     captured_at_ms INTEGER NOT NULL,
+                     payload_sha256 BLOB NOT NULL REFERENCES payloads(sha256),
+                     PRIMARY KEY (tool_call_id, subject, stage)
+                 );
+                 INSERT INTO sessions VALUES (1, 'pi', 'test', 'old-session', 1);
+                 INSERT INTO tool_calls VALUES (
+                     1, 1, 'old-call', 'read', NULL, NULL, '/tmp', 2, 0,
+                     NULL, 'started', NULL, NULL
+                 );",
+            )
+            .expect("old schema");
+        drop(connection);
+        set_file_mode(&path, 0o600).expect("private database");
+
+        let archive = Archive::open_path(path.clone()).expect("migrate archive");
+        let archive_ref: String = archive
+            .connection
+            .query_row("SELECT archive_ref FROM tool_calls", [], |row| row.get(0))
+            .expect("archive ref");
+        validate_archive_ref(&archive_ref).expect("valid archive ref");
+        assert!(
+            table_has_column(&archive.connection, "snapshots", "source_completeness")
+                .expect("schema column")
+        );
+        drop(archive);
+
+        let backup = path.with_file_name("tool-calls.sqlite3.pre-indexed-output-v1.backup");
+        assert!(backup.is_file());
+        #[cfg(unix)]
+        assert_eq!(
+            fs::metadata(&backup)
+                .expect("backup metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let reopened = Archive::open_path(path).expect("reopen migrated archive");
+        let reopened_ref: String = reopened
+            .connection
+            .query_row("SELECT archive_ref FROM tool_calls", [], |row| row.get(0))
+            .expect("stable archive ref");
+        assert_eq!(archive_ref, reopened_ref);
+    }
+
+    #[test]
+    fn result_text_is_on_demand_and_canonical_source_selection_is_stable() {
+        let (_directory, mut archive) = archive();
+        let archive_ref = archive
+            .begin_call(
+                &session(),
+                &call(),
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                20,
+            )
+            .expect("begin");
+        let repeated_ref = archive
+            .result_text(
+                &session(),
+                "call-1",
+                "first\nerror\nlast\n",
+                SourceCompleteness::Incomplete,
+                30,
+            )
+            .expect("result text");
+        assert_eq!(archive_ref, repeated_ref);
+        let mut sources = archive.searchable_sources(&archive_ref).expect("sources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].name, SourceName::ResultText);
+        assert_eq!(sources[0].completeness, SourceCompleteness::Incomplete);
+        let mut body = String::new();
+        sources[0]
+            .body
+            .read_to_string(&mut body)
+            .expect("source body");
+        assert_eq!(body, "first\nerror\nlast\n");
+        assert!(archive.verify().expect("verify").errors.is_empty());
     }
 
     #[test]

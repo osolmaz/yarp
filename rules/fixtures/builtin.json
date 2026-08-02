@@ -1654,7 +1654,7 @@
         "run",
         "watch"
       ],
-      "expected_action": "reduce"
+      "expected_action": "passthrough"
     },
     {
       "id": "gh-issue-view-match",
@@ -1944,6 +1944,47 @@
         "systemctl",
         "--user",
         "status"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "guards-codex-json-match",
+      "rule_id": "guards/codex-json",
+      "argv": [
+        "codex",
+        "review",
+        "--json",
+        "--base",
+        "main"
+      ],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "js-build-alias-match",
+      "rule_id": "js/build-alias",
+      "argv": [
+        "pnpm",
+        "build"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-check-alias-match",
+      "rule_id": "js/check-alias",
+      "argv": [
+        "pnpm",
+        "check"
+      ],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "reviews-codex-review-match",
+      "rule_id": "reviews/codex-review",
+      "argv": [
+        "codex",
+        "review",
+        "--base",
+        "main"
       ],
       "expected_action": "reduce"
     }

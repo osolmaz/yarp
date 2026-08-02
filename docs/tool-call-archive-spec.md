@@ -28,6 +28,11 @@ CREATE TABLE tool_calls (
     id                INTEGER PRIMARY KEY,
     session_id        INTEGER NOT NULL REFERENCES sessions(id),
     source_call_id    TEXT NOT NULL,
+    archive_ref       TEXT NOT NULL UNIQUE CHECK (
+        length(archive_ref) = 35
+        AND substr(archive_ref, 1, 3) = 'yr_'
+        AND substr(archive_ref, 4) NOT GLOB '*[^0-9a-f]*'
+    ),
     tool_name         TEXT NOT NULL,
     provider          TEXT,
     model             TEXT,
@@ -51,13 +56,29 @@ CREATE TABLE payloads (
 CREATE TABLE snapshots (
     tool_call_id   INTEGER NOT NULL REFERENCES tool_calls(id) ON DELETE CASCADE,
     subject        TEXT NOT NULL CHECK (
-        subject IN ('input', 'result', 'source_output', 'stdout', 'stderr')
+        subject IN (
+            'input', 'result', 'result_text', 'source_output', 'stdout', 'stderr'
+        )
     ),
     stage          TEXT NOT NULL CHECK (stage IN ('before', 'after')),
     media_type     TEXT NOT NULL,
+    source_completeness TEXT CHECK (
+        source_completeness IN ('complete', 'incomplete', 'unknown')
+    ),
     captured_at_ms INTEGER NOT NULL,
     payload_sha256 BLOB NOT NULL REFERENCES payloads(sha256),
-    PRIMARY KEY (tool_call_id, subject, stage)
+    PRIMARY KEY (tool_call_id, subject, stage),
+    CHECK (
+        (
+            subject = 'result_text'
+            AND stage = 'before'
+            AND source_completeness IS NOT NULL
+        )
+        OR (
+            subject <> 'result_text'
+            AND source_completeness IS NULL
+        )
+    )
 );
 
 CREATE INDEX tool_calls_started_at_idx ON tool_calls(started_at_ms);
@@ -71,7 +92,7 @@ SQLite may create `tool-calls.sqlite3-wal` and `tool-calls.sqlite3-shm` while th
 
 A session identifies one agent conversation. `agent` names the source application, starting with `pi`. `account` names the local account that owns the source data, such as `onur` or `bob`. `source_session_id` is the session identifier assigned by that agent.
 
-A tool call identifies one invocation. `source_call_id` is the identifier assigned by the source agent. The pair `(session_id, source_call_id)` must be unique. `provider` and `model` record the model that emitted the call when the source exposes those values. `requires_streams` records that YARP wrapped the shell command and must capture all four stream snapshots if the call executes. `executed` distinguishes calls that reached a tool and therefore require a pre-YARP result from preflight failures that never ran.
+A tool call identifies one invocation. `source_call_id` is the identifier assigned by the source agent. The pair `(session_id, source_call_id)` must be unique. `archive_ref` is an immutable model-facing locator in the form `yr_` plus 32 lowercase hexadecimal digits. It is generated from 128 random bits, is not reused, and is not an authorization token. `provider` and `model` record the model that emitted the call when the source exposes those values. `requires_streams` records that YARP wrapped the shell command and must capture all four stream snapshots if the call executes. `executed` distinguishes calls that reached a tool and therefore require a pre-YARP result from preflight failures that never ran.
 
 A snapshot points to immutable bytes in `payloads`. Its `subject` says what was captured. Its `stage` says whether capture happened before or after YARP processing.
 
@@ -79,6 +100,7 @@ A snapshot points to immutable bytes in `payloads`. Its `subject` says what was 
 | --- | --- | --- |
 | `input` | Tool arguments received by YARP. | Arguments after YARP rewrites them. |
 | `result` | Tool result received before YARP changes it. | Tool result returned to Pi. |
+| `result_text` | Exact single text item exposed by the host when a post-result summary wins and no complete source exists. | Not used. |
 | `source_output` | Exact complete output read from Pi's built-in Bash tool `fullOutputPath`. | Not used. |
 | `stdout` | Exact child stdout before pruning. | Exact stdout emitted after pruning. |
 | `stderr` | Exact child stderr before pruning. | Exact stderr emitted after pruning. |
@@ -93,7 +115,7 @@ The word `before` means before YARP processing. A source tool may already have a
 
 Tool inputs and structured results use RFC 8785 canonical JSON encoded as UTF-8. Their media type is `application/json`.
 
-Source output, stdout, and stderr keep their exact bytes. Valid UTF-8 text uses `text/plain; charset=utf-8`. Other output uses `application/octet-stream`. YARP must not normalize line endings or remove terminal control bytes before hashing a stream payload.
+Result text, source output, stdout, and stderr keep their exact bytes. Result text is always valid UTF-8 and records whether the host proved it complete, reported it truncated, or exposed unknown completeness. Other valid UTF-8 text uses `text/plain; charset=utf-8`; non-text output uses `application/octet-stream`. YARP must not normalize line endings or remove terminal control bytes before hashing a stream payload.
 
 `sha256` is the SHA-256 digest of the uncompressed bytes. `uncompressed_byte_length` is the length of those bytes.
 
@@ -103,7 +125,7 @@ YARP compresses a payload with Zstandard level 3 when the compressed body is at 
 
 YARP observes `tool_execution_start` to retain arguments in memory for calls rejected before `tool_call`. At `tool_call`, YARP writes the session, the call with `status = 'started'`, and both input snapshots in one transaction. The transaction must commit before tool execution begins. A call rejected before `tool_call` never executes, so YARP writes its unchanged input snapshots with its final preflight result at `tool_execution_end`.
 
-The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before`, then stages a provisional `result/after` and `is_error` while it can still restore raw output on failure. The call remains `started`, so a crash or later reconciliation failure is visible as an incomplete call. After all result hooks run, `tool_execution_end` replaces the provisional result and atomically writes its final metadata with `status = 'finished'`. If this final transaction fails for a wrapped shell call, YARP restores its raw streams and replaces the public tool-result message at `message_end`. Completion verifies that `result/before` exists and that executed wrapped shell calls have all four stream snapshots.
+The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before`, then invokes the bounded post-result reducer only for one safe shell text result. If that summary wins and no complete stream or `source_output` exists, it commits `result_text/before` before returning the summary. It then stages a provisional `result/after` and `is_error` while it can still restore raw output on failure. The call remains `started`, so a crash or later reconciliation failure is visible as an incomplete call. After all result hooks run, `tool_execution_end` replaces the provisional result and atomically writes its final metadata with `status = 'finished'`. If this final transaction fails for a wrapped shell call, YARP restores its raw streams and replaces the public tool-result message at `message_end`. Completion verifies that `result/before` exists and that executed wrapped shell calls have all four stream snapshots.
 
 Pi can reject or block a call before tool execution without emitting `tool_result`, and validation can reject it before `tool_call`. For those preflight failures, `tool_execution_end` records the error result and finishes the call without requiring `result/before`. The archive does not infer a rejection or cancellation category from result text.
 
@@ -148,6 +170,7 @@ A process crash, full disk, invalid database, unsupported schema version, failed
 - SQLite integrity and foreign keys.
 - The supported `user_version`.
 - Allowed lifecycle and snapshot values.
+- Unique well-formed archive references and valid result-text completeness.
 - Payload decompression, byte length, and SHA-256 digest.
 - Filesystem permissions.
 - Incomplete calls.
@@ -166,7 +189,7 @@ YARP must not delete incomplete calls or the existing `~/.local/share/yarp/tee` 
 
 YARP accepts databases with `user_version = 1`. A newer binary may migrate an older supported version inside one exclusive transaction after creating a SQLite backup. It must reject a database with a newer version.
 
-Migrations update the existing contract in place. YARP does not create a parallel database version or keep fallback readers for superseded schemas.
+Migrations update the existing contract in place. The indexed-output migration keeps `user_version = 1`, creates and verifies a private pre-migration SQLite backup, backfills stable references, rebuilds the constrained call and snapshot tables, and verifies row counts, foreign keys, references, and integrity before commit. YARP does not create a parallel database version or keep fallback readers for superseded schemas.
 
 ## Boundaries
 

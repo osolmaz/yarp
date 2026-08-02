@@ -46,7 +46,13 @@ pub enum Action {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Reducer {
-    HeadTail,
+    SearchSummary,
+    DiffSummary,
+    TestSummary,
+    BuildSummary,
+    LogSummary,
+    StatusSummary,
+    ListSummary,
     LineFilter {
         #[serde(default, skip_serializing_if = "is_false")]
         strip_ansi: bool,
@@ -55,10 +61,6 @@ pub enum Reducer {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         keep: Vec<LinePattern>,
     },
-    CargoTest,
-    GitDiff,
-    GitStatus,
-    Search,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -101,11 +103,10 @@ pub enum PatternTrim {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputPolicy {
-    pub head_lines: usize,
-    pub tail_lines: usize,
     pub max_line_bytes: usize,
     pub max_output_bytes: usize,
     pub min_savings_bytes: usize,
+    pub min_savings_basis_points: u16,
 }
 
 impl CommandMatcher {

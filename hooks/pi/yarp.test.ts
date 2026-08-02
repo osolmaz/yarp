@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -16,10 +16,12 @@ import type {
   ArchiveSession,
   ArchiveSink,
 } from "./archive-client.js"
+import type { ResultReducer } from "./result-client.js"
 import {
   commandBinding,
   installYarpExtension,
   trustedProjectRulePack,
+  YARP_PACKAGE_VERSION,
 } from "./yarp.js"
 
 type EventName = keyof ExtensionEventMap
@@ -27,6 +29,18 @@ type Handler<K extends EventName> = (
   event: ExtensionEventMap[K],
   context: ExtensionContext,
 ) => Promise<ExtensionEventResultMap[K] | void> | ExtensionEventResultMap[K] | void
+
+test("keeps the Pi and Rust package versions in exact agreement", async () => {
+  const packageJson = JSON.parse(
+    await readFile(new URL("../../package.json", import.meta.url), "utf8"),
+  ) as unknown
+  assert.equal(
+    typeof packageJson === "object" && packageJson !== null && "version" in packageJson
+      ? packageJson.version
+      : undefined,
+    YARP_PACKAGE_VERSION,
+  )
+})
 
 class HandlerRegistry {
   private readonly handlers: { [K in EventName]: Array<Handler<K>> } = {
@@ -59,6 +73,7 @@ class HandlerRegistry {
 
 class MockPi implements ExtensionAPI {
   readonly registry = new HandlerRegistry()
+  version: ExecResult = result(0, "yarp 0.1.0\n")
   rewrite: ExecResult = result(3)
   restore: ExecResult = result(0, "raw output\n")
   failRewrite = false
@@ -68,7 +83,7 @@ class MockPi implements ExtensionAPI {
 
   async exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult> {
     assert.equal(command, "yarp")
-    if (args[0] === "--version") return result(0, "yarp 0.1.0\n")
+    if (args[0] === "--version") return this.version
     if (args[0] === "archive" && args[1] === "restore") {
       this.restoreOptions = options
       if (this.failRestore) throw new Error("restore spawn failed")
@@ -95,6 +110,7 @@ class MemorySink implements ArchiveSink {
   readonly begins: BeginRecord[] = []
   readonly beforeResults: unknown[] = []
   readonly fullOutputPaths: Array<string | undefined> = []
+  readonly resultTexts: string[] = []
   readonly stagedResults: unknown[] = []
   readonly finishedResults: unknown[] = []
   readonly updatedResults: unknown[] = []
@@ -102,6 +118,7 @@ class MemorySink implements ArchiveSink {
   failBegin = false
   failBefore = false
   failStage = false
+  failResultText = false
   failFinish = false
   failUpdate = false
   finishRequiresPreResult: boolean[] = []
@@ -111,9 +128,10 @@ class MemorySink implements ArchiveSink {
     call: ArchiveCall,
     inputBefore: unknown,
     inputAfter: unknown,
-  ): Promise<void> {
+  ): Promise<string> {
     if (this.failBegin) throw new Error("archive unavailable")
     this.begins.push({ session, call, inputBefore, inputAfter })
+    return "yr_0123456789abcdef0123456789abcdef"
   }
 
   async resultBefore(
@@ -126,6 +144,16 @@ class MemorySink implements ArchiveSink {
     if (this.failBefore) throw new Error("before failed")
     this.beforeResults.push(resultValue)
     this.fullOutputPaths.push(fullOutputPath)
+  }
+
+  async resultText(
+    _session: ArchiveSession,
+    _sourceCallId: string,
+    text: string,
+  ): Promise<string> {
+    if (this.failResultText) throw new Error("result text failed")
+    this.resultTexts.push(text)
+    return "yr_0123456789abcdef0123456789abcdef"
   }
 
   async stageResult(
@@ -175,12 +203,23 @@ function result(code: number, stdout = ""): ExecResult {
   return { code, stdout, stderr: "", killed: false }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+const unchangedReducer: ResultReducer = {
+  async reduce() {
+    return { changed: false }
+  },
+}
+
 async function start(
   pi: MockPi,
   sink: MemorySink,
   currentContext: ExtensionContext = context,
+  reducer: ResultReducer = unchangedReducer,
 ): Promise<void> {
-  await installYarpExtension(pi, () => sink)
+  await installYarpExtension(pi, () => sink, () => reducer)
   await pi.registry.emit(
     "session_start",
     { type: "session_start", reason: "startup" },
@@ -206,6 +245,22 @@ async function call(
     currentContext,
   )
 }
+
+test("disables every integration path on an exact version mismatch", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  pi.version = result(0, "yarp 0.1.1\n")
+  await installYarpExtension(pi, () => sink, () => unchangedReducer)
+  await pi.registry.emit(
+    "session_start",
+    { type: "session_start", reason: "startup" },
+    context,
+  )
+  const input = { command: "cargo test" }
+  await call(pi, "mismatch", "bash", input)
+  assert.equal(input.command, "cargo test")
+  assert.equal(sink.begins.length, 0)
+})
 
 test("finds bash and exec_command inputs", () => {
   const bash = { command: "git status" }
@@ -347,6 +402,136 @@ test("archives unchanged non-shell calls and both result stages", async () => {
   ])
   assert.deepEqual(sink.fullOutputPaths, [undefined])
   assert.deepEqual(sink.finishRequiresPreResult, [])
+})
+
+test("reduces one safe shell text result only after committing its recovery source", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  const requests: Array<Parameters<ResultReducer["reduce"]>[0]> = []
+  const reducer: ResultReducer = {
+    async reduce(request) {
+      requests.push(request)
+      return {
+        changed: true,
+        content: "summary\nSearch omitted output: yarp search yr_0123456789abcdef0123456789abcdef 'error'\n",
+        source: "result_text",
+        sourceCompleteness: "incomplete",
+        needsResultText: true,
+      }
+    },
+  }
+  await start(pi, sink, context, reducer)
+  await call(pi, "post-result", "exec_command", { cmd: "cargo test" })
+  const original = "test routine ... ok\n".repeat(100)
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "post-result",
+      toolName: "exec_command",
+      input: { cmd: "cargo test" },
+      content: [{ type: "text", text: original }],
+      details: { exit_code: 0, truncated: true },
+      isError: true,
+    },
+    context,
+  )
+  assert.deepEqual(patch, {
+    content: [{
+      type: "text",
+      text: "summary\nSearch omitted output: yarp search yr_0123456789abcdef0123456789abcdef 'error'\n",
+    }],
+  })
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0]?.exitCode, 0)
+  assert.equal(requests[0]?.isError, true)
+  assert.equal(requests[0]?.sourceCompleteness, "incomplete")
+  assert.equal(requests[0]?.preferArchiveSource, false)
+  assert.deepEqual(sink.resultTexts, [original])
+  const staged = sink.stagedResults[0]
+  assert.equal(isRecord(staged), true)
+  if (!isRecord(staged)) throw new Error("missing staged result")
+  assert.deepEqual(staged["content"], patch?.content)
+})
+
+test("prefers a documented complete Bash source without duplicating result text", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  const requests: Array<Parameters<ResultReducer["reduce"]>[0]> = []
+  const reducer: ResultReducer = {
+    async reduce(request) {
+      requests.push(request)
+      return {
+        changed: true,
+        content: "complete-source summary",
+        source: "source_output",
+        sourceCompleteness: "complete",
+        needsResultText: false,
+      }
+    },
+  }
+  await start(pi, sink, context, reducer)
+  await call(pi, "source-output", "bash", { command: "cargo test && cargo test" })
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "source-output",
+      toolName: "bash",
+      input: { command: "cargo test && cargo test" },
+      content: [{ type: "text", text: "host-visible text" }],
+      details: { fullOutputPath: "/tmp/pi-full-output.log", truncated: true },
+      isError: false,
+    },
+    context,
+  )
+  assert.equal(requests[0]?.preferArchiveSource, true)
+  assert.equal(requests[0]?.sourceCompleteness, "complete")
+  assert.deepEqual(sink.resultTexts, [])
+  assert.deepEqual(patch, {
+    content: [{ type: "text", text: "complete-source summary" }],
+  })
+})
+
+test("post-result reduction passes through compound and recovery failures", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  sink.failResultText = true
+  let calls = 0
+  const reducer: ResultReducer = {
+    async reduce() {
+      calls += 1
+      return {
+        changed: true,
+        content: "summary",
+        source: "result_text",
+        sourceCompleteness: "unknown",
+        needsResultText: true,
+      }
+    },
+  }
+  await start(pi, sink, context, reducer)
+  await call(pi, "post-result-failure", "exec_command", { cmd: "cargo test && cargo test" })
+  const content = [{ type: "text", text: "raw output" }]
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "post-result-failure",
+      toolName: "exec_command",
+      input: { cmd: "cargo test && cargo test" },
+      content,
+      details: {},
+      isError: false,
+    },
+    context,
+  )
+  assert.equal(calls, 1)
+  assert.equal(patch, undefined)
+  const staged = sink.stagedResults[0]
+  assert.equal(isRecord(staged), true)
+  if (!isRecord(staged)) throw new Error("missing staged result")
+  assert.deepEqual(staged["content"], content)
 })
 
 test("passes only built-in Bash full-output paths to the archive", async () => {

@@ -285,42 +285,45 @@ fn stream_memory_bound_parts(
     success: &OutputPolicy,
     failure: &OutputPolicy,
 ) -> Result<usize, String> {
-    let raw = success
+    let raw = success.max_output_bytes.max(failure.max_output_bytes);
+    let summaries = success
         .max_output_bytes
-        .saturating_add(success.min_savings_bytes)
-        .max(
-            failure
-                .max_output_bytes
-                .saturating_add(failure.min_savings_bytes),
-        );
+        .checked_add(failure.max_output_bytes)
+        .ok_or_else(|| "summary memory bound overflowed".to_owned())?;
     let max_line = success.max_line_bytes.max(failure.max_line_bytes);
     let line_state = max_line
         .checked_mul(2)
         .ok_or_else(|| "line memory bound overflowed".to_owned())?;
-    let reducer_state = if matches!(reducer, Reducer::GitDiff) {
-        max_line
-            .checked_mul(3)
-            .ok_or_else(|| "reducer memory bound overflowed".to_owned())?
-    } else {
-        0
+    let pattern_state = match reducer {
+        Reducer::LineFilter { drop, keep, .. } => {
+            drop.iter()
+                .chain(keep)
+                .try_fold(0_usize, |total, pattern| {
+                    total
+                        .checked_add(pattern.value.len())
+                        .ok_or_else(|| "line pattern memory bound overflowed".to_owned())
+                })?
+        }
+        _ => 0,
     };
-    // Each retained line can occupy a geometrically grown outer-vector slot plus its own Vec.
-    let retained_lines = success
-        .head_lines
-        .checked_add(success.tail_lines)
-        .and_then(|value| value.checked_add(failure.head_lines))
-        .and_then(|value| value.checked_add(failure.tail_lines))
-        .ok_or_else(|| "retained line count overflowed".to_owned())?;
-    let retained_line_overhead = retained_lines
-        .checked_mul(64)
-        .ok_or_else(|| "retained line overhead overflowed".to_owned())?;
+    // Two collectors retain at most 128 records in each of five evidence classes, plus one
+    // source-line representative for each registered diagnostic category.
+    let record_overhead = 2_usize
+        .checked_mul(5)
+        .and_then(|value| value.checked_mul(128))
+        .and_then(|value| value.checked_mul(64))
+        .ok_or_else(|| "record memory bound overflowed".to_owned())?;
+    let diagnostic_representatives = 2_usize
+        .checked_mul(5)
+        .and_then(|value| value.checked_mul(max_line.saturating_add(64)))
+        .ok_or_else(|| "diagnostic representative memory bound overflowed".to_owned())?;
     [
         raw,
-        success.max_output_bytes,
-        failure.max_output_bytes,
+        summaries,
         line_state,
-        reducer_state,
-        retained_line_overhead,
+        pattern_state,
+        record_overhead,
+        diagnostic_representatives,
         8 * 1024,
         64 * 1024,
     ]
@@ -333,28 +336,23 @@ fn stream_memory_bound_parts(
 }
 
 fn validate_policy(label: &str, policy: &OutputPolicy) -> Result<(), String> {
-    if policy.head_lines > 10_000 || policy.tail_lines > 10_000 {
-        return Err(format!("{label} line limits must not exceed 10000"));
-    }
-    if !(256..=1_048_576).contains(&policy.max_line_bytes) {
+    if !(1..=1_048_576).contains(&policy.max_line_bytes) {
         return Err(format!(
-            "{label}.max_line_bytes must be between 256 and 1048576"
+            "{label}.max_line_bytes must be between 1 and 1048576"
         ));
     }
-    if !(1_024..=16_777_216).contains(&policy.max_output_bytes) {
+    if !(1..=4_194_304).contains(&policy.max_output_bytes) {
         return Err(format!(
-            "{label}.max_output_bytes must be between 1024 and 16777216"
+            "{label}.max_output_bytes must be between 1 and 4194304"
         ));
     }
     if policy.min_savings_bytes > 1_048_576 {
         return Err(format!("{label}.min_savings_bytes must not exceed 1048576"));
     }
-    let raw_limit = policy
-        .max_output_bytes
-        .checked_add(policy.min_savings_bytes)
-        .ok_or_else(|| format!("{label} raw buffer limit overflows"))?;
-    if raw_limit > 17_825_792 {
-        return Err(format!("{label} raw buffer exceeds the engine limit"));
+    if policy.min_savings_basis_points > 10_000 {
+        return Err(format!(
+            "{label}.min_savings_basis_points must not exceed 10000"
+        ));
     }
     Ok(())
 }
@@ -400,11 +398,10 @@ mod tests {
 
     fn policy() -> OutputPolicy {
         OutputPolicy {
-            head_lines: 10,
-            tail_lines: 10,
             max_line_bytes: 16_384,
             max_output_bytes: 32_768,
             min_savings_bytes: 120,
+            min_savings_basis_points: 1_000,
         }
     }
 
@@ -417,7 +414,7 @@ mod tests {
                 argv_contains_all: Vec::new(),
             },
             action: Action::Reduce,
-            reducer: Some(Reducer::HeadTail),
+            reducer: Some(Reducer::ListSummary),
             success: Some(policy()),
             failure: Some(policy()),
         }
@@ -446,8 +443,8 @@ mod tests {
     fn rejects_rules_above_the_aggregate_memory_limit() {
         let mut oversized = rule("oversized", &["run"]);
         let policy = oversized.success.as_mut().expect("success policy");
-        policy.max_output_bytes = 16_777_216;
-        policy.min_savings_bytes = 1_048_576;
+        policy.max_output_bytes = 4_194_304;
+        policy.max_line_bytes = 1_048_576;
         oversized.failure = oversized.success;
         let error = validate_rule(&oversized).expect_err("memory limit");
         assert!(error.contains("per stream"));

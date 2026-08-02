@@ -520,7 +520,7 @@ mod tests {
         .expect("manifest");
         std::fs::write(
             directory.path().join("rules/test.json"),
-            r#"{"id":"tests/external","match":{"program":["external-tool"],"argv_prefix":["run"]},"action":"reduce","reducer":{"kind":"head_tail"},"success":{"head_lines":10,"tail_lines":10,"max_line_bytes":16384,"max_output_bytes":32768,"min_savings_bytes":120},"failure":{"head_lines":20,"tail_lines":20,"max_line_bytes":16384,"max_output_bytes":65536,"min_savings_bytes":120}}"#,
+            r#"{"id":"tests/external","match":{"program":["external-tool"],"argv_prefix":["run"]},"action":"reduce","reducer":{"kind":"test_summary"},"success":{"max_line_bytes":16384,"max_output_bytes":32768,"min_savings_bytes":120,"min_savings_basis_points":1000},"failure":{"max_line_bytes":16384,"max_output_bytes":65536,"min_savings_bytes":120,"min_savings_basis_points":500}}"#,
         )
         .expect("rule");
         let source = SourcePack::load(directory.path()).expect("source pack");

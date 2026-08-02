@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 use serde_json::Value;
+use yarp_cli::rules::{Reducer, Rule};
 
 use crate::database::Database;
 use crate::error::Result;
@@ -27,6 +28,7 @@ pub struct BenchmarkReport {
     pub evaluated_results: u64,
     pub evaluated_output_characters: u64,
     pub shell_results: u64,
+    pub shell_output_characters: u64,
     pub eligible_results: u64,
     pub passthrough_results: u64,
     pub ambiguous_results: u64,
@@ -38,7 +40,10 @@ pub struct BenchmarkReport {
     pub eligible_pruned_characters: u64,
     pub removed_characters: u64,
     pub removed_percent_of_eligible: f64,
+    pub removed_percent_of_shell_output: f64,
     pub removed_percent_of_all_output: f64,
+    pub diagnostic_vetoes: u64,
+    pub diagnostic_vetoes_by_term: BTreeMap<String, u64>,
     pub eligible_original_bytes: u64,
     pub eligible_pruned_bytes: u64,
     pub removed_bytes: u64,
@@ -50,6 +55,9 @@ pub struct BenchmarkReport {
     pub by_agent: BTreeMap<String, PruningMetrics>,
     pub by_tool: BTreeMap<String, PruningMetrics>,
     pub by_rule: BTreeMap<String, PruningMetrics>,
+    pub by_reducer: BTreeMap<String, PruningMetrics>,
+    pub by_status: BTreeMap<String, PruningMetrics>,
+    pub by_size_band: BTreeMap<String, PruningMetrics>,
 }
 
 pub fn run(path: &Path) -> Result<BenchmarkReport> {
@@ -67,6 +75,9 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
     let mut evaluated_results = 0_u64;
     let mut evaluated_output_characters = 0_u64;
     let mut shell_results = 0_u64;
+    let mut shell_output_characters = 0_u64;
+    let mut diagnostic_vetoes = 0_u64;
+    let mut diagnostic_vetoes_by_term = BTreeMap::<String, u64>::new();
     let mut passthrough_results = 0_u64;
     let mut ambiguous_results = 0_u64;
     let mut unsupported_results = 0_u64;
@@ -75,6 +86,9 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
     let mut by_agent = BTreeMap::<String, PruningMetrics>::new();
     let mut by_tool = BTreeMap::<String, PruningMetrics>::new();
     let mut by_rule = BTreeMap::<String, PruningMetrics>::new();
+    let mut by_reducer = BTreeMap::<String, PruningMetrics>::new();
+    let mut by_status = BTreeMap::<String, PruningMetrics>::new();
+    let mut by_size_band = BTreeMap::<String, PruningMetrics>::new();
     while let Some(row) = rows.next()? {
         let agent: String = row.get(0)?;
         let tool: String = row.get(1)?;
@@ -90,41 +104,73 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
             continue;
         };
         shell_results = shell_results.saturating_add(1);
-        let Ok((_, selection)) = yarp_cli::rewrite::select_builtin_command(&command) else {
-            unsupported_results = unsupported_results.saturating_add(1);
-            continue;
-        };
-        let selected = match selection {
-            yarp_cli::rules::Selection::Reduce(selected) => selected,
-            yarp_cli::rules::Selection::Passthrough(_) => {
+        shell_output_characters = shell_output_characters
+            .saturating_add(u64::try_from(output.chars().count()).unwrap_or(u64::MAX));
+        let (rule, rule_label) = match benchmark_selection(&command) {
+            BenchmarkSelection::Reduce { rule, label } => (rule, label),
+            BenchmarkSelection::Passthrough => {
                 passthrough_results = passthrough_results.saturating_add(1);
                 continue;
             }
-            yarp_cli::rules::Selection::Ambiguous(_) => {
+            BenchmarkSelection::Ambiguous => {
                 ambiguous_results = ambiguous_results.saturating_add(1);
                 continue;
             }
-            yarp_cli::rules::Selection::Unsupported => {
+            BenchmarkSelection::Unsupported => {
                 unsupported_results = unsupported_results.saturating_add(1);
                 continue;
             }
         };
+        let Some(reducer) = rule.reducer.as_ref() else {
+            unsupported_results = unsupported_results.saturating_add(1);
+            continue;
+        };
+        let reducer_label = reducer_name(reducer);
         let succeeded = result_succeeded(is_error, output_json.as_deref());
         if succeeded.is_none() {
             unknown_status_results = unknown_status_results.saturating_add(1);
         }
-        let pruned = yarp_cli::reducers::reduce_bytes(
-            &selected.rule,
+        let pruned = yarp_cli::reducers::reduce_bytes_with_recovery(
+            &rule,
             output.as_bytes(),
             succeeded.unwrap_or(false),
+            Some(yarp_cli::reducers::RecoveryMarker {
+                archive_ref: "yr_0123456789abcdef0123456789abcdef",
+                source: "result_text",
+                completeness: "unknown",
+            }),
         )
         .unwrap_or_else(|_| output.as_bytes().to_vec());
         let metrics = measure(&output, &pruned);
+        let lost_diagnostics = lost_registered_diagnostics(&output, &pruned);
+        diagnostic_vetoes =
+            diagnostic_vetoes.saturating_add(u64::from(!lost_diagnostics.is_empty()));
+        for term in lost_diagnostics {
+            let count = diagnostic_vetoes_by_term
+                .entry(term.to_owned())
+                .or_default();
+            *count = count.saturating_add(1);
+        }
         total.add(&metrics);
         by_agent.entry(agent).or_default().add(&metrics);
         by_tool.entry(tool).or_default().add(&metrics);
-        by_rule
-            .entry(format!("{}/{}", selected.pack_id, selected.rule.id))
+        by_rule.entry(rule_label).or_default().add(&metrics);
+        by_reducer.entry(reducer_label).or_default().add(&metrics);
+        by_status
+            .entry(
+                if succeeded == Some(true) {
+                    "success"
+                } else if succeeded == Some(false) {
+                    "failure"
+                } else {
+                    "unknown"
+                }
+                .to_owned(),
+            )
+            .or_default()
+            .add(&metrics);
+        by_size_band
+            .entry(size_band(output.len()).to_owned())
             .or_default()
             .add(&metrics);
     }
@@ -134,6 +180,7 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
         evaluated_results,
         evaluated_output_characters,
         shell_results,
+        shell_output_characters,
         eligible_results: total.results,
         passthrough_results,
         ambiguous_results,
@@ -145,6 +192,7 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
         eligible_pruned_characters: total.pruned_characters,
         removed_characters: total.removed_characters,
         removed_percent_of_eligible: percent(total.removed_characters, total.original_characters),
+        removed_percent_of_shell_output: percent(total.removed_characters, shell_output_characters),
         removed_percent_of_all_output: percent(
             total.removed_characters,
             evaluated_output_characters,
@@ -152,6 +200,8 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
         eligible_original_bytes: total.original_bytes,
         eligible_pruned_bytes: total.pruned_bytes,
         removed_bytes: total.removed_bytes,
+        diagnostic_vetoes,
+        diagnostic_vetoes_by_term,
         original_lines: total.original_lines,
         pruned_lines: total.pruned_lines,
         removed_lines: total.original_lines.saturating_sub(total.pruned_lines),
@@ -164,7 +214,77 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
         by_agent,
         by_tool,
         by_rule,
+        by_reducer,
+        by_status,
+        by_size_band,
     })
+}
+
+enum BenchmarkSelection {
+    Reduce { rule: Box<Rule>, label: String },
+    Passthrough,
+    Ambiguous,
+    Unsupported,
+}
+
+fn benchmark_selection(command: &str) -> BenchmarkSelection {
+    match yarp_cli::rewrite::select_builtin_command(command) {
+        Ok((_, yarp_cli::rules::Selection::Reduce(selected))) => BenchmarkSelection::Reduce {
+            label: format!("{}/{}", selected.pack_id, selected.rule.id),
+            rule: Box::new((*selected.rule).clone()),
+        },
+        Ok((_, yarp_cli::rules::Selection::Passthrough(_))) => BenchmarkSelection::Passthrough,
+        Ok((_, yarp_cli::rules::Selection::Ambiguous(_))) => BenchmarkSelection::Ambiguous,
+        Ok((_, yarp_cli::rules::Selection::Unsupported)) | Err(_) => {
+            match yarp_cli::rewrite::select_result_rule(command) {
+                Ok(rule) => {
+                    let Some(reducer) = rule.reducer.as_ref() else {
+                        return BenchmarkSelection::Unsupported;
+                    };
+                    BenchmarkSelection::Reduce {
+                        label: format!("compound/{}", reducer_name(reducer)),
+                        rule: Box::new(rule),
+                    }
+                }
+                Err(_) => BenchmarkSelection::Unsupported,
+            }
+        }
+    }
+}
+
+fn reducer_name(reducer: &Reducer) -> String {
+    match reducer {
+        Reducer::SearchSummary => "search_summary",
+        Reducer::DiffSummary => "diff_summary",
+        Reducer::TestSummary => "test_summary",
+        Reducer::BuildSummary => "build_summary",
+        Reducer::LogSummary => "log_summary",
+        Reducer::StatusSummary => "status_summary",
+        Reducer::ListSummary => "list_summary",
+        Reducer::LineFilter { .. } => "line_filter",
+    }
+    .to_owned()
+}
+
+fn size_band(bytes: usize) -> &'static str {
+    match bytes {
+        0..1_000 => "000000-000999",
+        1_000..10_000 => "001000-009999",
+        10_000..100_000 => "010000-099999",
+        _ => "100000+",
+    }
+}
+
+fn lost_registered_diagnostics(original: &str, pruned: &[u8]) -> Vec<&'static str> {
+    if original.as_bytes() == pruned {
+        return Vec::new();
+    }
+    let original = original.to_ascii_lowercase();
+    let pruned = String::from_utf8_lossy(pruned).to_ascii_lowercase();
+    ["failure", "panic", "error", "warning", "test result"]
+        .into_iter()
+        .filter(|term| original.contains(term) && !pruned.contains(term))
+        .collect()
 }
 
 impl PruningMetrics {

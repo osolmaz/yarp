@@ -235,6 +235,66 @@ fn archives_raw_and_pruned_shell_streams() {
 }
 
 #[test]
+fn archive_search_help_is_model_sized_and_stable() {
+    let output = yarp(&["search", "--help"]);
+    assert!(output.status.success());
+    assert!(output.stdout.len() <= 2 * 1_024);
+    let text = String::from_utf8(output.stdout).expect("help UTF-8");
+    assert!(text.contains("yarp search REF PATTERN [options]"));
+    assert!(text.contains("yarp read REF stdout 118:130"));
+    assert!(text.contains("-F/--fixed-strings"));
+}
+
+#[test]
+fn searches_and_reads_verified_archived_output_by_opaque_reference() {
+    let directory = TempDir::new().expect("temp directory");
+    let database = directory.path().join("archive/tool-calls.sqlite3");
+    let mut archive = Archive::open_path(database.clone()).expect("archive");
+    let archive_ref = archive
+        .begin_call(
+            &session(),
+            &call("call-query", "exec_command"),
+            &json!({"cmd": "cargo test"}),
+            &json!({"cmd": "cargo test"}),
+            20,
+        )
+        .expect("begin call");
+    archive
+        .result_text(
+            &session(),
+            "call-query",
+            "alpha\n\x1b[31mERROR failure\x1b[0m\nomega\n",
+            yarp_cli::archive::SourceCompleteness::Incomplete,
+            30,
+        )
+        .expect("result text");
+    drop(archive);
+
+    let searched = yarp_with_archive(
+        &["search", &archive_ref, "error", "-i", "-C", "1"],
+        &database,
+    );
+    assert!(searched.status.success());
+    let search_text = String::from_utf8(searched.stdout).expect("search UTF-8");
+    assert!(search_text.contains("source=result_text complete=false"));
+    assert!(search_text.contains("result_text:2:ERROR failure"));
+    assert!(search_text.contains(&format!("yarp read {archive_ref} result_text 1:3")));
+    assert!(!search_text.contains("\x1b[31m"));
+
+    let read = yarp_with_archive(&["read", &archive_ref, "result_text", "1:3"], &database);
+    assert!(read.status.success());
+    assert_eq!(read.stdout, b"alpha\n\x1b[31mERROR failure\x1b[0m\nomega\n");
+
+    let no_match = yarp_with_archive(&["search", &archive_ref, "absent"], &database);
+    assert_eq!(no_match.status.code(), Some(1));
+    assert_eq!(no_match.stdout, b"No matches\n");
+
+    let invalid = yarp_with_archive(&["search", "not-a-ref", "error"], &database);
+    assert!(!invalid.status.success());
+    assert!(invalid.stdout.is_empty());
+}
+
+#[test]
 fn rewrite_disagreement_archives_and_emits_exact_passthrough_streams() {
     let directory = TempDir::new().expect("temp directory");
     let database = directory.path().join("archive/tool-calls.sqlite3");

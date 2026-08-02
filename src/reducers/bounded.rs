@@ -2,7 +2,6 @@ use std::collections::VecDeque;
 
 use yarp_rule_pack::OutputPolicy;
 
-const MARKER_RESERVE: usize = 160;
 const LINE_MARKER_RESERVE: usize = 96;
 
 #[derive(Clone, Debug)]
@@ -55,10 +54,11 @@ impl LineAccumulator {
         }
     }
 
-    pub fn observe_source(&mut self, byte: u8) {
+    pub fn observe_source(&mut self, byte: u8) -> bool {
         self.total_bytes = self.total_bytes.saturating_add(1);
         self.previous_byte = self.last_byte;
         self.last_byte = Some(byte);
+        self.total_bytes >= self.prefix_limit.saturating_sub(10)
     }
 
     pub fn push_output(&mut self, byte: u8) {
@@ -103,128 +103,6 @@ impl LineAccumulator {
 }
 
 #[derive(Debug)]
-pub struct Retention {
-    policy: OutputPolicy,
-    head: Vec<Vec<u8>>,
-    tail: VecDeque<Vec<u8>>,
-    head_bytes: usize,
-    tail_bytes: usize,
-    head_budget: usize,
-    tail_budget: usize,
-    head_closed: bool,
-    total_lines: usize,
-    truncated_lines: usize,
-    newline: Vec<u8>,
-    newline_observed: bool,
-}
-
-impl Retention {
-    #[must_use]
-    pub fn new(policy: OutputPolicy) -> Self {
-        let content_budget = policy.max_output_bytes.saturating_sub(MARKER_RESERVE);
-        let requested_lines = policy.head_lines.saturating_add(policy.tail_lines);
-        let (head_budget, tail_budget) = if requested_lines == 0 {
-            (0, 0)
-        } else if policy.tail_lines == 0 {
-            (content_budget, 0)
-        } else if policy.head_lines == 0 {
-            (0, content_budget)
-        } else {
-            let head_budget = content_budget
-                .saturating_mul(policy.head_lines)
-                .checked_div(requested_lines)
-                .unwrap_or(0);
-            (head_budget, content_budget.saturating_sub(head_budget))
-        };
-        Self {
-            policy,
-            head: Vec::new(),
-            tail: VecDeque::new(),
-            head_bytes: 0,
-            tail_bytes: 0,
-            head_budget,
-            tail_budget,
-            head_closed: false,
-            total_lines: 0,
-            truncated_lines: 0,
-            newline: b"\n".to_vec(),
-            newline_observed: false,
-        }
-    }
-
-    pub fn observe(&mut self, line: &LineView, keep: bool, two_sided: bool) {
-        self.total_lines = self.total_lines.saturating_add(1);
-        self.observe_newline(line);
-        if !keep {
-            return;
-        }
-        let (rendered, truncated) = render_line(line, self.policy.max_line_bytes, two_sided);
-        self.truncated_lines = self.truncated_lines.saturating_add(usize::from(truncated));
-        if !self.head_closed && self.head.len() < self.policy.head_lines {
-            if self.head_bytes.saturating_add(rendered.len()) <= self.head_budget {
-                self.head_bytes = self.head_bytes.saturating_add(rendered.len());
-                self.head.push(rendered);
-                return;
-            }
-            self.head_closed = true;
-        }
-        if self.policy.tail_lines == 0 || rendered.len() > self.tail_budget {
-            return;
-        }
-        while self.tail.len() >= self.policy.tail_lines
-            || self.tail_bytes.saturating_add(rendered.len()) > self.tail_budget
-        {
-            let Some(removed) = self.tail.pop_front() else {
-                break;
-            };
-            self.tail_bytes = self.tail_bytes.saturating_sub(removed.len());
-        }
-        if self.tail.len() < self.policy.tail_lines
-            && self.tail_bytes.saturating_add(rendered.len()) <= self.tail_budget
-        {
-            self.tail_bytes = self.tail_bytes.saturating_add(rendered.len());
-            self.tail.push_back(rendered);
-        }
-    }
-
-    #[must_use]
-    pub fn render(self) -> Vec<u8> {
-        let retained = self.head.len().saturating_add(self.tail.len());
-        let omitted = self.total_lines.saturating_sub(retained);
-        let mut output = Vec::with_capacity(self.policy.max_output_bytes);
-        for line in self.head {
-            output.extend_from_slice(&line);
-        }
-        if omitted > 0 || self.truncated_lines > 0 {
-            ensure_line_boundary(&mut output, &self.newline);
-            let marker = match (omitted, self.truncated_lines) {
-                (0, truncated) => format!("[yarp: truncated {truncated} lines]"),
-                (omitted, 0) => format!("[yarp: omitted {omitted} lines]"),
-                (omitted, truncated) => {
-                    format!("[yarp: omitted {omitted} lines; truncated {truncated} lines]")
-                }
-            };
-            output.extend_from_slice(marker.as_bytes());
-            output.extend_from_slice(&self.newline);
-        }
-        for line in self.tail {
-            output.extend_from_slice(&line);
-        }
-        if output.len() > self.policy.max_output_bytes {
-            output.truncate(self.policy.max_output_bytes);
-        }
-        output
-    }
-
-    fn observe_newline(&mut self, line: &LineView) {
-        if !self.newline_observed && !line.line_ending.is_empty() {
-            self.newline.clone_from(&line.line_ending);
-            self.newline_observed = true;
-        }
-    }
-}
-
-#[derive(Debug)]
 pub struct ShortRaw {
     body: Option<Vec<u8>>,
     limit: usize,
@@ -234,13 +112,7 @@ pub struct ShortRaw {
 impl ShortRaw {
     #[must_use]
     pub fn new(success: OutputPolicy, failure: OutputPolicy) -> Self {
-        let success_limit = success
-            .max_output_bytes
-            .saturating_add(success.min_savings_bytes);
-        let failure_limit = failure
-            .max_output_bytes
-            .saturating_add(failure.min_savings_bytes);
-        let limit = success_limit.max(failure_limit);
+        let limit = success.max_output_bytes.max(failure.max_output_bytes);
         Self {
             body: Some(Vec::with_capacity(limit.min(64 * 1024))),
             limit,
@@ -272,7 +144,9 @@ impl ShortRaw {
             return reduced;
         }
         let savings = raw.len().saturating_sub(reduced.len());
-        if reduced.len() >= raw.len() || savings < policy.min_savings_bytes {
+        let proportional = (savings as u128).saturating_mul(10_000)
+            >= (raw.len() as u128).saturating_mul(u128::from(policy.min_savings_basis_points));
+        if reduced.len() >= raw.len() || savings < policy.min_savings_bytes || !proportional {
             raw
         } else {
             reduced
@@ -280,7 +154,7 @@ impl ShortRaw {
     }
 }
 
-fn render_line(line: &LineView, limit: usize, two_sided: bool) -> (Vec<u8>, bool) {
+pub(crate) fn render_line(line: &LineView, limit: usize, two_sided: bool) -> (Vec<u8>, bool) {
     if line.total_bytes <= limit {
         return (line.prefix.clone(), false);
     }
@@ -322,58 +196,17 @@ fn render_line(line: &LineView, limit: usize, two_sided: bool) -> (Vec<u8>, bool
     (output, true)
 }
 
-fn ensure_line_boundary(output: &mut Vec<u8>, newline: &[u8]) {
-    if !output.is_empty() && !output.ends_with(b"\n") {
-        output.extend_from_slice(newline);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn policy() -> OutputPolicy {
         OutputPolicy {
-            head_lines: 2,
-            tail_lines: 1,
             max_line_bytes: 256,
             max_output_bytes: 1_024,
             min_savings_bytes: 8,
+            min_savings_basis_points: 1_000,
         }
-    }
-
-    fn line(value: &[u8]) -> LineView {
-        let line_ending = if value.ends_with(b"\r\n") {
-            b"\r\n".to_vec()
-        } else if value.ends_with(b"\n") {
-            b"\n".to_vec()
-        } else {
-            Vec::new()
-        };
-        LineView {
-            prefix: value.to_vec(),
-            tail: value.iter().copied().collect(),
-            line_ending,
-            total_bytes: value.len(),
-            truncated: false,
-        }
-    }
-
-    #[test]
-    fn keeps_bounded_head_and_tail() {
-        let mut retained = Retention::new(policy());
-        for value in [
-            &b"one\n"[..],
-            &b"two\n"[..],
-            &b"three\n"[..],
-            &b"four\n"[..],
-        ] {
-            retained.observe(&line(value), true, false);
-        }
-        assert_eq!(
-            retained.render(),
-            b"one\ntwo\n[yarp: omitted 1 lines]\nfour\n"
-        );
     }
 
     #[test]
@@ -389,29 +222,16 @@ mod tests {
     }
 
     #[test]
-    fn marker_uses_the_first_observed_line_ending() {
-        let mut retained = Retention::new(policy());
-        for value in [
-            &b"one\r\n"[..],
-            &b"two\n"[..],
-            &b"three\n"[..],
-            &b"four\n"[..],
-        ] {
-            retained.observe(&line(value), true, false);
-        }
-        let output = retained.render();
-        assert!(
-            output
-                .windows(b"[yarp: omitted 1 lines]\r\n".len())
-                .any(|window| window == b"[yarp: omitted 1 lines]\r\n")
-        );
-    }
-
-    #[test]
-    fn short_raw_requires_minimum_savings_without_exceeding_the_output_cap() {
+    fn short_raw_requires_both_savings_gates() {
         let mut raw = ShortRaw::new(policy(), policy());
         raw.push(b"short\n");
         assert_eq!(raw.choose(b"tiny\n".to_vec(), policy()), b"short\n");
+
+        let mut strict = policy();
+        strict.min_savings_basis_points = 9_000;
+        let mut raw = ShortRaw::new(strict, strict);
+        raw.push(b"1234567890");
+        assert_eq!(raw.choose(b"123456".to_vec(), strict), b"1234567890");
 
         let input = vec![b'x'; policy().max_output_bytes + 1];
         let mut raw = ShortRaw::new(policy(), policy());

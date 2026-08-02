@@ -1,5 +1,10 @@
 # Tool-call archive implementation plan
 
+> This document records the initial archive implementation. The current version
+> 1 schema, including indexed-output references and result-text recovery, is
+> defined by [Tool-call archive specification](tool-call-archive-spec.md) and
+> [Indexed output summaries](indexed-output-summaries-implementation-plan.md).
+
 YARP will record every Pi tool call in one local SQLite database. Each record will contain the tool input and result before and after YARP processing. The database format is defined in [tool-call-archive-spec.md](tool-call-archive-spec.md).
 
 The current release prunes supported shell output in memory and keeps no history. This work adds local persistence without adding messages or entries to Pi sessions.

@@ -1994,6 +1994,8 @@ dependencies = [
 name = "yarp-cli"
 version = "0.1.0"
 dependencies = [
+ "fs2",
+ "regex",
  "rusqlite",
  "serde",
  "serde_jcs",

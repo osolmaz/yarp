@@ -1,0 +1,12 @@
+{
+  "id": "guards/codex-json",
+  "match": {
+    "program": [
+      "codex"
+    ],
+    "argv_contains_all": [
+      "--json"
+    ]
+  },
+  "action": "passthrough"
+}

@@ -15,8 +15,14 @@ import {
   type ArchiveSession,
   type ArchiveSink,
 } from "./archive-client.js"
+import {
+  ResultReducerClient,
+  type ResultReducer,
+  type SourceCompleteness,
+} from "./result-client.js"
 
 const REWRITE_TIMEOUT_MS = 2_000
+export const YARP_PACKAGE_VERSION = "0.1.0"
 
 type CommandBinding = {
   command: string
@@ -24,11 +30,19 @@ type CommandBinding = {
 }
 
 type ArchiveSinkFactory = () => ArchiveSink
+type ResultReducerFactory = () => ResultReducer
 
 type PendingCall = {
   call: ArchiveCall
   input: unknown
   capturedAtMs: number
+}
+
+type ActiveCall = {
+  requiresStreams: boolean
+  staged: boolean
+  archiveRef: string
+  command: string | null
 }
 
 type ResultPatch = {
@@ -97,17 +111,25 @@ async function rewriteCommand(
 export async function installYarpExtension(
   pi: ExtensionAPI,
   createSink: ArchiveSinkFactory = () => new ArchiveClient(),
+  createResultReducer: ResultReducerFactory = () => new ResultReducerClient(),
 ): Promise<void> {
   const version = await pi.exec("yarp", ["--version"], { timeout: REWRITE_TIMEOUT_MS })
   if (version.code !== 0) {
     console.warn("[yarp] binary not found in PATH; extension disabled")
     return
   }
+  if (version.stdout.trim() !== `yarp ${YARP_PACKAGE_VERSION}`) {
+    console.warn(
+      `[yarp] binary/package version mismatch: expected yarp ${YARP_PACKAGE_VERSION}; extension disabled`,
+    )
+    return
+  }
+  const resultReducer = createResultReducer()
 
   let sink: ArchiveSink | null = null
   let session: ArchiveSession | null = null
   let projectRulePack: string | null = null
-  const activeCalls = new Map<string, { requiresStreams: boolean; staged: boolean }>()
+  const activeCalls = new Map<string, ActiveCall>()
   const pendingCalls = new Map<string, PendingCall>()
   const restoredFinalResults = new Map<string, ResultPatch>()
 
@@ -179,7 +201,7 @@ export async function installYarpExtension(
         rewritten !== null && binding !== null && rewritten !== binding.command
       const pending = pendingCalls.get(event.toolCallId)
       const capturedAtMs = pending?.capturedAtMs ?? Date.now()
-      await archive.sink.beginCall(
+      const archiveRef = await archive.sink.beginCall(
         archive.session,
         callIdentity(event, context, requiresStreams, capturedAtMs),
         inputBefore,
@@ -187,7 +209,12 @@ export async function installYarpExtension(
         capturedAtMs,
       )
       pendingCalls.delete(event.toolCallId)
-      activeCalls.set(event.toolCallId, { requiresStreams, staged: false })
+      activeCalls.set(event.toolCallId, {
+        requiresStreams,
+        staged: false,
+        archiveRef,
+        command: binding?.command ?? null,
+      })
     }
 
     if (rewritten !== null && binding !== null && rewritten !== binding.command) {
@@ -195,23 +222,76 @@ export async function installYarpExtension(
     }
   })
 
-  pi.on("tool_result", async (event) => {
+  pi.on("tool_result", async (event, context) => {
     if (sink === null || session === null) return
     const active = activeCalls.get(event.toolCallId)
     if (active === undefined) return
-    const snapshot = resultSnapshot(event)
+    const fullOutputPath = sourceFullOutputPath(event)
+    const beforeSnapshot = resultSnapshot(event)
     try {
       await sink.resultBefore(
         session,
         event.toolCallId,
-        snapshot,
+        beforeSnapshot,
         Date.now(),
-        sourceFullOutputPath(event),
+        fullOutputPath,
       )
+    } catch (error) {
+      activeCalls.delete(event.toolCallId)
+      console.error(`[yarp] result archive failed: ${errorMessage(error)}`)
+      if (active.requiresStreams) {
+        return restoreRawStreams(pi, session, event.toolCallId, event.isError)
+      }
+      return undefined
+    }
+
+    let patch: ResultPatch | undefined
+    const text = singleTextContent(event.content)
+    if (
+      process.env["YARP_DISABLED"] !== "1"
+      && !active.requiresStreams
+      && active.command !== null
+      && text !== null
+    ) {
+      const completeness = resultCompleteness(event, fullOutputPath !== undefined)
+      try {
+        const reduced = await resultReducer.reduce(
+          {
+            command: active.command,
+            text,
+            isError: event.isError,
+            ...explicitExitCode(event.details),
+            archiveRef: active.archiveRef,
+            sourceCompleteness: completeness,
+            preferArchiveSource: fullOutputPath !== undefined,
+          },
+          context.signal,
+        )
+        if (reduced.changed) {
+          if (reduced.needsResultText) {
+            await sink.resultText(
+              session,
+              event.toolCallId,
+              text,
+              completeness,
+              Date.now(),
+            )
+          }
+          patch = {
+            content: [{ type: "text", text: reduced.content }],
+          }
+        }
+      } catch (error) {
+        console.warn(`[yarp] post-result reduction failed; keeping original output: ${errorMessage(error)}`)
+      }
+    }
+
+    const stagedSnapshot = resultSnapshot(event, patch?.content)
+    try {
       await sink.stageResult(
         session,
         event.toolCallId,
-        snapshot,
+        stagedSnapshot,
         event.isError,
         Date.now(),
       )
@@ -222,8 +302,9 @@ export async function installYarpExtension(
       if (active.requiresStreams) {
         return restoreRawStreams(pi, session, event.toolCallId, event.isError)
       }
+      return undefined
     }
-    return undefined
+    return patch
   })
 
   pi.on("tool_execution_end", async (event) => {
@@ -340,15 +421,70 @@ function sourceFullOutputPath(event: ToolResultEvent): string | undefined {
   return typeof path === "string" && path !== "" ? path : undefined
 }
 
-function resultSnapshot(event: ToolResultEvent): Record<string, unknown> {
+function resultSnapshot(
+  event: ToolResultEvent,
+  content: ToolResultEvent["content"] = event.content,
+): Record<string, unknown> {
   return normalizeResult(
     {
-      content: event.content,
+      content,
       details: event.details,
       usage: event.usage,
     },
     event.isError,
   )
+}
+
+function singleTextContent(content: ToolResultEvent["content"]): string | null {
+  if (content.length !== 1) return null
+  const item = content[0]
+  if (!isRecord(item) || item["type"] !== "text" || typeof item["text"] !== "string") {
+    return null
+  }
+  return item["text"]
+}
+
+function resultCompleteness(
+  event: ToolResultEvent,
+  hasFullOutput: boolean,
+): SourceCompleteness {
+  if (hasFullOutput) return "complete"
+  const truncated = nestedBoolean(event.details, "truncated", 0)
+  if (truncated === true) return "incomplete"
+  if (truncated === false) return "complete"
+  return "unknown"
+}
+
+function nestedBoolean(value: unknown, key: string, depth: number): boolean | undefined {
+  if (!isRecord(value) || depth > 2) return undefined
+  const direct = value[key]
+  if (typeof direct === "boolean") return direct
+  for (const nestedKey of ["truncation", "details"]) {
+    const nested = nestedBoolean(value[nestedKey], key, depth + 1)
+    if (nested !== undefined) return nested
+  }
+  return undefined
+}
+
+function explicitExitCode(details: unknown): { exitCode?: number } {
+  const exitCode = nestedExitCode(details, 0)
+  return exitCode === undefined ? {} : { exitCode }
+}
+
+function nestedExitCode(value: unknown, depth: number): number | undefined {
+  if (!isRecord(value) || depth > 2) return undefined
+  for (const key of ["exit_code", "exitCode"]) {
+    const candidate = value[key]
+    if (
+      typeof candidate === "number"
+      && Number.isInteger(candidate)
+      && candidate >= -2_147_483_648
+      && candidate <= 2_147_483_647
+    ) {
+      return candidate
+    }
+  }
+  return nestedExitCode(value["details"], depth + 1)
 }
 
 function executionEndSnapshot(event: ToolExecutionEndEvent): Record<string, unknown> {
