@@ -394,7 +394,6 @@ fn sort_option_takes_value(value: &str) -> bool {
         "--buffer-size",
         "--temporary-directory",
         "--batch-size",
-        "--compress-program",
         "--random-source",
     ]
     .iter()
@@ -926,6 +925,8 @@ mod tests {
         for command in [
             "cargo test | head source.txt",
             "find . -type f | sort existing.txt",
+            "find . -type f | sort --compress-program=cat",
+            "find . -type f | sort --compress-program cat",
             "rg --json TODO . | jq .",
             "find . -print0 | xargs -0 echo",
             "cat source.rs | sed 's/x/y/'",
