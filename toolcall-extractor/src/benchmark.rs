@@ -596,6 +596,11 @@ mod tests {
                 StatusConfidence::Complete,
                 true,
             ),
+            (
+                "false && set -o pipefail; cargo test | head -1",
+                StatusConfidence::FinalStageOnly,
+                false,
+            ),
         ] {
             let BenchmarkSelection::Reduce {
                 status_confidence, ..

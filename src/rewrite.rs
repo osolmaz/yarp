@@ -124,7 +124,7 @@ pub fn select_result_plan(command: &str) -> Result<ResultPlan, String> {
     let program = shell::parse(command)?;
     let mut selected: Option<Rule> = None;
     let mut confidence = StatusConfidence::Complete;
-    let mut pipefail = false;
+    let mut pipefail = Some(false);
     let mut previous_had_output = false;
 
     for (index, item) in program.items.iter().enumerate() {
@@ -132,15 +132,19 @@ pub fn select_result_plan(command: &str) -> Result<ResultPlan, String> {
             .checked_sub(1)
             .and_then(|connector| program.connectors.get(connector))
             .copied();
+        if let ShellItem::Simple(command) = item
+            && let Some(value) = pipefail_setting(&command.words)
+        {
+            pipefail = if matches!(connector, None | Some(Connector::Sequence)) {
+                Some(value)
+            } else {
+                None
+            };
+        }
         let (candidate, setup) = match item {
-            ShellItem::Simple(command) => {
-                if let Some(value) = pipefail_setting(&command.words) {
-                    pipefail = value;
-                }
-                select_simple(command)?
-            }
+            ShellItem::Simple(command) => select_simple(command)?,
             ShellItem::Pipeline(stages) => {
-                if !pipefail {
+                if pipefail != Some(true) {
                     confidence = merge_confidence(confidence, StatusConfidence::FinalStageOnly);
                 }
                 (Some(select_pipeline(stages)?), false)
@@ -908,6 +912,19 @@ mod tests {
         let pipefail = select_result_plan("set -o pipefail && cargo test | head -100")
             .expect("pipefail pipeline");
         assert_eq!(pipefail.status_confidence, StatusConfidence::Complete);
+        let skipped_pipefail = select_result_plan("false && set -o pipefail; cargo test | head -1")
+            .expect("conditionally skipped pipefail");
+        assert_eq!(
+            skipped_pipefail.status_confidence,
+            StatusConfidence::FinalStageOnly
+        );
+        let conditional_disable =
+            select_result_plan("set -o pipefail; false && set +o pipefail; cargo test | head -1")
+                .expect("conditional pipefail disable");
+        assert_eq!(
+            conditional_disable.status_confidence,
+            StatusConfidence::FinalStageOnly
+        );
 
         let sequence = select_result_plan("cargo test; cargo test").expect("test sequence");
         assert_eq!(sequence.status_confidence, StatusConfidence::FinalStageOnly);
@@ -927,6 +944,9 @@ mod tests {
             "find . -type f | sort existing.txt",
             "find . -type f | sort --compress-program=cat",
             "find . -type f | sort --compress-program cat",
+            "ls -D",
+            "git tag --list --format=%(refname)",
+            "git stash list --pretty=format:%H",
             "rg --json TODO . | jq .",
             "find . -print0 | xargs -0 echo",
             "cat source.rs | sed 's/x/y/'",

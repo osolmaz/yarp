@@ -216,6 +216,9 @@ fn validate_tree_limits(root: Node<'_>) -> Result<(), String> {
         if node.is_error() || node.is_missing() {
             return Err("Bash syntax tree contains an error or missing node".to_owned());
         }
+        if !node.is_named() && node.kind() == "&" {
+            return Err("background shell jobs are unsupported".to_owned());
+        }
         let mut cursor = node.walk();
         stack.extend(
             node.children(&mut cursor)
@@ -758,6 +761,8 @@ mod tests {
             "echo --j*",
             "echo {one,two}",
             "echo value # comment",
+            "cargo test &",
+            "cargo test | head &",
             "(cargo test)",
             "for x in a; do echo $x; done",
             "cat <<EOF\nvalue\nEOF",

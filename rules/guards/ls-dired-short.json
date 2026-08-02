@@ -1,0 +1,12 @@
+{
+  "id": "guards/ls-dired-short",
+  "match": {
+    "program": [
+      "ls"
+    ],
+    "argv_contains_all": [
+      "-D"
+    ]
+  },
+  "action": "passthrough"
+}
