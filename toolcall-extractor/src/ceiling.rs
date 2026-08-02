@@ -412,12 +412,13 @@ fn current_output(
     let BenchmarkSelection::Reduce {
         rule,
         status_confidence,
+        transform_diagnostics,
         ..
     } = selection
     else {
         return output.as_bytes().to_vec();
     };
-    yarp_cli::reducers::reduce_bytes_with_recovery(
+    yarp_cli::reducers::reduce_bytes_with_recovery_and_transform_diagnostics(
         rule,
         output.as_bytes(),
         use_success_policy(succeeded, *status_confidence),
@@ -426,6 +427,7 @@ fn current_output(
             source: RECOVERY_SOURCE,
             completeness: RECOVERY_COMPLETENESS,
         }),
+        *transform_diagnostics,
     )
     .unwrap_or_else(|_| output.as_bytes().to_vec())
 }
@@ -490,8 +492,8 @@ fn assess_words(words: &[String]) -> FamilyKey {
         "cmake" => build_candidate("build/cmake"),
         "meson" => build_candidate("build/meson"),
         "msbuild" => build_candidate("build/msbuild"),
-        "bazel" | "buck" | "buck2" => assess_build_driver(arguments),
-        "docker" | "podman" => assess_container(arguments),
+        "bazel" | "buck" | "buck2" => assess_build_driver(program, arguments),
+        "docker" | "podman" => assess_container(program, arguments),
         "kubectl" => assess_cluster(arguments),
         "git" => assess_git(arguments),
         "gh" => assess_gh(arguments),
@@ -605,8 +607,8 @@ fn developer_unclear(id: &str) -> FamilyKey {
     )
 }
 
-fn assess_build_driver(arguments: &[String]) -> FamilyKey {
-    match first_positional(arguments) {
+fn assess_build_driver(program: &str, arguments: &[String]) -> FamilyKey {
+    match first_subcommand(program, arguments) {
         Some("test") => candidate(
             "build-driver/test",
             "test_summary",
@@ -624,8 +626,8 @@ fn assess_build_driver(arguments: &[String]) -> FamilyKey {
     }
 }
 
-fn assess_container(arguments: &[String]) -> FamilyKey {
-    match first_positional(arguments) {
+fn assess_container(program: &str, arguments: &[String]) -> FamilyKey {
+    match first_subcommand(program, arguments) {
         Some("ps" | "images" | "stats") => candidate(
             "container/inventory",
             "list_summary",
@@ -657,7 +659,7 @@ fn assess_container(arguments: &[String]) -> FamilyKey {
 }
 
 fn assess_cluster(arguments: &[String]) -> FamilyKey {
-    match first_positional(arguments) {
+    match first_subcommand("kubectl", arguments) {
         Some("events") => candidate(
             "cluster/events",
             "log_summary",
@@ -731,7 +733,7 @@ fn assess_git(arguments: &[String]) -> FamilyKey {
 }
 
 fn assess_gh(arguments: &[String]) -> FamilyKey {
-    match first_positional(arguments) {
+    match first_subcommand("gh", arguments) {
         Some("api") => required(
             "gh/api",
             "API output may be structured or exact and stays unchanged",
@@ -750,7 +752,7 @@ fn assess_gh(arguments: &[String]) -> FamilyKey {
 }
 
 fn assess_package(program: &str, arguments: &[String]) -> FamilyKey {
-    let subcommand = first_positional(arguments);
+    let subcommand = first_subcommand(program, arguments);
     if matches!(
         subcommand,
         Some("install" | "add" | "remove" | "uninstall" | "update" | "upgrade" | "publish")
@@ -794,11 +796,92 @@ fn package_task(program: &str, task: &str) -> (&'static str, &'static str) {
     }
 }
 
-fn first_positional(arguments: &[String]) -> Option<&str> {
-    arguments
-        .iter()
-        .find(|argument| !argument.starts_with('-'))
-        .map(String::as_str)
+fn first_subcommand<'a>(program: &str, arguments: &'a [String]) -> Option<&'a str> {
+    let value_options: &[&str] = match program {
+        "docker" | "podman" => &[
+            "-c",
+            "--context",
+            "--config",
+            "-H",
+            "--host",
+            "-l",
+            "--log-level",
+            "--connection",
+            "--url",
+            "--identity",
+            "--root",
+            "--runroot",
+            "--tmpdir",
+            "--storage-driver",
+            "--events-backend",
+            "--runtime",
+        ],
+        "kubectl" => &[
+            "-n",
+            "--namespace",
+            "--context",
+            "--cluster",
+            "--user",
+            "--kubeconfig",
+            "-s",
+            "--server",
+            "--token",
+            "--as",
+            "--as-group",
+            "--cache-dir",
+            "--certificate-authority",
+            "--client-certificate",
+            "--client-key",
+            "--request-timeout",
+            "--tls-server-name",
+            "--profile",
+            "--profile-output",
+        ],
+        "gh" => &["-R", "--repo", "--hostname"],
+        "npm" => &[
+            "--prefix",
+            "-w",
+            "--workspace",
+            "--userconfig",
+            "--registry",
+        ],
+        "pnpm" | "yarn" | "bun" => &["-C", "--dir", "--filter", "--cwd", "--config", "--registry"],
+        "bazel" | "buck" | "buck2" => &[
+            "--output_base",
+            "--output_user_root",
+            "--server_javabase",
+            "--bazelrc",
+            "--host_jvm_args",
+            "--isolation-dir",
+        ],
+        _ => &[],
+    };
+    let mut index = 0;
+    while let Some(argument) = arguments.get(index).map(String::as_str) {
+        if argument == "--" {
+            return arguments.get(index + 1).map(String::as_str);
+        }
+        if value_options.contains(&argument) {
+            index = index.saturating_add(2);
+            continue;
+        }
+        if value_options.iter().any(|option| {
+            let Some(suffix) = argument.strip_prefix(option) else {
+                return false;
+            };
+            (!suffix.is_empty() && option.starts_with('-') && !option.starts_with("--"))
+                || suffix.starts_with('=')
+        }) {
+            index = index.saturating_add(1);
+            continue;
+        }
+        if argument.starts_with('-') {
+            index = index.saturating_add(1);
+            continue;
+        }
+        return Some(argument);
+    }
+    None
 }
 
 fn git_subcommand(arguments: &[String]) -> Option<&str> {
@@ -1093,6 +1176,11 @@ mod tests {
                 FamilyClass::ReviewCandidate,
             ),
             (
+                "docker --context prod ps",
+                "container/inventory",
+                FamilyClass::ReviewCandidate,
+            ),
+            (
                 "docker logs app",
                 "container/logs",
                 FamilyClass::ReviewCandidate,
@@ -1134,6 +1222,11 @@ mod tests {
                 FamilyClass::ReviewCandidate,
             ),
             (
+                "kubectl -n system get pods",
+                "cluster/inspection",
+                FamilyClass::ReviewCandidate,
+            ),
+            (
                 "kubectl exec pod -- sh",
                 "cluster/exact-or-streaming",
                 FamilyClass::RequiredPassThrough,
@@ -1169,9 +1262,19 @@ mod tests {
                 "gh/other-inspection",
                 FamilyClass::ReviewCandidate,
             ),
+            (
+                "gh --repo owner/project workflow list",
+                "gh/other-inspection",
+                FamilyClass::ReviewCandidate,
+            ),
             ("gh version", "gh/other", FamilyClass::Unclear),
             (
                 "npm test",
+                "package/npm-test-task",
+                FamilyClass::ReviewCandidate,
+            ),
+            (
+                "npm --prefix web test",
                 "package/npm-test-task",
                 FamilyClass::ReviewCandidate,
             ),
@@ -1286,6 +1389,7 @@ mod tests {
                 label: format!("{}/{}", selected.pack_id, selected.rule.id),
                 rule: Box::new((*selected.rule).clone()),
                 status_confidence: yarp_cli::rewrite::StatusConfidence::Complete,
+                transform_diagnostics: yarp_cli::rewrite::TransformDiagnostics::default(),
             },
             _ => panic!("expected reducer"),
         };

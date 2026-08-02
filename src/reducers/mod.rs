@@ -16,6 +16,8 @@ use evidence::{EvidenceClass, EvidenceCollector};
 use filter::{AnsiStripper, line_filter_keeps};
 use yarp_rule_pack::{Action, OutputPolicy, Reducer, Rule};
 
+use crate::rewrite::TransformDiagnostics;
+
 const DIAGNOSTIC_CONTEXT_LINES: usize = 6;
 
 #[derive(Debug, Default)]
@@ -79,6 +81,7 @@ pub struct StreamReducer {
     line_number: u64,
     diagnostic_context: usize,
     registered_diagnostics: RegisteredDiagnosticTracker,
+    transform_diagnostics: TransformDiagnostics,
 }
 
 impl StreamReducer {
@@ -88,6 +91,13 @@ impl StreamReducer {
     ///
     /// Returns an error when the supplied rule is not a complete reduction rule.
     pub fn new(rule: &Rule) -> Result<Self, String> {
+        Self::new_with_transform_diagnostics(rule, TransformDiagnostics::default())
+    }
+
+    pub(crate) fn new_with_transform_diagnostics(
+        rule: &Rule,
+        transform_diagnostics: TransformDiagnostics,
+    ) -> Result<Self, String> {
         if rule.action != Action::Reduce {
             return Err("cannot create a reducer for a passthrough rule".to_owned());
         }
@@ -131,6 +141,7 @@ impl StreamReducer {
             line_number: 0,
             diagnostic_context: 0,
             registered_diagnostics: RegisteredDiagnosticTracker::default(),
+            transform_diagnostics,
         })
     }
 
@@ -184,6 +195,8 @@ impl StreamReducer {
         }
         let mut class = if classify::is_tool_outcome(&line.prefix) {
             EvidenceClass::Outcome
+        } else if self.transform_diagnostics.matches_line(&line.prefix) {
+            EvidenceClass::Diagnostic
         } else {
             classify_line(&self.kind, line)
         };
@@ -253,7 +266,28 @@ pub fn reduce_bytes_with_recovery(
     success: bool,
     recovery: Option<RecoveryMarker<'_>>,
 ) -> Result<Vec<u8>, String> {
-    let mut reducer = StreamReducer::new(rule)?;
+    reduce_bytes_with_recovery_and_transform_diagnostics(
+        rule,
+        input,
+        success,
+        recovery,
+        TransformDiagnostics::default(),
+    )
+}
+
+/// Reduce one in-memory stream while treating selected transform prefixes as typed diagnostics.
+///
+/// # Errors
+///
+/// Returns an error when the supplied rule is not a complete reduction rule.
+pub fn reduce_bytes_with_recovery_and_transform_diagnostics(
+    rule: &Rule,
+    input: &[u8],
+    success: bool,
+    recovery: Option<RecoveryMarker<'_>>,
+    transform_diagnostics: TransformDiagnostics,
+) -> Result<Vec<u8>, String> {
+    let mut reducer = StreamReducer::new_with_transform_diagnostics(rule, transform_diagnostics)?;
     for chunk in input.chunks(8 * 1024) {
         reducer.push(chunk);
     }
@@ -360,6 +394,25 @@ mod tests {
                 "chunk size {chunk_size}"
             );
         }
+    }
+
+    #[test]
+    fn keeps_diagnostics_from_selected_transform_stages() {
+        let plan = crate::rewrite::select_result_plan("cargo test | tee -p /dev/full")
+            .expect("tee pipeline");
+        let input = format!(
+            "{}tee: /dev/full: No space left on device\n",
+            "test routine ... ok\n".repeat(1_000)
+        );
+        let output = reduce_bytes_with_recovery_and_transform_diagnostics(
+            &plan.rule,
+            input.as_bytes(),
+            false,
+            None,
+            plan.transform_diagnostics,
+        )
+        .expect("reduction");
+        assert!(String::from_utf8_lossy(&output).contains("tee: /dev/full"));
     }
 
     #[test]

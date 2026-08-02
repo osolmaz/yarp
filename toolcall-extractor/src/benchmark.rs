@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 use serde_json::Value;
-use yarp_cli::rewrite::StatusConfidence;
+use yarp_cli::rewrite::{StatusConfidence, TransformDiagnostics};
 use yarp_cli::rules::{Reducer, Rule};
 
 use crate::database::Database;
@@ -117,25 +117,27 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
         shell_results = shell_results.saturating_add(1);
         shell_output_characters = shell_output_characters
             .saturating_add(u64::try_from(output.chars().count()).unwrap_or(u64::MAX));
-        let (rule, rule_label, status_confidence) = match benchmark_selection(&command) {
-            BenchmarkSelection::Reduce {
-                rule,
-                label,
-                status_confidence,
-            } => (rule, label, status_confidence),
-            BenchmarkSelection::Passthrough { .. } => {
-                passthrough_results = passthrough_results.saturating_add(1);
-                continue;
-            }
-            BenchmarkSelection::Ambiguous { .. } => {
-                ambiguous_results = ambiguous_results.saturating_add(1);
-                continue;
-            }
-            BenchmarkSelection::Unsupported => {
-                unsupported_results = unsupported_results.saturating_add(1);
-                continue;
-            }
-        };
+        let (rule, rule_label, status_confidence, transform_diagnostics) =
+            match benchmark_selection(&command) {
+                BenchmarkSelection::Reduce {
+                    rule,
+                    label,
+                    status_confidence,
+                    transform_diagnostics,
+                } => (rule, label, status_confidence, transform_diagnostics),
+                BenchmarkSelection::Passthrough { .. } => {
+                    passthrough_results = passthrough_results.saturating_add(1);
+                    continue;
+                }
+                BenchmarkSelection::Ambiguous { .. } => {
+                    ambiguous_results = ambiguous_results.saturating_add(1);
+                    continue;
+                }
+                BenchmarkSelection::Unsupported => {
+                    unsupported_results = unsupported_results.saturating_add(1);
+                    continue;
+                }
+            };
         let Some(reducer) = rule.reducer.as_ref() else {
             unsupported_results = unsupported_results.saturating_add(1);
             continue;
@@ -146,7 +148,7 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
             unknown_status_results = unknown_status_results.saturating_add(1);
         }
         let success_policy = use_success_policy(succeeded, status_confidence);
-        let pruned = yarp_cli::reducers::reduce_bytes_with_recovery(
+        let pruned = yarp_cli::reducers::reduce_bytes_with_recovery_and_transform_diagnostics(
             &rule,
             output.as_bytes(),
             success_policy,
@@ -155,6 +157,7 @@ pub fn run(path: &Path) -> Result<BenchmarkReport> {
                 source: "result_text",
                 completeness: "unknown",
             }),
+            transform_diagnostics,
         )
         .unwrap_or_else(|_| output.as_bytes().to_vec());
         let metrics = measure(&output, &pruned);
@@ -273,6 +276,7 @@ pub(crate) enum BenchmarkSelection {
         rule: Box<Rule>,
         label: String,
         status_confidence: StatusConfidence,
+        transform_diagnostics: TransformDiagnostics,
     },
     Passthrough {
         labels: Vec<String>,
@@ -296,6 +300,7 @@ pub(crate) fn benchmark_selection(command: &str) -> BenchmarkSelection {
             label: format!("{}/{}", selected.pack_id, selected.rule.id),
             rule: Box::new((*selected.rule).clone()),
             status_confidence: StatusConfidence::Complete,
+            transform_diagnostics: TransformDiagnostics::default(),
         },
         Ok((_, yarp_cli::rules::Selection::Passthrough(labels))) => {
             BenchmarkSelection::Passthrough { labels }
@@ -316,6 +321,7 @@ pub(crate) fn benchmark_selection(command: &str) -> BenchmarkSelection {
                     label: format!("compound/{}", reducer_name(reducer)),
                     rule: Box::new(plan.rule),
                     status_confidence: plan.status_confidence,
+                    transform_diagnostics: plan.transform_diagnostics,
                 }
             }
             Err(_) => BenchmarkSelection::Unsupported,
