@@ -159,11 +159,10 @@ target/release/toolcall-extractor benchmark-yarp
 Measure how much unchanged shell output belongs to reviewable command families without printing commands or tool content:
 
 ```sh
-target/release/toolcall-extractor analyze-ceiling \
-  --output "$HOME/.local/share/toolcall-extractor/analysis/reduction-ceiling.json"
+target/release/toolcall-extractor analyze-ceiling
 ```
 
-The report is written atomically under a mode-`0700` directory as a mode-`0600` file. It contains aggregate counts and fixed public family labels only. See the [reduction ceiling analysis](docs/reduction-ceiling-analysis.md) for the report fields and review process.
+The command prints aggregate JSON with fixed public family labels to standard output. It does not create another persistent store; callers may redirect the report under their own private `umask` when they need a local snapshot. See the [reduction ceiling analysis](docs/reduction-ceiling-analysis.md) for the report fields and review process.
 
 For a different Unix user, run only the reader under that identity and keep the DuckDB writer under your own account:
 

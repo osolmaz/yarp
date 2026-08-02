@@ -1,6 +1,5 @@
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -367,14 +366,11 @@ fn command_line_extracts_streams_reports_and_benchmarks() {
             String::from_utf8_lossy(&result.stderr)
         );
     }
-    let ceiling_path = temp.path().join("analysis/reduction-ceiling.json");
     let ceiling = extractor()
         .args([
             "analyze-ceiling",
             "--database",
             database.to_str().expect("database"),
-            "--output",
-            ceiling_path.to_str().expect("ceiling output"),
         ])
         .output()
         .expect("run ceiling analysis");
@@ -383,26 +379,8 @@ fn command_line_extracts_streams_reports_and_benchmarks() {
         "{}",
         String::from_utf8_lossy(&ceiling.stderr)
     );
-    assert_eq!(ceiling.stdout, b"ceiling analysis complete\n");
-    assert_eq!(
-        fs::metadata(ceiling_path.parent().expect("ceiling parent"))
-            .expect("ceiling parent metadata")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o700
-    );
-    assert_eq!(
-        fs::metadata(&ceiling_path)
-            .expect("ceiling metadata")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
     let ceiling_report: serde_json::Value =
-        serde_json::from_slice(&fs::read(&ceiling_path).expect("ceiling report"))
-            .expect("ceiling JSON");
+        serde_json::from_slice(&ceiling.stdout).expect("ceiling JSON");
     assert_eq!(ceiling_report["scope"], "stored_shell_result_text");
     assert_eq!(ceiling_report["totals"]["shell_results"], 1);
     assert!(ceiling_report.get("privacy").is_none());

@@ -6,17 +6,16 @@ The report helps decide which typed reducers deserve review. It does not approve
 
 ## Run the analysis
 
-Build the offline extractor, then give the command an explicit output path:
+Build the offline extractor, then run the report:
 
 ```sh
 cargo build --release -p toolcall-extractor
-target/release/toolcall-extractor analyze-ceiling \
-  --output "$HOME/.local/share/toolcall-extractor/analysis/reduction-ceiling.json"
+target/release/toolcall-extractor analyze-ceiling
 ```
 
 The default database remains `$HOME/.local/share/toolcall-extractor/toolcalls.duckdb`. Use `--database` to select another extracted corpus.
 
-The output directory must have mode `0700`. The command walks and creates parent directories with descriptor-relative no-follow operations, writes the report atomically with mode `0600`, and rejects symlinks in every path component. It prints only a completion message to standard output.
+The command prints the aggregate report to standard output and writes no persistent state outside the extractor's DuckDB. A caller that needs a private snapshot can redirect standard output under a mode-`0700` directory and a private `umask`; generated snapshots remain outside Git.
 
 ## Scope
 
