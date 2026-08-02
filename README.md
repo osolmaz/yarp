@@ -80,7 +80,9 @@ Create an external source pack when a project has another repetitive command. A 
 }
 ```
 
-Validate and compile it explicitly:
+A `transform` action is result-only. It carries an existing typed output through a reviewed line-preserving pipeline stage and has no reducer or output policy of its own. YARP currently recognizes guarded forms of `cat`, `tee`, line-based `head` and `tail`, `sort`, and `uniq`. A transform cannot make unknown input reducible or run as a standalone YARP command.
+
+Validate and compile a source pack explicitly:
 
 ```sh
 yarp rules check ./example-rules
@@ -91,7 +93,7 @@ yarp rewrite --rule-pack ./example-rules.yrp "example-check"
 
 Set `YARP_RULE_PACKS` to an operating-system path list for global packs. A trusted Pi project may instead keep a compiled pack at `.yarp/rules.yrp`; the extension ignores that path until Pi reports the project as trusted. YARP does not scan for source packs, compile them automatically, download rules, or execute code from a rule.
 
-See the [indexed output summary plan](docs/indexed-output-summaries-implementation-plan.md) and the checked-in JSON schemas under `rules/schema/` for the complete reducer contract. They define matching and limits plus fail-open behavior. The [shell result planning implementation plan](docs/shell-result-planning-implementation-plan.md) covers adaptive evidence selection for pipelines and command chains.
+See the [indexed output summary plan](docs/indexed-output-summaries-implementation-plan.md) and the checked-in JSON schemas under `rules/schema/` for the complete reducer contract. They define matching and limits plus fail-open behavior. The [shell result planning implementation plan](docs/shell-result-planning-implementation-plan.md) records the parser, pipeline, status, and adaptive evidence design.
 
 ## Archive
 
@@ -173,7 +175,7 @@ This sends framed normalized records through the pipe and creates no intermediat
 
 The default database is `~/.local/share/toolcall-extractor/toolcalls.duckdb`. Tool inputs and outputs can contain secrets, so its directory and files are private. The extractor reads agent state without modifying it, has no network code, and stops before its files reach 10,000,000,000 bytes. See [the implementation plan](docs/toolcall-extractor-implementation-plan.md) for supported formats and privacy boundaries.
 
-A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The production matcher evaluated all 371,241 stored shell results. Typed summaries changed 29,439 results and removed 306,302,222 characters: 92.2887% of eligible output, 21.1897% of shell output, and 15.7748% of all rendered output. No ambiguous reduction or registered diagnostic veto occurred. The generated database and transcripts remain outside the repository, as does the report.
+A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The production matcher evaluated all 371,241 stored shell results. Typed summaries changed 37,485 results and removed 375,442,158 characters: 91.7721% of eligible output, 25.9727% of shell output, and 19.3356% of all rendered output. No ambiguous reduction or registered diagnostic veto occurred. The generated database and transcripts remain outside the repository, as does the report.
 
 ## Limits
 

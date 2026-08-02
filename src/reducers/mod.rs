@@ -166,7 +166,7 @@ impl StreamReducer {
             (self.failure, self.failure_policy)
         };
         self.raw.choose(
-            collector.render(recovery, self.registered_diagnostics.matched),
+            collector.render(recovery, self.registered_diagnostics.matched, success),
             policy,
         )
     }
@@ -295,6 +295,7 @@ mod tests {
                 argv_contains_all: Vec::new(),
             },
             action: Action::Reduce,
+            transform: None,
             reducer: Some(reducer),
             success: Some(policy(1_024, 8)),
             failure: Some(policy(2_048, 8)),
@@ -308,7 +309,12 @@ mod tests {
             .expect("success reduction");
         let failure = reduce_bytes(&rule(Reducer::ListSummary), input.as_bytes(), false)
             .expect("failure reduction");
-        assert!(failure.len() > success.len());
+        assert!(
+            failure.len() > success.len(),
+            "success={} failure={}",
+            success.len(),
+            failure.len()
+        );
     }
 
     #[test]

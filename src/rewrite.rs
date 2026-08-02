@@ -1,12 +1,6 @@
 use crate::rules::{PackRequest, Registry, Selection, digest_hex};
-use yarp_rule_pack::{OutputPolicy, Rule};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Quote {
-    None,
-    Single,
-    Double,
-}
+use crate::shell::{self, Connector, ShellItem, SimpleCommand};
+use yarp_rule_pack::{OutputPolicy, Rule, Transform};
 
 /// Metadata passed to an archived shell wrapper.
 #[derive(Clone, Copy, Debug)]
@@ -44,7 +38,7 @@ pub fn rewrite_with_options(
     packs: &[PackRequest],
 ) -> Result<Option<String>, String> {
     let command = command.trim();
-    let words = parse_words(command).ok_or_else(|| "unsupported shell syntax".to_owned())?;
+    let words = shell::parse_simple_words(command)?;
     let mut registry = Registry::load(packs)?;
     let Selection::Reduce(selected) = registry.select(&words)? else {
         return Ok(None);
@@ -93,7 +87,7 @@ fn shell_quote(value: &str) -> String {
 ///
 /// Returns an error when the shell source is unsupported or rule selection fails.
 pub fn select_builtin_command(command: &str) -> Result<(Vec<String>, Selection), String> {
-    let words = parse_words(command).ok_or_else(|| "unsupported shell syntax".to_owned())?;
+    let words = shell::parse_simple_words(command)?;
     let selection = Registry::builtins_only().select(&words)?;
     Ok((words, selection))
 }
@@ -107,54 +101,478 @@ pub fn select_builtin_argv(arguments: &[String]) -> Result<Selection, String> {
     Registry::builtins_only().select(arguments)
 }
 
-/// Select one compatible typed rule for conservative post-result reduction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StatusConfidence {
+    Complete,
+    FinalStageOnly,
+    Conditional,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResultPlan {
+    pub rule: Rule,
+    pub status_confidence: StatusConfidence,
+}
+
+/// Select one compatible typed plan for conservative post-result reduction.
 ///
 /// # Errors
 ///
 /// Returns an error when shell syntax is ambiguous, guarded, unsupported, or mixes reducer
 /// families. Callers fail open on every error.
-pub fn select_result_rule(command: &str) -> Result<Rule, String> {
-    let normalized = strip_safe_stream_redirects(command)
-        .ok_or_else(|| "unsupported compound shell syntax".to_owned())?;
-    let segments = split_compound(&normalized)
-        .ok_or_else(|| "unsupported compound shell syntax".to_owned())?;
+pub fn select_result_plan(command: &str) -> Result<ResultPlan, String> {
+    let program = shell::parse(command)?;
     let mut selected: Option<Rule> = None;
-    for segment in segments {
-        let words =
-            parse_words(segment).ok_or_else(|| "unsupported compound command".to_owned())?;
-        let Some(words) = normalize_result_words(words)? else {
-            continue;
-        };
-        let mut registry = Registry::builtins_only();
-        let Selection::Reduce(candidate) = registry
-            .select(&words)
-            .map_err(|error| format!("could not classify compound command: {error}"))?
-        else {
-            return Err("compound command contains an unsupported or guarded command".to_owned());
-        };
-        if let Some(existing) = &mut selected {
-            if existing.reducer != candidate.rule.reducer {
-                return Err("compound command mixes reducer families".to_owned());
+    let mut confidence = StatusConfidence::Complete;
+    let mut pipefail = false;
+    let mut previous_had_output = false;
+
+    for (index, item) in program.items.iter().enumerate() {
+        let connector = index
+            .checked_sub(1)
+            .and_then(|connector| program.connectors.get(connector))
+            .copied();
+        let (candidate, setup) = match item {
+            ShellItem::Simple(command) => {
+                if let Some(value) = pipefail_setting(&command.words) {
+                    pipefail = value;
+                }
+                select_simple(command)?
             }
-            let Some(existing_success) = existing.success else {
-                return Err("selected rule has no success policy".to_owned());
-            };
-            let Some(candidate_success) = candidate.rule.success else {
-                return Err("candidate rule has no success policy".to_owned());
-            };
-            let Some(existing_failure) = existing.failure else {
-                return Err("selected rule has no failure policy".to_owned());
-            };
-            let Some(candidate_failure) = candidate.rule.failure else {
-                return Err("candidate rule has no failure policy".to_owned());
-            };
-            existing.success = Some(merge_policy(existing_success, candidate_success));
-            existing.failure = Some(merge_policy(existing_failure, candidate_failure));
-        } else {
-            selected = Some((*candidate.rule).clone());
+            ShellItem::Pipeline(stages) => {
+                if !pipefail {
+                    confidence = merge_confidence(confidence, StatusConfidence::FinalStageOnly);
+                }
+                (Some(select_pipeline(stages)?), false)
+            }
+        };
+        let has_output = candidate.is_some();
+        match connector {
+            Some(Connector::Sequence) if previous_had_output => {
+                confidence = merge_confidence(confidence, StatusConfidence::FinalStageOnly);
+            }
+            Some(Connector::Or) if previous_had_output || has_output => {
+                confidence = merge_confidence(confidence, StatusConfidence::Conditional);
+            }
+            None if index > 0 => {
+                return Err("compound command is missing a connector".to_owned());
+            }
+            Some(Connector::And | Connector::Sequence | Connector::Or) | None => {}
+        }
+        if let Some(candidate) = candidate {
+            merge_rule(&mut selected, candidate)?;
+        }
+        if !setup {
+            previous_had_output = previous_had_output || has_output;
         }
     }
-    selected.ok_or_else(|| "compound command has no supported output command".to_owned())
+
+    let rule =
+        selected.ok_or_else(|| "compound command has no supported output command".to_owned())?;
+    Ok(ResultPlan {
+        rule,
+        status_confidence: confidence,
+    })
+}
+
+/// Select one compatible typed rule for callers that do not need status confidence.
+///
+/// # Errors
+///
+/// Returns the same errors as [`select_result_plan`].
+pub fn select_result_rule(command: &str) -> Result<Rule, String> {
+    select_result_plan(command).map(|plan| plan.rule)
+}
+
+fn select_simple(command: &SimpleCommand) -> Result<(Option<Rule>, bool), String> {
+    if is_setup_command(&command.words) || command.words.iter().all(|word| is_assignment(word)) {
+        return Ok((None, true));
+    }
+    let Some(words) = normalize_result_words(command.words.clone())? else {
+        return Ok((None, true));
+    };
+    let mut registry = Registry::builtins_only();
+    match registry
+        .select(&words)
+        .map_err(|error| format!("could not classify compound command: {error}"))?
+    {
+        Selection::Reduce(candidate) => Ok((Some((*candidate.rule).clone()), false)),
+        Selection::Transform(_) => Err("line transform has no pipeline input".to_owned()),
+        Selection::Passthrough(_) | Selection::Ambiguous(_) | Selection::Unsupported => {
+            Err("compound command contains an unsupported or guarded command".to_owned())
+        }
+    }
+}
+
+fn select_pipeline(stages: &[SimpleCommand]) -> Result<Rule, String> {
+    let mut selected = None;
+    for stage in stages {
+        if is_setup_command(&stage.words) || stage.words.iter().all(|word| is_assignment(word)) {
+            return Err("pipeline contains a setup command".to_owned());
+        }
+        let words = normalize_result_words(stage.words.clone())?
+            .ok_or_else(|| "pipeline stage has no output command".to_owned())?;
+        let mut registry = Registry::builtins_only();
+        match registry
+            .select(&words)
+            .map_err(|error| format!("could not classify pipeline stage: {error}"))?
+        {
+            Selection::Reduce(candidate) => merge_rule(&mut selected, (*candidate.rule).clone())?,
+            Selection::Transform(candidate) => {
+                if candidate.rule.transform != Some(Transform::LinePreserving) {
+                    return Err("pipeline transform is unsupported".to_owned());
+                }
+                validate_line_preserving(&words)?;
+                if selected.is_none() {
+                    return Err("pipeline transform has no typed input".to_owned());
+                }
+            }
+            Selection::Passthrough(_) | Selection::Ambiguous(_) | Selection::Unsupported => {
+                return Err("pipeline contains an unsupported or guarded command".to_owned());
+            }
+        }
+    }
+    selected.ok_or_else(|| "pipeline has no supported output command".to_owned())
+}
+
+fn validate_line_preserving(words: &[String]) -> Result<(), String> {
+    let Some((program, arguments)) = words.split_first() else {
+        return Err("pipeline transform has no program".to_owned());
+    };
+    match program.as_str() {
+        "cat" => validate_stdin_only(arguments),
+        "tee" => validate_tee(arguments),
+        "head" | "tail" => validate_line_selector(program, arguments),
+        "sort" => validate_sort(arguments),
+        "uniq" => validate_uniq(arguments),
+        _ => Err("pipeline transform program is unsupported".to_owned()),
+    }
+}
+
+fn validate_stdin_only(arguments: &[String]) -> Result<(), String> {
+    let mut operands = false;
+    for argument in arguments {
+        if argument == "--" && !operands {
+            operands = true;
+        } else if argument != "-" {
+            return Err("pipeline transform must read only standard input".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn validate_tee(arguments: &[String]) -> Result<(), String> {
+    let mut operands = false;
+    for argument in arguments {
+        if operands {
+            continue;
+        }
+        match argument.as_str() {
+            "--" => operands = true,
+            "-a" | "-i" | "-p" | "--append" | "--ignore-interrupts" | "--output-error" => {}
+            value if value.starts_with("--output-error=") => {}
+            value if !value.starts_with('-') || value == "-" => operands = true,
+            _ => return Err("tee transform uses an unsupported option".to_owned()),
+        }
+    }
+    Ok(())
+}
+
+fn validate_line_selector(program: &str, arguments: &[String]) -> Result<(), String> {
+    let mut index = 0;
+    let mut operands = false;
+    while index < arguments.len() {
+        let argument = &arguments[index];
+        if operands {
+            if argument != "-" {
+                return Err(format!("{program} transform must read only standard input"));
+            }
+            index += 1;
+            continue;
+        }
+        if argument == "--" {
+            operands = true;
+            index += 1;
+            continue;
+        }
+        if argument == "-" {
+            operands = true;
+            index += 1;
+            continue;
+        }
+        if matches!(argument.as_str(), "-q" | "--quiet" | "--silent") {
+            index += 1;
+            continue;
+        }
+        if argument == "-n" || argument == "--lines" {
+            let count = arguments
+                .get(index + 1)
+                .ok_or_else(|| format!("{program} line option is missing its value"))?;
+            validate_line_count(count, program)?;
+            index += 2;
+            continue;
+        }
+        if let Some(count) = argument.strip_prefix("--lines=") {
+            validate_line_count(count, program)?;
+            index += 1;
+            continue;
+        }
+        if let Some(count) = argument.strip_prefix("-n")
+            && !count.is_empty()
+        {
+            validate_line_count(count, program)?;
+            index += 1;
+            continue;
+        }
+        if argument.strip_prefix('-').is_some_and(|count| {
+            !count.is_empty() && count.bytes().all(|byte| byte.is_ascii_digit())
+        }) {
+            index += 1;
+            continue;
+        }
+        return Err(format!(
+            "{program} transform uses an unsupported option or operand"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_line_count(value: &str, program: &str) -> Result<(), String> {
+    let digits = value.strip_prefix(['+', '-']).unwrap_or(value).as_bytes();
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return Err(format!("{program} line count is not a literal integer"));
+    }
+    Ok(())
+}
+
+fn validate_sort(arguments: &[String]) -> Result<(), String> {
+    let mut index = 0;
+    let mut operands = false;
+    while index < arguments.len() {
+        let argument = &arguments[index];
+        if operands || argument == "-" || !argument.starts_with('-') {
+            if argument != "-" {
+                return Err("sort transform must read only standard input".to_owned());
+            }
+            operands = true;
+            index += 1;
+            continue;
+        }
+        if argument == "--" {
+            operands = true;
+            index += 1;
+            continue;
+        }
+        if sort_option_takes_value(argument) {
+            if sort_option_has_attached_value(argument) {
+                index += 1;
+            } else {
+                index = index
+                    .checked_add(2)
+                    .filter(|next| *next <= arguments.len())
+                    .ok_or_else(|| "sort option is missing its value".to_owned())?;
+            }
+            continue;
+        }
+        if is_safe_sort_flag(argument) {
+            index += 1;
+            continue;
+        }
+        return Err("sort transform uses an unsupported option".to_owned());
+    }
+    Ok(())
+}
+
+fn sort_option_takes_value(value: &str) -> bool {
+    [
+        "-k",
+        "-t",
+        "-S",
+        "-T",
+        "--key",
+        "--field-separator",
+        "--buffer-size",
+        "--temporary-directory",
+        "--batch-size",
+        "--compress-program",
+        "--random-source",
+    ]
+    .iter()
+    .any(|option| value == *option || value.starts_with(&format!("{option}=")))
+        || ["-k", "-t", "-S", "-T"]
+            .iter()
+            .any(|option| value.starts_with(option) && value.len() > option.len())
+}
+
+fn sort_option_has_attached_value(value: &str) -> bool {
+    value.contains('=')
+        || ["-k", "-t", "-S", "-T"]
+            .iter()
+            .any(|option| value.starts_with(option) && value.len() > option.len())
+}
+
+fn is_safe_sort_flag(value: &str) -> bool {
+    if value.starts_with("--") {
+        return matches!(
+            value,
+            "--stable"
+                | "--unique"
+                | "--reverse"
+                | "--numeric-sort"
+                | "--general-numeric-sort"
+                | "--human-numeric-sort"
+                | "--version-sort"
+                | "--month-sort"
+                | "--random-sort"
+                | "--ignore-case"
+                | "--ignore-leading-blanks"
+                | "--dictionary-order"
+                | "--ignore-nonprinting"
+        );
+    }
+    value.len() > 1
+        && value[1..].bytes().all(|byte| {
+            matches!(
+                byte,
+                b'b' | b'd'
+                    | b'f'
+                    | b'g'
+                    | b'h'
+                    | b'i'
+                    | b'M'
+                    | b'n'
+                    | b'R'
+                    | b'r'
+                    | b's'
+                    | b'u'
+                    | b'V'
+            )
+        })
+}
+
+fn validate_uniq(arguments: &[String]) -> Result<(), String> {
+    let mut index = 0;
+    let mut operands = false;
+    let mut operand_count = 0_usize;
+    while index < arguments.len() {
+        let argument = &arguments[index];
+        if operands || argument == "-" || !argument.starts_with('-') {
+            if argument != "-" || operand_count > 0 {
+                return Err("uniq transform must read only standard input".to_owned());
+            }
+            operands = true;
+            operand_count += 1;
+            index += 1;
+            continue;
+        }
+        if argument == "--" {
+            operands = true;
+            index += 1;
+            continue;
+        }
+        if uniq_option_takes_value(argument) {
+            if uniq_option_has_attached_value(argument) {
+                index += 1;
+            } else {
+                index = index
+                    .checked_add(2)
+                    .filter(|next| *next <= arguments.len())
+                    .ok_or_else(|| "uniq option is missing its value".to_owned())?;
+            }
+            continue;
+        }
+        if is_safe_uniq_flag(argument) {
+            index += 1;
+            continue;
+        }
+        return Err("uniq transform uses an unsupported option".to_owned());
+    }
+    Ok(())
+}
+
+fn uniq_option_takes_value(value: &str) -> bool {
+    [
+        "-f",
+        "-s",
+        "-w",
+        "--skip-fields",
+        "--skip-chars",
+        "--check-chars",
+    ]
+    .iter()
+    .any(|option| value == *option || value.starts_with(&format!("{option}=")))
+        || ["-f", "-s", "-w"]
+            .iter()
+            .any(|option| value.starts_with(option) && value.len() > option.len())
+}
+
+fn uniq_option_has_attached_value(value: &str) -> bool {
+    value.contains('=')
+        || ["-f", "-s", "-w"]
+            .iter()
+            .any(|option| value.starts_with(option) && value.len() > option.len())
+}
+
+fn is_safe_uniq_flag(value: &str) -> bool {
+    if value.starts_with("--") {
+        return matches!(
+            value,
+            "--all-repeated" | "--repeated" | "--unique" | "--ignore-case"
+        );
+    }
+    value.len() > 1
+        && value[1..]
+            .bytes()
+            .all(|byte| matches!(byte, b'D' | b'd' | b'u' | b'i'))
+}
+
+fn merge_rule(selected: &mut Option<Rule>, candidate: Rule) -> Result<(), String> {
+    let Some(existing) = selected else {
+        *selected = Some(candidate);
+        return Ok(());
+    };
+    if existing.reducer != candidate.reducer {
+        return Err("compound command mixes reducer families".to_owned());
+    }
+    let existing_success = existing
+        .success
+        .ok_or_else(|| "selected rule has no success policy".to_owned())?;
+    let candidate_success = candidate
+        .success
+        .ok_or_else(|| "candidate rule has no success policy".to_owned())?;
+    let existing_failure = existing
+        .failure
+        .ok_or_else(|| "selected rule has no failure policy".to_owned())?;
+    let candidate_failure = candidate
+        .failure
+        .ok_or_else(|| "candidate rule has no failure policy".to_owned())?;
+    existing.success = Some(merge_policy(existing_success, candidate_success));
+    existing.failure = Some(merge_policy(existing_failure, candidate_failure));
+    Ok(())
+}
+
+const fn merge_confidence(left: StatusConfidence, right: StatusConfidence) -> StatusConfidence {
+    match (left, right) {
+        (StatusConfidence::Conditional, _) | (_, StatusConfidence::Conditional) => {
+            StatusConfidence::Conditional
+        }
+        (StatusConfidence::FinalStageOnly, _) | (_, StatusConfidence::FinalStageOnly) => {
+            StatusConfidence::FinalStageOnly
+        }
+        (StatusConfidence::Complete, StatusConfidence::Complete) => StatusConfidence::Complete,
+    }
+}
+
+fn pipefail_setting(words: &[String]) -> Option<bool> {
+    match words {
+        [program, option, value] if program == "set" && value == "pipefail" && option == "-o" => {
+            Some(true)
+        }
+        [program, option, value] if program == "set" && value == "pipefail" && option == "+o" => {
+            Some(false)
+        }
+        _ => None,
+    }
 }
 
 fn merge_policy(left: OutputPolicy, right: OutputPolicy) -> OutputPolicy {
@@ -166,51 +584,6 @@ fn merge_policy(left: OutputPolicy, right: OutputPolicy) -> OutputPolicy {
             .min_savings_basis_points
             .max(right.min_savings_basis_points),
     }
-}
-
-fn strip_safe_stream_redirects(command: &str) -> Option<String> {
-    let mut output = Vec::with_capacity(command.len());
-    let bytes = command.as_bytes();
-    let mut quote = Quote::None;
-    let mut index = 0;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        match quote {
-            Quote::Single if byte == b'\'' => quote = Quote::None,
-            Quote::Double if byte == b'"' => quote = Quote::None,
-            Quote::Double | Quote::None if byte == b'\\' => {
-                output.push(byte);
-                index = index.checked_add(1)?;
-                output.push(*bytes.get(index)?);
-                index += 1;
-                continue;
-            }
-            Quote::None if byte == b'\'' => quote = Quote::Single,
-            Quote::None if byte == b'"' => quote = Quote::Double,
-            Quote::None => {
-                let token = bytes.get(index..index.saturating_add(4));
-                let boundary_before =
-                    index == 0 || bytes.get(index - 1).is_some_and(u8::is_ascii_whitespace);
-                let boundary_after = bytes
-                    .get(index + 4)
-                    .is_none_or(|next| next.is_ascii_whitespace() || matches!(next, b';' | b'&'));
-                if boundary_before
-                    && boundary_after
-                    && (token == Some(&b"2>&1"[..]) || token == Some(&b"1>&2"[..]))
-                {
-                    index += 4;
-                    continue;
-                }
-            }
-            Quote::Single | Quote::Double => {}
-        }
-        output.push(byte);
-        index += 1;
-    }
-    if quote != Quote::None {
-        return None;
-    }
-    String::from_utf8(output).ok()
 }
 
 fn normalize_result_words(mut words: Vec<String>) -> Result<Option<Vec<String>>, String> {
@@ -267,163 +640,66 @@ fn is_setup_command(words: &[String]) -> bool {
     match words {
         [program] if matches!(program.as_str(), ":" | "true" | "false") => true,
         [program, path] if program == "cd" && !path.starts_with('-') => true,
-        [program, flag] if program == "set" && flag.starts_with('-') => true,
+        [program, flag] if program == "set" && is_quiet_set_flag(flag) => true,
         [program, flag, value]
-            if program == "set" && flag.starts_with('-') && value == "pipefail" =>
+            if program == "set" && matches!(flag.as_str(), "-o" | "+o") && value == "pipefail" =>
         {
             true
         }
-        [program, ..] if matches!(program.as_str(), "export" | "umask") && words.len() > 1 => true,
+        [program, values @ ..] if program == "export" && !values.is_empty() => values
+            .iter()
+            .all(|value| is_assignment(value) || is_identifier(value)),
+        [program, value] if program == "umask" && !value.starts_with('-') => true,
         _ => false,
     }
 }
 
-fn is_assignment(word: &str) -> bool {
-    let Some((name, _)) = word.split_once('=') else {
-        return false;
-    };
-    let mut characters = name.chars();
+fn is_quiet_set_flag(value: &str) -> bool {
+    matches!(
+        value,
+        "-e" | "+e"
+            | "-u"
+            | "+u"
+            | "-x"
+            | "+x"
+            | "-f"
+            | "+f"
+            | "-C"
+            | "+C"
+            | "-m"
+            | "+m"
+            | "-b"
+            | "+b"
+            | "-n"
+            | "+n"
+            | "-v"
+            | "+v"
+            | "-E"
+            | "+E"
+            | "-T"
+            | "+T"
+            | "-P"
+            | "+P"
+            | "-h"
+            | "+h"
+            | "-k"
+            | "+k"
+            | "-p"
+            | "+p"
+    )
+}
+
+fn is_identifier(value: &str) -> bool {
+    let mut characters = value.chars();
     characters
         .next()
         .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
         && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
-fn split_compound(command: &str) -> Option<Vec<&str>> {
-    let mut segments = Vec::new();
-    let mut start = 0;
-    let mut quote = Quote::None;
-    let bytes = command.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        match quote {
-            Quote::Single if byte == b'\'' => quote = Quote::None,
-            Quote::Double if byte == b'"' => quote = Quote::None,
-            Quote::Double if byte == b'\\' => {
-                index = index.checked_add(1)?;
-                if index >= bytes.len() {
-                    return None;
-                }
-            }
-            Quote::Double if matches!(byte, b'$' | b'`') => return None,
-            Quote::None if byte == b'\'' => quote = Quote::Single,
-            Quote::None if byte == b'"' => quote = Quote::Double,
-            Quote::None if byte == b'\\' => {
-                index = index.checked_add(1)?;
-                if index >= bytes.len() {
-                    return None;
-                }
-            }
-            Quote::None if byte == b';' => {
-                push_segment(command, start, index, &mut segments)?;
-                start = index + 1;
-            }
-            Quote::None if matches!(byte, b'&' | b'|') && bytes.get(index + 1) == Some(&byte) => {
-                push_segment(command, start, index, &mut segments)?;
-                index += 1;
-                start = index + 1;
-            }
-            Quote::None
-                if matches!(
-                    byte,
-                    b'\n' | b'\r' | b'|' | b'&' | b'<' | b'>' | b'(' | b')' | b'`' | b'$' | b'#'
-                ) =>
-            {
-                return None;
-            }
-            Quote::Single | Quote::Double | Quote::None => {}
-        }
-        index += 1;
-    }
-    if quote != Quote::None {
-        return None;
-    }
-    push_segment(command, start, bytes.len(), &mut segments)?;
-    Some(segments)
-}
-
-fn push_segment<'a>(
-    command: &'a str,
-    start: usize,
-    end: usize,
-    segments: &mut Vec<&'a str>,
-) -> Option<()> {
-    let segment = command.get(start..end)?.trim();
-    if segment.is_empty() {
-        return None;
-    }
-    segments.push(segment);
-    Some(())
-}
-
-fn parse_words(command: &str) -> Option<Vec<String>> {
-    if command.is_empty() {
-        return None;
-    }
-
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut started = false;
-    let mut quote = Quote::None;
-    let mut characters = command.chars();
-
-    while let Some(character) = characters.next() {
-        match quote {
-            Quote::None => match character {
-                '\'' => {
-                    quote = Quote::Single;
-                    started = true;
-                }
-                '"' => {
-                    quote = Quote::Double;
-                    started = true;
-                }
-                '\\' => {
-                    word.push(characters.next()?);
-                    started = true;
-                }
-                '\n' | '\r' | '|' | '&' | ';' | '<' | '>' | '(' | ')' | '`' | '$' | '#' => {
-                    return None;
-                }
-                character if character.is_whitespace() => {
-                    finish_word(&mut words, &mut word, &mut started);
-                }
-                _ => {
-                    word.push(character);
-                    started = true;
-                }
-            },
-            Quote::Single => {
-                if character == '\'' {
-                    quote = Quote::None;
-                } else {
-                    word.push(character);
-                }
-            }
-            Quote::Double => match character {
-                '"' => quote = Quote::None,
-                '\\' => {
-                    word.push(characters.next()?);
-                }
-                '`' | '$' => return None,
-                _ => word.push(character),
-            },
-        }
-    }
-
-    if quote != Quote::None {
-        return None;
-    }
-    finish_word(&mut words, &mut word, &mut started);
-    (!words.is_empty()).then_some(words)
-}
-
-fn finish_word(words: &mut Vec<String>, word: &mut String, started: &mut bool) {
-    if *started {
-        words.push(std::mem::take(word));
-        *started = false;
-    }
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=')
+        .is_some_and(|(name, _)| is_identifier(name))
 }
 
 #[cfg(test)]
@@ -594,11 +870,75 @@ mod tests {
                 ..
             }
         ));
-        assert!(select_result_rule("cargo test | cat").is_err());
+        assert!(matches!(
+            select_result_rule("cargo test | cat").expect("line-preserving pipeline"),
+            Rule {
+                reducer: Some(yarp_rule_pack::Reducer::TestSummary),
+                ..
+            }
+        ));
         assert!(select_result_rule("cargo test > result.log").is_err());
         assert!(select_result_rule("cargo test && echo done").is_err());
         assert!(select_result_rule("set && cargo test").is_err());
         assert!(select_result_rule("yarp search ref error").is_err());
+    }
+
+    #[test]
+    fn plans_safe_composite_results_and_rejects_uncertain_stages() {
+        let search = select_result_plan("rg TODO . | sort | head -50").expect("search pipeline");
+        assert!(matches!(
+            search.rule.reducer,
+            Some(yarp_rule_pack::Reducer::SearchSummary)
+        ));
+        assert_eq!(search.status_confidence, StatusConfidence::FinalStageOnly);
+
+        let list = select_result_plan("find . -type f | sort | uniq").expect("list pipeline");
+        assert!(matches!(
+            list.rule.reducer,
+            Some(yarp_rule_pack::Reducer::ListSummary)
+        ));
+        assert_eq!(list.status_confidence, StatusConfidence::FinalStageOnly);
+
+        let test = select_result_plan("cargo test | tee test.log").expect("test pipeline");
+        assert!(matches!(
+            test.rule.reducer,
+            Some(yarp_rule_pack::Reducer::TestSummary)
+        ));
+        assert_eq!(test.status_confidence, StatusConfidence::FinalStageOnly);
+
+        let pipefail = select_result_plan("set -o pipefail && cargo test | head -100")
+            .expect("pipefail pipeline");
+        assert_eq!(pipefail.status_confidence, StatusConfidence::Complete);
+
+        let sequence = select_result_plan("cargo test; cargo test").expect("test sequence");
+        assert_eq!(sequence.status_confidence, StatusConfidence::FinalStageOnly);
+        let conjunction = select_result_plan("cargo test && cargo test").expect("test conjunction");
+        assert_eq!(conjunction.status_confidence, StatusConfidence::Complete);
+        let multiline = select_result_plan("cargo test\ncargo test").expect("multiline tests");
+        assert_eq!(
+            multiline.status_confidence,
+            StatusConfidence::FinalStageOnly
+        );
+        let masked = select_result_plan("cargo test; true").expect("masked test status");
+        assert_eq!(masked.status_confidence, StatusConfidence::FinalStageOnly);
+        assert!(select_result_plan("export CI=1; umask 077; cargo test").is_ok());
+
+        for command in [
+            "cargo test | head source.txt",
+            "find . -type f | sort existing.txt",
+            "rg --json TODO . | jq .",
+            "find . -print0 | xargs -0 echo",
+            "cat source.rs | sed 's/x/y/'",
+            "set -o; cargo test",
+            "export -p; cargo test",
+            "umask -S; cargo test",
+            "echo \"$VALUE\" | rg x",
+            "cargo test | unknown-filter",
+            "cargo test |& head",
+            "cat source.rs | head",
+        ] {
+            assert!(select_result_plan(command).is_err(), "planned {command:?}");
+        }
     }
 
     #[test]

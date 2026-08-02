@@ -23,7 +23,7 @@
             "maxItems": 128,
             "items": { "type": "string", "maxLength": 1024 }
           },
-          "expected_action": { "enum": ["reduce", "passthrough"] }
+          "expected_action": { "enum": ["reduce", "transform", "passthrough"] }
         }
       }
     }

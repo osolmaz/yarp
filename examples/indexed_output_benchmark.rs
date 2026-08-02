@@ -10,6 +10,7 @@ use yarp_cli::archive::{Archive, CallIdentity, SessionIdentity, SourceCompletene
 const WARMUP: usize = 10;
 const SAMPLES: usize = 100;
 const TARGET: Duration = Duration::from_millis(20);
+const PARSER_TARGET: Duration = Duration::from_millis(1);
 
 fn main() -> Result<(), String> {
     let executable = release_yarp()?;
@@ -47,9 +48,23 @@ fn main() -> Result<(), String> {
         &["read", &archive_ref, "result_text", "1:200"],
     )?;
     let result = benchmark_result_reducer(&executable, &archive_ref)?;
+    let representative_source = "set -o pipefail && rg TODO . | sort | uniq | head -50";
+    let representative_parser = benchmark_parser(representative_source, WARMUP, SAMPLES)?;
+    let maximum_source = format!("rg {}", "x".repeat(256 * 1024 - 3));
+    let maximum_parser = benchmark_parser(&maximum_source, 2, 10)?;
     print_stats("search_1m", &search);
     print_stats("read_12k", &read);
     print_stats("result_reducer_16k", &result);
+    print_stats("parser_representative", &representative_parser);
+    print_stats("parser_maximum_accepted", &maximum_parser);
+    println!(
+        "parser_representative_input_bytes: {}",
+        representative_source.len()
+    );
+    println!(
+        "parser_maximum_accepted_input_bytes: {}",
+        maximum_source.len()
+    );
     for (name, samples) in [
         ("search", &search),
         ("read", &read),
@@ -59,7 +74,33 @@ fn main() -> Result<(), String> {
             return Err(format!("{name} p95 exceeded {} ms", TARGET.as_millis()));
         }
     }
+    if percentile(&representative_parser, 95) > PARSER_TARGET {
+        return Err(format!(
+            "representative parser p95 exceeded {} ms",
+            PARSER_TARGET.as_millis()
+        ));
+    }
     Ok(())
+}
+
+fn benchmark_parser(
+    source: &str,
+    warmup: usize,
+    sample_count: usize,
+) -> Result<Vec<Duration>, String> {
+    let mut samples = Vec::with_capacity(sample_count);
+    for iteration in 0..warmup.saturating_add(sample_count) {
+        let started = Instant::now();
+        std::hint::black_box(yarp_cli::rewrite::select_result_plan(std::hint::black_box(
+            source,
+        )))
+        .map_err(|error| format!("parser benchmark command was rejected: {error}"))?;
+        let elapsed = started.elapsed();
+        if iteration >= warmup {
+            samples.push(elapsed);
+        }
+    }
+    Ok(samples)
 }
 
 fn release_yarp() -> Result<PathBuf, String> {

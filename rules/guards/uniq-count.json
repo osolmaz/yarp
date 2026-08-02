@@ -1,0 +1,8 @@
+{
+  "id": "guards/uniq-count",
+  "match": {
+    "program": ["uniq"],
+    "argv_contains_all": ["-c"]
+  },
+  "action": "passthrough"
+}

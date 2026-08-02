@@ -19,6 +19,8 @@ pub struct Rule {
     pub matcher: CommandMatcher,
     pub action: Action,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub transform: Option<Transform>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reducer: Option<Reducer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub success: Option<OutputPolicy>,
@@ -40,7 +42,14 @@ pub struct CommandMatcher {
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     Reduce,
+    Transform,
     Passthrough,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Transform {
+    LinePreserving,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

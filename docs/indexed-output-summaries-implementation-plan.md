@@ -271,7 +271,7 @@ min_savings_basis_points
 
 Success and failure keep separate policies. A failure normally receives a larger
 output budget. Validate `max_line_bytes` from 1 through 1,048,576,
-`max_output_bytes` from 1 through 4,194,304, `min_savings_bytes` from 0 through
+`max_output_bytes` from 704 through 4,194,304, `min_savings_bytes` from 0 through
 1,048,576, and `min_savings_basis_points` from 0 through 10,000. Reject any
 combination whose calculated stream-memory bound exceeds 4 MiB.
 

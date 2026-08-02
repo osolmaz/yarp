@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 use tempfile::NamedTempFile;
-use yarp_rule_pack::{Action, CompiledPack, Reducer, SourcePack, compile};
+use yarp_rule_pack::{Action, CompiledPack, Reducer, SourcePack, Transform, compile};
 
 use crate::rules::{
     PackRequest, Registry, Selection, digest_hex, requests_from_environment, requests_from_paths,
@@ -94,6 +94,7 @@ fn list(arguments: &[String]) -> i32 {
                     "rule_id": summary.rule.id,
                     "action": summary.rule.action,
                     "match": summary.rule.matcher,
+                    "transform": summary.rule.transform,
                     "reducer": summary.rule.reducer,
                     "success": summary.rule.success,
                     "failure": summary.rule.failure,
@@ -108,9 +109,13 @@ fn list(arguments: &[String]) -> i32 {
         for summary in summaries {
             let action = match summary.rule.action {
                 Action::Reduce => "reduce",
+                Action::Transform => "transform",
                 Action::Passthrough => "passthrough",
             };
-            let reducer = summary.rule.reducer.as_ref().map_or("-", reducer_name);
+            let reducer = summary.rule.reducer.as_ref().map_or_else(
+                || summary.rule.transform.map_or("-", transform_name),
+                reducer_name,
+            );
             println!(
                 "{}\t{}\t{}\t{}\t{}",
                 summary.pack_id,
@@ -158,6 +163,12 @@ fn explain(arguments: &[String]) -> i32 {
                 "success": selected.rule.success,
                 "failure": selected.rule.failure,
             }),
+            Selection::Transform(selected) => json!({
+                "outcome": "transform",
+                "pack_id": selected.pack_id,
+                "rule_id": selected.rule.id,
+                "transform": selected.rule.transform,
+            }),
             Selection::Passthrough(ids) => json!({
                 "outcome": "passthrough",
                 "matching_rules": ids,
@@ -189,6 +200,15 @@ fn explain(arguments: &[String]) -> i32 {
                 println!(
                     "reducer: {}",
                     selected.rule.reducer.as_ref().map_or("-", reducer_name)
+                );
+            }
+            Selection::Transform(selected) => {
+                println!("outcome: transform");
+                println!("pack: {}", selected.pack_id);
+                println!("rule: {}", selected.rule.id);
+                println!(
+                    "transform: {}",
+                    selected.rule.transform.map_or("-", transform_name)
                 );
             }
             Selection::Passthrough(ids) => {
@@ -238,6 +258,12 @@ fn combined_requests(paths: &[PathBuf]) -> Result<Vec<PackRequest>, String> {
     let mut requests = requests_from_environment()?;
     requests.extend(requests_from_paths(paths));
     Ok(requests)
+}
+
+const fn transform_name(transform: Transform) -> &'static str {
+    match transform {
+        Transform::LinePreserving => "line_preserving",
+    }
 }
 
 fn reducer_name(reducer: &Reducer) -> &'static str {

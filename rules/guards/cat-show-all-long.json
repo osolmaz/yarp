@@ -1,0 +1,8 @@
+{
+  "id": "guards/cat-show-all-long",
+  "match": {
+    "program": ["cat"],
+    "argv_contains_all": ["--show-all"]
+  },
+  "action": "passthrough"
+}

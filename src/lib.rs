@@ -8,6 +8,7 @@ pub mod rewrite;
 pub mod rules;
 mod rules_cli;
 pub mod runner;
+pub mod shell;
 
 use rewrite::ArchiveCommandRef;
 use std::io;

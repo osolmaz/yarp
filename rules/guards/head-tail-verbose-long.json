@@ -1,0 +1,8 @@
+{
+  "id": "guards/head-tail-verbose-long",
+  "match": {
+    "program": ["head", "tail"],
+    "argv_contains_all": ["--verbose"]
+  },
+  "action": "passthrough"
+}

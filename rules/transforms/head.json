@@ -1,0 +1,10 @@
+{
+  "id": "pipeline/head",
+  "match": {
+    "program": ["head"]
+  },
+  "action": "transform",
+  "transform": {
+    "kind": "line_preserving"
+  }
+}

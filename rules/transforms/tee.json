@@ -1,0 +1,10 @@
+{
+  "id": "pipeline/tee",
+  "match": {
+    "program": ["tee"]
+  },
+  "action": "transform",
+  "transform": {
+    "kind": "line_preserving"
+  }
+}

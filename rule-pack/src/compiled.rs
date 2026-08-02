@@ -812,6 +812,34 @@ mod tests {
     }
 
     #[test]
+    fn compiles_and_reads_transform_rules() {
+        let directory = TempDir::new().expect("temp directory");
+        fs::create_dir(directory.path().join("rules")).expect("rules directory");
+        fs::write(
+            directory.path().join("pack.json"),
+            r#"{"schema_version":1,"id":"transform-pack","rules":["rules/head.json"]}"#,
+        )
+        .expect("manifest");
+        fs::write(
+            directory.path().join("rules/head.json"),
+            r#"{"id":"pipeline/head","match":{"program":["head"]},"action":"transform","transform":{"kind":"line_preserving"}}"#,
+        )
+        .expect("rule");
+        let source = SourcePack::load(directory.path()).expect("source");
+        let bytes = compile(&source).expect("compile");
+        let mut file = NamedTempFile::new().expect("pack file");
+        file.write_all(&bytes).expect("write pack");
+        file.flush().expect("flush pack");
+        let mut pack = CompiledPack::open(file.path(), None, None).expect("open");
+        let rule = pack.read_rule(0).expect("transform rule");
+        assert_eq!(rule.action, crate::model::Action::Transform);
+        assert_eq!(
+            rule.transform,
+            Some(crate::model::Transform::LinePreserving)
+        );
+    }
+
+    #[test]
     fn detects_changes_after_the_pack_was_opened() {
         let directory = source_pack();
         let source = SourcePack::load(directory.path()).expect("source");

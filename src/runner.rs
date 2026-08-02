@@ -383,6 +383,9 @@ fn select_rule(
         (Selection::Reduce(selected), None) => Ok(Some(selected)),
         (_, Some(_)) => Ok(None),
         (Selection::Unsupported, None) => Err("command is not on the YARP allowlist".to_owned()),
+        (Selection::Transform(_), None) => {
+            Err("pipeline transforms cannot run as standalone YARP rules".to_owned())
+        }
         (Selection::Passthrough(_), None) => {
             Err("command is protected by a YARP pass-through rule".to_owned())
         }
@@ -597,6 +600,11 @@ mod tests {
     #[test]
     fn rejects_unselected_direct_children() {
         let result = run(&["cat".to_owned(), ".env".to_owned()], None);
+        assert_eq!(
+            result,
+            Err("pipeline transforms cannot run as standalone YARP rules".to_owned())
+        );
+        let result = run(&["echo".to_owned(), "secret".to_owned()], None);
         assert_eq!(
             result,
             Err("command is not on the YARP allowlist".to_owned())
