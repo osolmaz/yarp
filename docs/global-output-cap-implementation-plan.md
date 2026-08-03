@@ -23,6 +23,8 @@ These figures locate the operating range; they do not prove task quality. The ru
 
 `YARP_DISABLED=1` continues to disable all pruning. `YARP_ARCHIVE_DISABLED=1` disables the generic cap because YARP cannot shorten text without a committed recovery source.
 
+A later configuration change will replace these environment settings with the versioned TOML file and `yarp config` commands in [the YARP configuration specification](configuration-spec.md). The ordinary cap will keep its 5,120-byte default. Direct `yarp search` and `yarp read` commands will use separate configurable byte and line ceilings and will not pass through the ordinary cap. See [the recovery output implementation plan](recovery-output-implementation-plan.md).
+
 ## Result policy
 
 YARP will process each result in this order:

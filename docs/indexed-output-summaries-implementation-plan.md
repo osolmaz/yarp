@@ -583,6 +583,8 @@ exact read that would exceed the cap fails before writing stdout and prints a
 smaller suggested range. Search reduces displayed groups until the whole result
 fits, then reports the omitted selected-line count.
 
+[The recovery output implementation plan](recovery-output-implementation-plan.md) will replace the fixed 32 KiB ceiling with configurable byte and line ceilings while keeping 32 KiB as the byte default. Direct recovery commands will bypass the ordinary Pi extension cap, so the query command itself remains the only owner of its output bound.
+
 Archive payloads are read through incremental SQLite blob I/O and incremental
 Zstandard decompression. YARP scans the complete selected source, verifies its
 uncompressed length and SHA-256, and retains only bounded matches and context.
