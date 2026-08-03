@@ -84,7 +84,7 @@ yarp archive prune --before <UTC timestamp>
 
 `prune` is explicit. It deletes only finished calls older than the requested time, removes unreferenced payloads, and runs incremental vacuuming. Version 1 performs no automatic deletion.
 
-Keep `YARP_DISABLED=1` limited to pruning and rewriting. Add `YARP_ARCHIVE_DISABLED=1` as an explicit capture opt-out. Normal operation enables the archive.
+Keep `pruning.enabled = false` limited to pruning and rewriting. Use `archive.enabled = false` as the explicit capture opt-out. Normal operation enables the archive.
 
 ### Documentation
 

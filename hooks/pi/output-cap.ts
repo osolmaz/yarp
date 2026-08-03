@@ -1,15 +1,10 @@
 import { Buffer } from "node:buffer"
 import type { ToolResultEvent } from "@earendil-works/pi-coding-agent"
+import {
+  MAX_OUTPUT_CAP_BYTES,
+  MIN_OUTPUT_CAP_BYTES,
+} from "./configuration.js"
 import type { SourceCompleteness } from "./result-client.js"
-
-export const DEFAULT_OUTPUT_CAP_BYTES = 5 * 1024
-export const MIN_OUTPUT_CAP_BYTES = 1024
-export const MAX_OUTPUT_CAP_BYTES = 16 * 1024 * 1024
-
-export type OutputCapConfiguration = {
-  maxBytes: number | null
-  warning: string | null
-}
 
 export type RecoverySource = "stdout" | "stderr" | "source_output" | "result_text"
 
@@ -17,24 +12,6 @@ export type CappedToolContent = {
   content: ToolResultEvent["content"]
   sourceText: string
   sourceBytes: number
-}
-
-export function parseOutputCapConfiguration(
-  value: string | undefined,
-): OutputCapConfiguration {
-  if (value === undefined) {
-    return { maxBytes: DEFAULT_OUTPUT_CAP_BYTES, warning: null }
-  }
-  if (!/^(?:0|[1-9][0-9]*)$/u.test(value)) {
-    return invalidConfiguration()
-  }
-  const parsed = Number(value)
-  if (!Number.isSafeInteger(parsed)) return invalidConfiguration()
-  if (parsed === 0) return { maxBytes: null, warning: null }
-  if (parsed < MIN_OUTPUT_CAP_BYTES || parsed > MAX_OUTPUT_CAP_BYTES) {
-    return invalidConfiguration()
-  }
-  return { maxBytes: parsed, warning: null }
 }
 
 export function capToolResultContent(
@@ -118,14 +95,6 @@ export function capToolResultContent(
     throw new Error("output cap exceeded its configured byte budget")
   }
   return { content: capped, sourceText, sourceBytes: source.length }
-}
-
-function invalidConfiguration(): OutputCapConfiguration {
-  return {
-    maxBytes: null,
-    warning:
-      `invalid YARP_OUTPUT_CAP_BYTES; expected 0 or ${MIN_OUTPUT_CAP_BYTES} through ${MAX_OUTPUT_CAP_BYTES}`,
-  }
 }
 
 function recoveryMarker(

@@ -1,7 +1,9 @@
 use rusqlite::Connection;
 use serde_json::json;
 use std::fmt::Write as _;
+use std::fs;
 use std::io::{BufRead, BufReader, Write as _};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use tempfile::TempDir;
 use yarp_cli::archive::{Archive, CallIdentity, SessionIdentity};
@@ -13,12 +15,40 @@ fn yarp(arguments: &[&str]) -> Output {
         .expect("run yarp")
 }
 
-fn yarp_with_archive(arguments: &[&str], path: &std::path::Path) -> Output {
+fn yarp_with_archive(arguments: &[&str], path: &Path) -> Output {
+    let (mut command, _config_home) = yarp_command_with_archive(path);
+    command.args(arguments).output().expect("run yarp")
+}
+
+fn yarp_with_config_home(arguments: &[&str], config_home: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_yarp"))
         .args(arguments)
-        .env("YARP_ARCHIVE_PATH", path)
+        .env("XDG_CONFIG_HOME", config_home)
         .output()
-        .expect("run yarp")
+        .expect("run configured yarp")
+}
+
+fn yarp_command_with_archive(path: &Path) -> (Command, TempDir) {
+    yarp_command_with_limits(path, None)
+}
+
+fn yarp_command_with_limits(path: &Path, limits: Option<(usize, usize)>) -> (Command, TempDir) {
+    let config_home = TempDir::new().expect("config home");
+    let directory = config_home.path().join("yarp");
+    fs::create_dir(&directory).expect("create config directory");
+    let path = path.to_str().expect("archive path UTF-8");
+    let path = serde_json::to_string(path).expect("archive path string");
+    let output = limits.map_or_else(String::new, |(bytes, lines)| {
+        format!("[output]\nrecovery_cap_bytes = {bytes}\nrecovery_cap_lines = {lines}\n")
+    });
+    fs::write(
+        directory.join("config.toml"),
+        format!("version = 1\n[archive]\npath = {path}\n{output}"),
+    )
+    .expect("write config");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_yarp"));
+    command.env("XDG_CONFIG_HOME", config_home.path());
+    (command, config_home)
 }
 
 fn session() -> SessionIdentity {
@@ -46,12 +76,99 @@ fn call(source_call_id: &str, tool_name: &str) -> CallIdentity {
 fn reports_help_and_version() {
     let help = yarp(&["--help"]);
     assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("yarp plan --json"));
     assert!(String::from_utf8_lossy(&help.stdout).contains("yarp rewrite"));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("yarp config"));
     assert!(String::from_utf8_lossy(&help.stdout).contains("yarp archive verify"));
 
     let version = yarp(&["--version"]);
     assert!(version.status.success());
     assert!(String::from_utf8_lossy(&version.stdout).starts_with("yarp 0.1.0"));
+}
+
+#[test]
+fn manages_one_strict_versioned_configuration_file() {
+    let config_home = TempDir::new().expect("config home");
+    let path = yarp_with_config_home(&["config", "path"], config_home.path());
+    assert!(path.status.success());
+    assert_eq!(
+        String::from_utf8(path.stdout).expect("path UTF-8").trim(),
+        config_home
+            .path()
+            .join("yarp/config.toml")
+            .to_str()
+            .expect("config path UTF-8"),
+    );
+
+    let defaults = yarp_with_config_home(&["config", "show", "--json"], config_home.path());
+    assert!(defaults.status.success());
+    let defaults: serde_json::Value =
+        serde_json::from_slice(&defaults.stdout).expect("default config JSON");
+    assert_eq!(defaults["output"]["cap_bytes"], 5120);
+    assert_eq!(defaults["output"]["recovery_cap_bytes"], 32768);
+
+    let initialized = yarp_with_config_home(&["config", "init"], config_home.path());
+    assert!(initialized.status.success());
+    let config_path = config_home.path().join("yarp/config.toml");
+    assert!(config_path.is_file());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::metadata(config_home.path().join("yarp"))
+                .expect("config directory metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700,
+        );
+        assert_eq!(
+            fs::metadata(&config_path)
+                .expect("config file metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+        );
+    }
+    let duplicate = yarp_with_config_home(&["config", "init"], config_home.path());
+    assert!(!duplicate.status.success());
+
+    let set = yarp_with_config_home(
+        &["config", "set", "output.cap_bytes", "8192"],
+        config_home.path(),
+    );
+    assert!(set.status.success());
+    let edited = fs::read_to_string(&config_path).expect("edited config");
+    assert!(edited.contains("# YARP configuration"));
+    assert!(edited.contains("# Omit path to use the XDG data directory."));
+    let get = yarp_with_config_home(&["config", "get", "output.cap_bytes"], config_home.path());
+    assert_eq!(get.stdout, b"8192\n");
+    let unset = yarp_with_config_home(&["config", "unset", "output.cap_bytes"], config_home.path());
+    assert!(unset.status.success());
+    assert!(String::from_utf8_lossy(&unset.stdout).contains("5120"));
+
+    fs::write(&config_path, "version = 1\noutput = { cap_bytes = 4096 }\n").expect("inline config");
+    let inline_set = yarp_with_config_home(
+        &["config", "set", "output.recovery_cap_lines", "100"],
+        config_home.path(),
+    );
+    assert!(inline_set.status.success());
+    let inline_edited = fs::read_to_string(&config_path).expect("edited inline config");
+    assert!(inline_edited.contains("output = {"));
+    assert!(inline_edited.contains("cap_bytes = 4096"));
+    assert!(inline_edited.contains("recovery_cap_lines = 100"));
+    let inline_unset =
+        yarp_with_config_home(&["config", "unset", "output.cap_bytes"], config_home.path());
+    assert!(inline_unset.status.success());
+
+    let unknown = yarp_with_config_home(
+        &["config", "set", "output.unknown", "1"],
+        config_home.path(),
+    );
+    assert!(!unknown.status.success());
+    let check = yarp_with_config_home(&["config", "check"], config_home.path());
+    assert!(check.status.success());
 }
 
 #[test]
@@ -132,6 +249,34 @@ fn rewrite_has_clear_success_and_passthrough_statuses() {
 }
 
 #[test]
+fn plans_recovery_and_rewritten_shell_results_with_versioned_json() {
+    let recovery = yarp(&[
+        "plan",
+        "--json",
+        "yarp search yr_0123456789abcdef0123456789abcdef error",
+    ]);
+    assert!(recovery.status.success());
+    let recovery: serde_json::Value =
+        serde_json::from_slice(&recovery.stdout).expect("recovery plan JSON");
+    assert_eq!(recovery["version"], 1);
+    assert_eq!(recovery["execution"]["kind"], "original");
+    assert_eq!(recovery["result"]["kind"], "recovery");
+
+    let rewritten = yarp(&["plan", "--json", "git status --short"]);
+    assert!(rewritten.status.success());
+    let rewritten: serde_json::Value =
+        serde_json::from_slice(&rewritten.stdout).expect("rewrite plan JSON");
+    assert_eq!(rewritten["execution"]["kind"], "rewrite");
+    assert_eq!(rewritten["result"]["kind"], "ordinary");
+
+    let compound = yarp(&["plan", "--json", "yarp search ref error | head"]);
+    assert!(compound.status.success());
+    let compound: serde_json::Value =
+        serde_json::from_slice(&compound.stdout).expect("compound plan JSON");
+    assert_eq!(compound["result"]["kind"], "ordinary");
+}
+
+#[test]
 fn rejects_invalid_cli_and_disallowed_direct_execution() {
     let invalid = yarp(&["rewrite"]);
     assert_eq!(invalid.status.code(), Some(64));
@@ -200,7 +345,8 @@ fn archives_raw_and_pruned_shell_streams() {
         .expect("begin call");
     drop(archive);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_yarp"))
+    let (mut command, _config_home) = yarp_command_with_archive(&database);
+    let output = command
         .args([
             "run",
             "--archive-agent",
@@ -218,7 +364,6 @@ fn archives_raw_and_pruned_shell_streams() {
         ])
         .arg(&left)
         .arg(&right)
-        .env("YARP_ARCHIVE_PATH", &database)
         .output()
         .expect("archived diff");
     assert_eq!(output.status.code(), Some(1));
@@ -351,6 +496,81 @@ fn searches_and_reads_verified_archived_output_by_opaque_reference() {
 }
 
 #[test]
+fn recovery_commands_enforce_configured_byte_and_line_limits() {
+    let directory = TempDir::new().expect("temp directory");
+    let database = directory.path().join("archive/tool-calls.sqlite3");
+    let mut archive = Archive::open_path(database.clone()).expect("archive");
+    let archive_ref = archive
+        .begin_call(
+            &session(),
+            &call("call-bounded-query", "exec_command"),
+            &json!({"cmd": "find ."}),
+            &json!({"cmd": "find ."}),
+            20,
+        )
+        .expect("begin call");
+    let mut source = String::new();
+    for line in 1..=100 {
+        writeln!(source, "match {line:03}").expect("write source line");
+    }
+    archive
+        .result_text(
+            &session(),
+            "call-bounded-query",
+            &source,
+            yarp_cli::archive::SourceCompleteness::Complete,
+            30,
+        )
+        .expect("result text");
+    drop(archive);
+
+    let (mut search, _search_config) = yarp_command_with_limits(&database, Some((1024, 10)));
+    let searched = search
+        .args(["search", &archive_ref, "match", "--max-results", "20"])
+        .output()
+        .expect("bounded search");
+    assert!(searched.status.success());
+    assert!(searched.stdout.len() <= 1024);
+    assert!(String::from_utf8_lossy(&searched.stdout).lines().count() <= 10);
+
+    let (mut minimal_search, _minimal_search_config) =
+        yarp_command_with_limits(&database, Some((1024, 1)));
+    let minimal = minimal_search
+        .args(["search", &archive_ref, "match", "--max-results", "20"])
+        .output()
+        .expect("minimal bounded search");
+    assert!(minimal.status.success());
+    assert_eq!(String::from_utf8_lossy(&minimal.stdout).lines().count(), 1);
+    assert!(
+        String::from_utf8_lossy(&minimal.stdout)
+            .contains(&format!("read=yarp read {archive_ref} result_text 1:1"))
+    );
+
+    let (mut large_read, _large_read_config) =
+        yarp_command_with_limits(&database, Some((1024, 10)));
+    let rejected = large_read
+        .args(["read", &archive_ref, "result_text", "1:20"])
+        .output()
+        .expect("rejected read");
+    assert_eq!(rejected.status.code(), Some(65));
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("no larger than 10 lines"));
+    assert!(rejected.stdout.is_empty());
+
+    let (mut small_read, _small_read_config) =
+        yarp_command_with_limits(&database, Some((1024, 10)));
+    let accepted = small_read
+        .args(["read", &archive_ref, "result_text", "1:5"])
+        .output()
+        .expect("accepted read");
+    assert!(accepted.status.success());
+    let mut expected = String::new();
+    for line in source.lines().take(5) {
+        writeln!(expected, "{line}").expect("write expected line");
+    }
+    assert_eq!(accepted.stdout, expected.as_bytes());
+}
+
+#[test]
 fn rewrite_disagreement_archives_and_emits_exact_passthrough_streams() {
     let directory = TempDir::new().expect("temp directory");
     let database = directory.path().join("archive/tool-calls.sqlite3");
@@ -374,7 +594,8 @@ fn rewrite_disagreement_archives_and_emits_exact_passthrough_streams() {
     drop(archive);
 
     let selected_digest = yarp_cli::rules::digest_hex(&yarp_cli::rules::BUILTIN_SOURCE_DIGEST);
-    let output = Command::new(env!("CARGO_BIN_EXE_yarp"))
+    let (mut command, _config_home) = yarp_command_with_archive(&database);
+    let output = command
         .args([
             "run",
             "--selected-pack",
@@ -400,7 +621,6 @@ fn rewrite_disagreement_archives_and_emits_exact_passthrough_streams() {
         ])
         .arg(&left)
         .arg(&right)
-        .env("YARP_ARCHIVE_PATH", &database)
         .output()
         .expect("passthrough diff");
     assert_eq!(output.status.code(), Some(1));
@@ -435,7 +655,8 @@ fn archive_failure_returns_the_unpruned_stream() {
     std::fs::write(&left, numbered_lines("left", 260)).expect("write left");
     std::fs::write(&right, numbered_lines("right", 260)).expect("write right");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_yarp"))
+    let (mut command, _config_home) = yarp_command_with_archive(&invalid_database);
+    let output = command
         .args([
             "run",
             "--archive-agent",
@@ -453,7 +674,6 @@ fn archive_failure_returns_the_unpruned_stream() {
         ])
         .arg(&left)
         .arg(&right)
-        .env("YARP_ARCHIVE_PATH", &invalid_database)
         .output()
         .expect("failed archive diff");
     assert_eq!(output.status.code(), Some(1));
@@ -550,9 +770,9 @@ fn verify_reports_insecure_permissions_without_repairing_them() {
 fn ingest_cli_commits_and_acknowledges_a_call() {
     let directory = TempDir::new().expect("temp directory");
     let database = directory.path().join("yarp/tool-calls.sqlite3");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_yarp"))
+    let (mut command, _config_home) = yarp_command_with_archive(&database);
+    let mut child = command
         .args(["archive", "ingest"])
-        .env("YARP_ARCHIVE_PATH", &database)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -589,9 +809,9 @@ fn ingest_cli_commits_and_acknowledges_a_call() {
 fn killed_ingest_process_leaves_an_integral_incomplete_call() {
     let directory = TempDir::new().expect("temp directory");
     let database = directory.path().join("yarp/tool-calls.sqlite3");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_yarp"))
+    let (mut command, _config_home) = yarp_command_with_archive(&database);
+    let mut child = command
         .args(["archive", "ingest"])
-        .env("YARP_ARCHIVE_PATH", &database)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -630,9 +850,9 @@ fn killed_ingest_process_leaves_an_integral_incomplete_call() {
 fn killed_ingest_process_preserves_a_committed_pre_result() {
     let directory = TempDir::new().expect("temp directory");
     let database = directory.path().join("yarp/tool-calls.sqlite3");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_yarp"))
+    let (mut command, _config_home) = yarp_command_with_archive(&database);
+    let mut child = command
         .args(["archive", "ingest"])
-        .env("YARP_ARCHIVE_PATH", &database)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -16,6 +17,19 @@ fn main() -> Result<(), String> {
     let executable = release_yarp()?;
     let directory = TempDir::new().map_err(|error| error.to_string())?;
     let database = directory.path().join("archive/tool-calls.sqlite3");
+    let config_home = directory.path().join("config");
+    fs::create_dir_all(config_home.join("yarp")).map_err(|error| error.to_string())?;
+    let database_text = serde_json::to_string(
+        database
+            .to_str()
+            .ok_or_else(|| "benchmark archive path is not UTF-8".to_owned())?,
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(
+        config_home.join("yarp/config.toml"),
+        format!("version = 1\n[archive]\npath = {database_text}\n"),
+    )
+    .map_err(|error| error.to_string())?;
     let mut archive = Archive::open_path(database.clone())?;
     let session = SessionIdentity {
         agent: "benchmark".to_owned(),
@@ -39,15 +53,15 @@ fn main() -> Result<(), String> {
 
     let search = benchmark_command(
         &executable,
-        &database,
+        &config_home,
         &["search", &archive_ref, "needle", "--max-results", "20"],
     )?;
     let read = benchmark_command(
         &executable,
-        &database,
+        &config_home,
         &["read", &archive_ref, "result_text", "1:200"],
     )?;
-    let result = benchmark_result_reducer(&executable, &archive_ref)?;
+    let result = benchmark_result_reducer(&executable, &config_home, &archive_ref)?;
     let representative_source = "set -o pipefail && rg TODO . | sort | uniq | head -50";
     let representative_parser = benchmark_parser(representative_source, WARMUP, SAMPLES)?;
     let maximum_source = format!("rg {}", "x".repeat(256 * 1024 - 3));
@@ -121,7 +135,7 @@ fn release_yarp() -> Result<PathBuf, String> {
 
 fn benchmark_command(
     executable: &Path,
-    database: &Path,
+    config_home: &Path,
     arguments: &[&str],
 ) -> Result<Vec<Duration>, String> {
     let mut samples = Vec::with_capacity(SAMPLES);
@@ -129,7 +143,7 @@ fn benchmark_command(
         let started = Instant::now();
         let output = Command::new(executable)
             .args(arguments)
-            .env("YARP_ARCHIVE_PATH", database)
+            .env("XDG_CONFIG_HOME", config_home)
             .output()
             .map_err(|error| error.to_string())?;
         let elapsed = started.elapsed();
@@ -147,7 +161,11 @@ fn benchmark_command(
     Ok(samples)
 }
 
-fn benchmark_result_reducer(executable: &Path, archive_ref: &str) -> Result<Vec<Duration>, String> {
+fn benchmark_result_reducer(
+    executable: &Path,
+    config_home: &Path,
+    archive_ref: &str,
+) -> Result<Vec<Duration>, String> {
     let text = "test routine ... ok\n".repeat(800);
     let body = serde_json::to_vec(&json!({
         "schemaVersion": 1,
@@ -170,6 +188,7 @@ fn benchmark_result_reducer(executable: &Path, archive_ref: &str) -> Result<Vec<
         let started = Instant::now();
         let mut child = Command::new(executable)
             .arg("result-reduce")
+            .env("XDG_CONFIG_HOME", config_home)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())

@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tempfile::{NamedTempFile, tempfile};
 
+use crate::config;
+
 const SCHEMA_VERSION: i64 = 1;
 const ZSTD_LEVEL: i32 = 3;
 const COMPRESSION_PERCENT: u64 = 95;
@@ -285,8 +287,8 @@ impl Archive {
     ///
     /// Returns an error when the path, permissions, `SQLite` database, or schema is invalid.
     pub fn open() -> Result<Self, String> {
-        let repair_default_directory = std::env::var_os("YARP_ARCHIVE_PATH").is_none();
-        Self::open_path_with_policy(archive_path()?, repair_default_directory)
+        let archive = config::load()?.archive;
+        Self::open_path_with_policy(archive.path, archive.is_default_path)
     }
 
     /// Open the configured archive without performing any writes.
@@ -1520,21 +1522,13 @@ fn apply_operation(
     }
 }
 
-/// Resolve the archive path from YARP, XDG, or home-directory configuration.
+/// Resolve the archive path from the YARP configuration.
 ///
 /// # Errors
 ///
-/// Returns an error when no archive override, XDG data path, or home directory is available.
+/// Returns an error when configuration or path resolution fails.
 pub fn archive_path() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("YARP_ARCHIVE_PATH") {
-        return Ok(PathBuf::from(path));
-    }
-    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
-        return Ok(PathBuf::from(data_home).join("yarp/tool-calls.sqlite3"));
-    }
-    let home = std::env::var_os("HOME")
-        .ok_or_else(|| "HOME is not set and YARP_ARCHIVE_PATH was not provided".to_owned())?;
-    Ok(PathBuf::from(home).join(".local/share/yarp/tool-calls.sqlite3"))
+    config::load().map(|resolved| resolved.archive.path)
 }
 
 fn enable_wal_mode(connection: &Connection) -> Result<(), String> {

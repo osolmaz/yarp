@@ -2,7 +2,7 @@
 
 YARP is a command-output pruner and local tool-call archive for Pi. It applies a bounded typed summary chosen for each supported command before output enters Pi's context, stores every Pi tool call before and after processing, and keeps exact omitted output available through short local references. Remaining tool-result text is capped at 5 KiB by default after the exact text is archived.
 
-YARP leaves unknown or ambiguous commands unchanged during execution. Structured-output and exact-inspection commands also bypass typed summaries, but their remaining text is subject to the global cap. YARP never rewrites pipelines, redirects, substitutions, or compound shell source. The Pi extension may summarize the result of a conservatively classified compound command after execution, without replaying or changing it. Wrapped commands keep their exit codes, and stdout never mixes with stderr.
+YARP leaves unknown or ambiguous commands unchanged during execution. Structured-output and exact-inspection commands also bypass typed summaries, but their remaining text is normally subject to the global cap. Direct `yarp search` and `yarp read` recovery commands use their own configured bounds and never receive another outer cap marker. YARP never rewrites pipelines, redirects, substitutions, or compound shell source. The Pi extension may summarize the result of a conservatively classified compound command after execution, without replaying or changing it. Wrapped commands keep their exit codes, and stdout never mixes with stderr.
 
 ## Install
 
@@ -47,7 +47,20 @@ yarp rewrite "git status --short"
 
 An unsupported command exits with status 3 and prints nothing. The Pi extension treats that result as a request to run the original command.
 
-The global text cap is 5,120 UTF-8 bytes, including its recovery marker. Set `YARP_OUTPUT_CAP_BYTES` to an exact byte budget from 1,024 through 16,777,216, or set it to `0` to disable only the generic cap. Invalid values disable the generic cap for that session with a warning. `YARP_DISABLED=1` turns off both automatic rewriting and result pruning while keeping the archive active. `YARP_ARCHIVE_DISABLED=1` also prevents generic capping because exact recovery cannot be committed.
+The global text cap is 5,120 UTF-8 bytes, including its recovery marker. Direct `yarp search` and `yarp read` commands instead default to 32,768 bytes and 1,900 lines, staying below Pi's native limits.
+
+Manage every user-facing policy setting through one versioned TOML file:
+
+```sh
+yarp config path
+yarp config init
+yarp config show
+yarp config set output.cap_bytes 8192
+yarp config set output.recovery_cap_bytes 32768
+yarp config check
+```
+
+The file lives at `$XDG_CONFIG_HOME/yarp/config.toml`, falling back to `$HOME/.config/yarp/config.toml`. A missing file uses defaults. Invalid files disable the Pi extension for that session instead of applying a partial configuration. See the [configuration specification](docs/configuration-spec.md) for all fields and validation rules.
 
 ## Rules
 
@@ -102,13 +115,13 @@ yarp rewrite --rule-pack ./example-rules.yrp "example-check"
 
 Compiled packs use engine ABI 2. Recompile any `.yrp` pack made by an earlier YARP version; incompatible packs are rejected before rule selection.
 
-Set `YARP_RULE_PACKS` to an operating-system path list for global packs. A trusted Pi project may instead keep a compiled pack at `.yarp/rules.yrp`; the extension ignores that path until Pi reports the project as trusted. YARP does not scan for source packs, compile them automatically, download rules, or execute code from a rule.
+Set `rules.packs` with `yarp config` for user-wide packs. A trusted Pi project may instead keep a compiled pack at `.yarp/rules.yrp`; the extension ignores that path until Pi reports the project as trusted. YARP does not scan for source packs, compile them automatically, download rules, or execute code from a rule.
 
-See the [indexed output summary plan](docs/indexed-output-summaries-implementation-plan.md) and the checked-in JSON schemas under `rules/schema/` for the complete reducer contract. They define matching and limits plus fail-open behavior. The [global output cap plan](docs/global-output-cap-implementation-plan.md) defines the size-first fallback, configuration, and recovery contract. The [shell result planning implementation plan](docs/shell-result-planning-implementation-plan.md) records the parser, pipeline, status, and adaptive evidence design.
+See the [indexed output summary plan](docs/indexed-output-summaries-implementation-plan.md) and the checked-in JSON schemas under `rules/schema/` for the complete reducer contract. They define matching and limits plus fail-open behavior. The [global output cap plan](docs/global-output-cap-implementation-plan.md) defines the size-first fallback and recovery contract. The [shell result planning implementation plan](docs/shell-result-planning-implementation-plan.md) records the shell parser and result-selection design.
 
 ## Archive
 
-YARP stores tool calls in one local SQLite database:
+YARP stores tool calls in one local SQLite database by default:
 
 ```text
 ~/.local/share/yarp/tool-calls.sqlite3
@@ -136,7 +149,7 @@ Delete finished calls older than a UTC timestamp only when you choose to:
 yarp archive prune --before 2026-01-01T00:00:00Z
 ```
 
-Set `YARP_ARCHIVE_DISABLED=1` to opt out of capture. The archive may contain commands, source code, file contents, and secrets printed by tools. It stays local and uses private filesystem permissions. See the [archive specification](docs/tool-call-archive-spec.md) for the full format and failure rules.
+Run `yarp config set archive.enabled false` to opt out of capture. The archive may contain commands, source code, file contents, and secrets printed by tools. It stays local and uses private filesystem permissions. See the [archive specification](docs/tool-call-archive-spec.md) for the full format and failure rules.
 
 ## Analyze existing tool calls offline
 

@@ -2,31 +2,10 @@ import assert from "node:assert/strict"
 import { Buffer } from "node:buffer"
 import test from "node:test"
 import type { ToolResultEvent } from "@earendil-works/pi-coding-agent"
-import {
-  capToolResultContent,
-  DEFAULT_OUTPUT_CAP_BYTES,
-  MAX_OUTPUT_CAP_BYTES,
-  MIN_OUTPUT_CAP_BYTES,
-  parseOutputCapConfiguration,
-} from "./output-cap.js"
+import { DEFAULT_OUTPUT_CAP_BYTES } from "./configuration.js"
+import { capToolResultContent } from "./output-cap.js"
 
 const archiveRef = "yr_0123456789abcdef0123456789abcdef"
-
-test("uses a 5 KiB default and accepts bounded explicit configuration", () => {
-  assert.deepEqual(parseOutputCapConfiguration(undefined), {
-    maxBytes: DEFAULT_OUTPUT_CAP_BYTES,
-    warning: null,
-  })
-  assert.deepEqual(parseOutputCapConfiguration("0"), { maxBytes: null, warning: null })
-  assert.deepEqual(parseOutputCapConfiguration("8192"), { maxBytes: 8192, warning: null })
-
-  for (const value of ["", "01", " 5120", "512", String(MAX_OUTPUT_CAP_BYTES + 1)]) {
-    const configuration = parseOutputCapConfiguration(value)
-    assert.equal(configuration.maxBytes, null)
-    assert.match(configuration.warning ?? "", /invalid YARP_OUTPUT_CAP_BYTES/u)
-  }
-  assert.equal(MIN_OUTPUT_CAP_BYTES, 1024)
-})
 
 test("passes text through at the exact byte budget", () => {
   const content: ToolResultEvent["content"] = [{ type: "text", text: "x".repeat(1024) }]

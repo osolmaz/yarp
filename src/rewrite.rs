@@ -1,5 +1,6 @@
 use crate::rules::{PackRequest, Registry, Selection, digest_hex};
 use crate::shell::{self, Connector, ShellItem, SimpleCommand};
+use serde::Serialize;
 use yarp_rule_pack::{OutputPolicy, Rule, Transform};
 
 /// Metadata passed to an archived shell wrapper.
@@ -26,6 +27,56 @@ pub fn rewrite_with_archive(
     rewrite_with_options(command, archive, &[]).ok().flatten()
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ShellPlan {
+    pub version: u32,
+    pub execution: ExecutionPlan,
+    pub result: ResultPolicy,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ExecutionPlan {
+    Original,
+    Rewrite { command: String },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResultPolicy {
+    Ordinary,
+    Recovery,
+}
+
+/// Plan shell execution and result handling using one conservative parse.
+///
+/// # Errors
+///
+/// Returns an error when configured rule packs cannot be loaded or selected safely.
+pub fn plan_with_options(
+    command: &str,
+    archive: Option<ArchiveCommandRef<'_>>,
+    packs: &[PackRequest],
+) -> Result<ShellPlan, String> {
+    let command = command.trim();
+    let Some(words) = shell::parse_simple_words(command).ok() else {
+        return Ok(original_plan(ResultPolicy::Ordinary));
+    };
+    if is_recovery_command(&words) {
+        return Ok(original_plan(ResultPolicy::Recovery));
+    }
+    let mut registry = Registry::load(packs)?;
+    let Selection::Reduce(selected) = registry.select(&words)? else {
+        return Ok(original_plan(ResultPolicy::Ordinary));
+    };
+    let wrapper = selected_wrapper(command, archive, &registry, &selected)?;
+    Ok(ShellPlan {
+        version: 1,
+        execution: ExecutionPlan::Rewrite { command: wrapper },
+        result: ResultPolicy::Ordinary,
+    })
+}
+
 /// Return a wrapper command using built-in and explicitly supplied compiled rule packs.
 ///
 /// # Errors
@@ -37,13 +88,36 @@ pub fn rewrite_with_options(
     archive: Option<ArchiveCommandRef<'_>>,
     packs: &[PackRequest],
 ) -> Result<Option<String>, String> {
-    let command = command.trim();
-    let words = shell::parse_simple_words(command)?;
-    let mut registry = Registry::load(packs)?;
-    let Selection::Reduce(selected) = registry.select(&words)? else {
-        return Ok(None);
-    };
+    plan_with_options(command, archive, packs).map(|plan| match plan.execution {
+        ExecutionPlan::Original => None,
+        ExecutionPlan::Rewrite { command } => Some(command),
+    })
+}
 
+const fn original_plan(result: ResultPolicy) -> ShellPlan {
+    ShellPlan {
+        version: 1,
+        execution: ExecutionPlan::Original,
+        result,
+    }
+}
+
+fn is_recovery_command(words: &[String]) -> bool {
+    matches!(
+        words,
+        [program, subcommand, arguments @ ..]
+            if program == "yarp"
+                && matches!(subcommand.as_str(), "search" | "read")
+                && !arguments.iter().any(|argument| matches!(argument.as_str(), "--help" | "-h"))
+    )
+}
+
+fn selected_wrapper(
+    command: &str,
+    archive: Option<ArchiveCommandRef<'_>>,
+    registry: &Registry,
+    selected: &crate::rules::SelectedRule,
+) -> Result<String, String> {
     let mut wrapper = format!(
         "yarp run --selected-pack {} --selected-rule {} --selected-digest {}",
         shell_quote(&selected.pack_id),
@@ -74,7 +148,7 @@ pub fn rewrite_with_options(
     }
     wrapper.push_str(" -- ");
     wrapper.push_str(command);
-    Ok(Some(wrapper))
+    Ok(wrapper)
 }
 
 fn shell_quote(value: &str) -> String {
@@ -832,6 +906,37 @@ mod tests {
                 digest_hex(&crate::rules::BUILTIN_SOURCE_DIGEST)
             )
         );
+    }
+
+    #[test]
+    fn classifies_only_direct_archive_queries_as_recovery() {
+        for command in [
+            "yarp search yr_0123456789abcdef0123456789abcdef error",
+            "yarp read yr_0123456789abcdef0123456789abcdef stdout 1:20",
+            "yarp search yr_0123456789abcdef0123456789abcdef 'error|warning' -C 2",
+        ] {
+            let plan = plan_with_options(command, None, &[]).expect("recovery plan");
+            assert_eq!(plan.execution, ExecutionPlan::Original);
+            assert_eq!(plan.result, ResultPolicy::Recovery);
+        }
+        for command in [
+            "command yarp search ref error",
+            "env DEBUG=1 yarp search ref error",
+            "/usr/bin/yarp read ref 1:20",
+            "yarp search ref error | head",
+            "yarp read ref 1:20 > output",
+            "yarp search ref error; printf extra",
+            "yarp search $(printf ref) error",
+            "yarp search ref error &",
+            "yarp search --help",
+        ] {
+            let plan = plan_with_options(command, None, &[]).expect("ordinary plan");
+            assert_eq!(
+                plan.result,
+                ResultPolicy::Ordinary,
+                "classified {command:?}"
+            );
+        }
     }
 
     #[test]

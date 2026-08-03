@@ -7,7 +7,7 @@ use tempfile::NamedTempFile;
 use yarp_rule_pack::{Action, CompiledPack, Reducer, SourcePack, Transform, compile};
 
 use crate::rules::{
-    PackRequest, Registry, Selection, digest_hex, requests_from_environment, requests_from_paths,
+    PackRequest, Registry, Selection, digest_hex, requests_from_config, requests_from_paths,
 };
 
 pub fn run(arguments: &[String]) -> i32 {
@@ -255,7 +255,7 @@ fn parse_pack_options(
 }
 
 fn combined_requests(paths: &[PathBuf]) -> Result<Vec<PackRequest>, String> {
-    let mut requests = requests_from_environment()?;
+    let mut requests = requests_from_config()?;
     requests.extend(requests_from_paths(paths));
     Ok(requests)
 }
