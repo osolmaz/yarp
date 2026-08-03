@@ -561,6 +561,23 @@ impl Archive {
                 |row| row.get(0),
             )
             .map_err(|error| format!("could not find archive reference {archive_ref}: {error}"))?;
+        if self.snapshot_exists(call_id, "result_text", "before")? {
+            let value: String = self
+                .connection
+                .query_row(
+                    "SELECT source_completeness FROM snapshots
+                     WHERE tool_call_id = ?1 AND subject = 'result_text' AND stage = 'before'",
+                    [call_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("could not read result text completeness: {error}"))?;
+            let completeness = parse_completeness(&value)?;
+            return Ok(vec![self.verified_source(
+                call_id,
+                SourceName::ResultText,
+                completeness,
+            )?]);
+        }
         let stdout = self.snapshot_exists(call_id, "stdout", "before")?;
         let stderr = self.snapshot_exists(call_id, "stderr", "before")?;
         if stdout || stderr {
@@ -586,23 +603,6 @@ impl Archive {
                 call_id,
                 SourceName::SourceOutput,
                 SourceCompleteness::Complete,
-            )?]);
-        }
-        if self.snapshot_exists(call_id, "result_text", "before")? {
-            let value: String = self
-                .connection
-                .query_row(
-                    "SELECT source_completeness FROM snapshots
-                     WHERE tool_call_id = ?1 AND subject = 'result_text' AND stage = 'before'",
-                    [call_id],
-                    |row| row.get(0),
-                )
-                .map_err(|error| format!("could not read result text completeness: {error}"))?;
-            let completeness = parse_completeness(&value)?;
-            return Ok(vec![self.verified_source(
-                call_id,
-                SourceName::ResultText,
-                completeness,
             )?]);
         }
         Err(format!(
@@ -2836,7 +2836,7 @@ mod tests {
     #[test]
     fn stores_exact_source_full_output_with_the_result() {
         let (directory, mut archive) = archive();
-        archive
+        let archive_ref = archive
             .begin_call(
                 &session(),
                 &call(),
@@ -2870,6 +2870,25 @@ mod tests {
             .read_to_end(&mut actual)
             .expect("read source output");
         assert_eq!(actual, expected);
+
+        archive
+            .result_text(
+                &session(),
+                "call-1",
+                "exact host text\n",
+                SourceCompleteness::Incomplete,
+                40,
+            )
+            .expect("result text");
+        let mut sources = archive.searchable_sources(&archive_ref).expect("sources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].name, SourceName::ResultText);
+        let mut host_text = String::new();
+        sources[0]
+            .body
+            .read_to_string(&mut host_text)
+            .expect("result text body");
+        assert_eq!(host_text, "exact host text\n");
     }
 
     #[test]

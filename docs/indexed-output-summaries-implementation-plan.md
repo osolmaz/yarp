@@ -415,10 +415,12 @@ supported host adapter.
 A call reference can own more than one snapshot. Search chooses sources without
 asking the model for a subject:
 
-1. For a wrapped call, search `stdout/before` and `stderr/before` separately.
-2. Otherwise, prefer a verified `source_output/before` produced by a documented
+1. Prefer `result_text/before` when it exists. A global cap stores the exact
+   pre-cap host text there, including when another raw source is binary.
+2. Otherwise, for a wrapped call, search `stdout/before` and `stderr/before`
+   separately.
+3. Otherwise, use a verified `source_output/before` produced by a documented
    host full-output path.
-3. Otherwise, search `result_text/before`.
 4. If none exists, report that the call has no searchable text.
 
 Never search `input`, canonical result JSON, after snapshots, or duplicate views
