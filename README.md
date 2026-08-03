@@ -186,7 +186,7 @@ Measure how much unchanged shell output belongs to reviewable command families w
 target/release/toolcall-extractor analyze-ceiling
 ```
 
-The command prints aggregate JSON with fixed public family labels to standard output. It does not create another persistent store; callers may redirect the report under their own private `umask` when they need a local snapshot. See the [reduction ceiling analysis](docs/reduction-ceiling-analysis.md) for the report fields and review process.
+The command prints aggregate JSON with fixed public family labels to standard output. It does not create another persistent store; callers may redirect the report under their own private `umask` when they need a local snapshot. See the [reduction ceiling analysis](docs/reduction-ceiling-analysis.md) for the report fields and review process. The [tool output size distribution](docs/tool-output-size-distribution.md) reports aggregate character counts and hard-cap scenarios across textual results.
 
 For a different Unix user, run only the reader under that identity and keep the DuckDB writer under your own account:
 
