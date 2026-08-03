@@ -1,8 +1,8 @@
 # YARP
 
-YARP is a command-output pruner and local tool-call archive for Pi. It applies a bounded typed summary chosen for each supported command before output enters Pi's context, stores every Pi tool call before and after processing, and keeps exact omitted output available through short local references.
+YARP is a command-output pruner and local tool-call archive for Pi. It applies a bounded typed summary chosen for each supported command before output enters Pi's context, stores every Pi tool call before and after processing, and keeps exact omitted output available through short local references. Remaining tool-result text is capped at 5 KiB by default after the exact text is archived.
 
-YARP leaves unknown or ambiguous commands unchanged. Structured-output and exact-inspection commands also stay unchanged. It never rewrites pipelines, redirects, substitutions, or compound shell source. The Pi extension may summarize the result of a conservatively classified compound command after execution, without replaying or changing it. Wrapped commands keep their exit codes, and stdout never mixes with stderr.
+YARP leaves unknown or ambiguous commands unchanged during execution. Structured-output and exact-inspection commands also bypass typed summaries, but their remaining text is subject to the global cap. YARP never rewrites pipelines, redirects, substitutions, or compound shell source. The Pi extension may summarize the result of a conservatively classified compound command after execution, without replaying or changing it. Wrapped commands keep their exit codes, and stdout never mixes with stderr.
 
 ## Install
 
@@ -47,7 +47,7 @@ yarp rewrite "git status --short"
 
 An unsupported command exits with status 3 and prints nothing. The Pi extension treats that result as a request to run the original command.
 
-Set `YARP_DISABLED=1` to turn off automatic rewriting while keeping the archive active.
+The global text cap is 5,120 UTF-8 bytes, including its recovery marker. Set `YARP_OUTPUT_CAP_BYTES` to an exact byte budget from 1,024 through 16,777,216, or set it to `0` to disable only the generic cap. Invalid values disable the generic cap for that session with a warning. `YARP_DISABLED=1` turns off both automatic rewriting and result pruning while keeping the archive active. `YARP_ARCHIVE_DISABLED=1` also prevents generic capping because exact recovery cannot be committed.
 
 ## Rules
 
@@ -104,7 +104,7 @@ Compiled packs use engine ABI 2. Recompile any `.yrp` pack made by an earlier YA
 
 Set `YARP_RULE_PACKS` to an operating-system path list for global packs. A trusted Pi project may instead keep a compiled pack at `.yarp/rules.yrp`; the extension ignores that path until Pi reports the project as trusted. YARP does not scan for source packs, compile them automatically, download rules, or execute code from a rule.
 
-See the [indexed output summary plan](docs/indexed-output-summaries-implementation-plan.md) and the checked-in JSON schemas under `rules/schema/` for the complete reducer contract. They define matching and limits plus fail-open behavior. The [shell result planning implementation plan](docs/shell-result-planning-implementation-plan.md) records the parser, pipeline, status, and adaptive evidence design.
+See the [indexed output summary plan](docs/indexed-output-summaries-implementation-plan.md) and the checked-in JSON schemas under `rules/schema/` for the complete reducer contract. They define matching and limits plus fail-open behavior. The [global output cap plan](docs/global-output-cap-implementation-plan.md) defines the size-first fallback, configuration, and recovery contract. The [shell result planning implementation plan](docs/shell-result-planning-implementation-plan.md) records the parser, pipeline, status, and adaptive evidence design.
 
 ## Archive
 
@@ -116,7 +116,7 @@ YARP stores tool calls in one local SQLite database:
 
 Inputs and results are stored before and after YARP processing. Wrapped shell commands also store exact stdout and stderr before and after pruning. Identical snapshots share one compressed payload.
 
-Typed summaries include an opaque reference when omitted output is recoverable. Search one archived call, then copy an exact range printed by the search result:
+Typed summaries and globally capped results include an opaque reference when output is omitted. Search one archived call, then copy an exact range printed by the search result:
 
 ```sh
 yarp search yr_0123456789abcdef0123456789abcdef 'error|FAILED'
@@ -189,6 +189,8 @@ A complete local validation across Pi, Codex, Claude Code, and Cursor imported 7
 
 ## Limits
 
-Each rule selects a typed search, diff, test, build, log, status, list, or literal-filter summary. Success and failure policies independently bound one line and total output and require both an absolute and proportional saving. Generic words such as `error` are shown as source-term samples unless the command-specific parser has enough evidence to label a diagnostic. Processing is streaming and bounded below 4 MiB per stream or result. Short output remains byte-for-byte exact when compacting it would not save enough space.
+Each rule selects a typed search, diff, test, build, log, status, list, or literal-filter summary. Success and failure policies independently bound one line and total output and require both an absolute and proportional saving. Generic words such as `error` are shown as source-term samples unless the command-specific parser has enough evidence to label a diagnostic. Typed processing is streaming and bounded below 4 MiB per stream or result.
+
+After typed processing, YARP measures the UTF-8 bytes across all text blocks in an archived Pi result. Text within the configured cap stays byte-for-byte exact. Larger text keeps UTF-8-safe content from the beginning and end, with the recovery marker counted inside the same budget. Image blocks remain unchanged and do not count toward the text cap. The output-size study used Unicode characters, so its thresholds are not byte-identical for non-ASCII output.
 
 YARP does not collect usage data or access the network. Archive capture is local and enabled by default. The offline extractor writes only when invoked explicitly.

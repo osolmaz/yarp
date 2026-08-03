@@ -100,7 +100,7 @@ A snapshot points to immutable bytes in `payloads`. Its `subject` says what was 
 | --- | --- | --- |
 | `input` | Tool arguments received by YARP. | Arguments after YARP rewrites them. |
 | `result` | Tool result received before YARP changes it. | Tool result returned to Pi. |
-| `result_text` | Exact single text item exposed by the host when a post-result summary wins and no complete source exists. | Not used. |
+| `result_text` | Exact ordered concatenation of host text blocks saved when a typed summary needs host text or the global text cap wins. | Not used. |
 | `source_output` | Exact complete output read from Pi's built-in Bash tool `fullOutputPath`. | Not used. |
 | `stdout` | Exact child stdout before pruning. | Exact stdout emitted after pruning. |
 | `stderr` | Exact child stderr before pruning. | Exact stderr emitted after pruning. |
@@ -115,7 +115,7 @@ The word `before` means before YARP processing. A source tool may already have a
 
 Tool inputs and structured results use RFC 8785 canonical JSON encoded as UTF-8. Their media type is `application/json`.
 
-Result text, source output, stdout, and stderr keep their exact bytes. Result text is always valid UTF-8 and records whether the host proved it complete, reported it truncated, or exposed unknown completeness. Other valid UTF-8 text uses `text/plain; charset=utf-8`; non-text output uses `application/octet-stream`. YARP must not normalize line endings or remove terminal control bytes before hashing a stream payload.
+Result text, source output, stdout, and stderr keep their exact bytes. Result text is the ordered concatenation of the original text blocks without inserted separators. It is always valid UTF-8 and records whether the host proved it complete, reported it truncated, or exposed unknown completeness. Other valid UTF-8 text uses `text/plain; charset=utf-8`; non-text output uses `application/octet-stream`. YARP must not normalize line endings or remove terminal control bytes before hashing a stream payload.
 
 `sha256` is the SHA-256 digest of the uncompressed bytes. `uncompressed_byte_length` is the length of those bytes.
 
@@ -125,7 +125,11 @@ YARP compresses a payload with Zstandard level 3 when the compressed body is at 
 
 YARP observes `tool_execution_start` to retain arguments in memory for calls rejected before `tool_call`. At `tool_call`, YARP writes the session, the call with `status = 'started'`, and both input snapshots in one transaction. The transaction must commit before tool execution begins. A call rejected before `tool_call` never executes, so YARP writes its unchanged input snapshots with its final preflight result at `tool_execution_end`.
 
-The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before`, then invokes the bounded post-result reducer only for one safe shell text result. If that summary wins and no complete stream or `source_output` exists, it commits `result_text/before` before returning the summary. It then stages a provisional `result/after` and `is_error` while it can still restore raw output on failure. The call remains `started`, so a crash or later reconciliation failure is visible as an incomplete call. After all result hooks run, `tool_execution_end` replaces the provisional result and atomically writes its final metadata with `status = 'finished'`. If this final transaction fails for a wrapped shell call, YARP restores its raw streams and replaces the public tool-result message at `message_end`. Completion verifies that `result/before` exists and that executed wrapped shell calls have all four stream snapshots.
+The shell runner writes its before and after stream snapshots in one transaction before it returns. The `tool_result` hook writes `result/before`, then invokes the bounded typed reducer only for one safe shell text result. If that summary wins and no complete `source_output` exists, it commits the exact host text as `result_text/before` before returning the summary.
+
+If no typed summary wins, the hook measures the UTF-8 bytes across every text block. Text over the configured global budget is shortened only after its exact ordered concatenation commits as `result_text/before`. The visible result keeps UTF-8-safe beginning and ending content plus a bounded recovery marker. Image blocks remain unchanged and are excluded from the text-byte budget. Archive failure leaves the uncapped result visible.
+
+The hook then stages a provisional `result/after` and `is_error` while it can still restore raw output on failure. The call remains `started`, so a crash or later reconciliation failure is visible as an incomplete call. After all result hooks run, `tool_execution_end` replaces the provisional result and atomically writes its final metadata with `status = 'finished'`. If this final transaction fails for a wrapped shell call, YARP restores its raw streams and replaces the public tool-result message at `message_end`. Completion verifies that `result/before` exists and that executed wrapped shell calls have all four stream snapshots.
 
 Pi can reject or block a call before tool execution without emitting `tool_result`, and validation can reject it before `tool_call`. For those preflight failures, `tool_execution_end` records the error result and finishes the call without requiring `result/before`. The archive does not infer a rejection or cancellation category from result text.
 
