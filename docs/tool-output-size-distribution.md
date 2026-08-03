@@ -44,7 +44,7 @@ These scenarios show arithmetic limits. They do not propose a policy. For a cap 
 
 ![Hard-cap pruning and affected-output curves](hard-cap-tradeoff.svg)
 
-The left panel gives removed characters as a share of all characters in that scope. The right panel gives the share of textual outputs whose length exceeds the cap. Shell and non-shell are mutually exclusive subsets; the overall line is their weighted aggregate. An affected output would be shortened, but it would require a recovery call only when the retained text failed to answer the agent's question.
+Both curves use the overall textual-output corpus. The blue curve gives removed characters as a share of all characters. The green curve gives textual outputs left untouched, calculated as 100% minus the share whose length exceeds the cap. An output above the cap would be shortened. It would require a recovery call only when the retained text failed to answer the agent's question.
 
 | Character cap | All outputs above cap | Maximum reduction, all outputs | Shell outputs above cap | Maximum reduction, shell outputs |
 | ---: | ---: | ---: | ---: | ---: |
