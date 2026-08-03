@@ -1,7 +1,9 @@
+#[cfg(test)]
+use crate::rule_pack as yarp_rule_pack;
+use crate::rule_pack::{OutputPolicy, Rule, Transform};
 use crate::rules::{PackRequest, Registry, Selection, digest_hex};
 use crate::shell::{self, Connector, ShellItem, SimpleCommand};
 use serde::Serialize;
-use yarp_rule_pack::{OutputPolicy, Rule, Transform};
 
 /// Metadata passed to an archived shell wrapper.
 #[derive(Clone, Copy, Debug)]

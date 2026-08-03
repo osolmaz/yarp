@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use yarp_rule_pack::OutputPolicy;
+use crate::rule_pack::OutputPolicy;
 
 const LINE_MARKER_RESERVE: usize = 96;
 

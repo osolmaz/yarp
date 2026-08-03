@@ -35,6 +35,15 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Rust tests
         run: cargo test --workspace --all-targets --locked
+      - name: Rust package
+        run: |
+          set -euo pipefail
+          publishable="$(cargo metadata --no-deps --format-version 1 | jq -r '[.packages[] | select(.publish != []) | .name] | sort | join("\n")')"
+          if [ "$publishable" != "yarp-cli" ]; then
+            echo "expected yarp-cli to be the only publishable crate, got: $publishable" >&2
+            exit 1
+          fi
+          cargo package --locked -p yarp-cli
       - name: Install Rust quality tools
         run: |
           cargo install cargo-audit --locked --version 0.22.2

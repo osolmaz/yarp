@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use yarp_rule_pack::OutputPolicy;
+use crate::rule_pack::OutputPolicy;
 
 use super::bounded::{LineView, render_line};
 

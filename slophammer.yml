@@ -17,13 +17,9 @@ rust:
   mutation:
     targets:
       - src
-      - rule-pack/src
       - toolcall-extractor/src
   dependency_boundaries:
     - from: .
-      allow:
-        - rule-pack
-    - from: rule-pack
       allow: []
     - from: toolcall-extractor
       allow:

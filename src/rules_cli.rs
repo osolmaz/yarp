@@ -2,9 +2,9 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use crate::rule_pack::{Action, CompiledPack, Reducer, SourcePack, Transform, compile};
 use serde_json::json;
 use tempfile::NamedTempFile;
-use yarp_rule_pack::{Action, CompiledPack, Reducer, SourcePack, Transform, compile};
 
 use crate::rules::{
     PackRequest, Registry, Selection, digest_hex, requests_from_config, requests_from_paths,

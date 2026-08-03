@@ -1,6 +1,6 @@
 mod registry;
 
-pub use yarp_rule_pack::{Reducer, Rule};
+pub use crate::rule_pack::{Reducer, Rule};
 
 pub use registry::{
     BUILTIN_PACK_ID, BUILTIN_SOURCE_DIGEST, PackReference, PackRequest, Registry, RuleSummary,

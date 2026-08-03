@@ -1,4 +1,4 @@
-use yarp_rule_pack::{LinePattern, PatternCase, PatternKind, PatternTrim};
+use crate::rule_pack::{LinePattern, PatternCase, PatternKind, PatternTrim};
 
 use super::bounded::LineView;
 
@@ -175,7 +175,7 @@ fn strip_line_ending(body: &[u8]) -> &[u8] {
 mod tests {
     use std::collections::VecDeque;
 
-    use yarp_rule_pack::{PatternCase, PatternKind, PatternTrim};
+    use crate::rule_pack::{PatternCase, PatternKind, PatternTrim};
 
     use super::*;
 

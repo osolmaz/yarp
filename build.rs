@@ -5,6 +5,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+
+#[expect(
+    dead_code,
+    unused_imports,
+    reason = "the build script compiles the shared module but uses only source compiler APIs"
+)]
+#[path = "src/rule_pack/mod.rs"]
+mod yarp_rule_pack;
+
 use yarp_rule_pack::{
     Action, CommandMatcher, LinePattern, OutputPolicy, PatternCase, PatternKind, PatternTrim,
     Reducer, Rule, SourcePack, Transform, decode_json,
@@ -110,6 +119,7 @@ fn render_registry(source: &SourcePack) -> Result<String, String> {
     let mut rules: Vec<&Rule> = source.rules.iter().collect();
     rules.sort_by(|left, right| left.id.cmp(&right.id));
     let mut output = String::new();
+    writeln!(output, "use crate::rule_pack as yarp_rule_pack;").map_err(format_error)?;
     writeln!(
         output,
         "pub const BUILTIN_PACK_ID: &str = {:?};",

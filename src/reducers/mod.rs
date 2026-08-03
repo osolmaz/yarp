@@ -14,9 +14,9 @@ use bounded::{LineAccumulator, LineView, ShortRaw};
 pub use evidence::RecoveryMarker;
 use evidence::{EvidenceClass, EvidenceCollector};
 use filter::{AnsiStripper, line_filter_keeps};
-use yarp_rule_pack::{Action, OutputPolicy, Reducer, Rule};
 
 use crate::rewrite::TransformDiagnostics;
+use crate::rule_pack::{self as yarp_rule_pack, Action, OutputPolicy, Reducer, Rule};
 
 const DIAGNOSTIC_CONTEXT_LINES: usize = 6;
 
@@ -307,7 +307,7 @@ pub fn configured_memory_bound(rule: &Rule) -> Result<usize, String> {
 mod tests {
     use std::fmt::Write as _;
 
-    use yarp_rule_pack::{CommandMatcher, OutputPolicy};
+    use crate::rule_pack::{CommandMatcher, OutputPolicy};
 
     use super::*;
 

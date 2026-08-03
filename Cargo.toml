@@ -1,10 +1,10 @@
 [workspace]
-members = [".", "rule-pack", "toolcall-extractor"]
+members = [".", "toolcall-extractor"]
 resolver = "3"
 
 [package]
 name = "yarp-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Prune Pi command output and archive tool calls locally"
@@ -38,9 +38,10 @@ time = { version = "0.3", features = ["parsing", "formatting"] }
 toml_edit = { version = "=0.25.13", features = ["serde"] }
 tree-sitter = "=0.25.10"
 tree-sitter-bash = "=0.25.1"
-yarp-rule-pack = { version = "=0.1.0", path = "rule-pack" }
 zstd = "0.13"
 
 [build-dependencies]
 serde = { version = "1", features = ["derive"] }
-yarp-rule-pack = { version = "=0.1.0", path = "rule-pack" }
+serde_jcs = "0.2"
+serde_json = "1"
+sha2 = "0.11"

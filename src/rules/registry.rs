@@ -3,9 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-use yarp_rule_pack::{Action, CompiledPack, Rule};
-
 use crate::config;
+#[cfg(test)]
+use crate::rule_pack as yarp_rule_pack;
+use crate::rule_pack::{Action, CompiledPack, Rule};
 
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/builtin_rules.rs"));
@@ -435,10 +436,10 @@ fn disable_conflicts(external: &mut [ExternalPack]) -> Vec<String> {
 mod tests {
     use std::io::{Seek as _, SeekFrom, Write as _};
 
+    use crate::rule_pack::SourcePack;
     use serde::Deserialize;
     use sha2::{Digest as _, Sha256};
     use tempfile::TempDir;
-    use yarp_rule_pack::SourcePack;
 
     use super::*;
 

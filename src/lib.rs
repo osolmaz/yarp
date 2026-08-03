@@ -8,6 +8,7 @@ mod config_cli;
 pub mod reducers;
 mod result_reducer;
 pub mod rewrite;
+pub mod rule_pack;
 pub mod rules;
 mod rules_cli;
 pub mod runner;

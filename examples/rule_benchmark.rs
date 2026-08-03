@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 use yarp_cli::reducers::{StreamReducer, configured_memory_bound};
+use yarp_cli::rule_pack::{SourcePack, compile};
 use yarp_cli::rules::{PackRequest, Registry, Selection};
-use yarp_rule_pack::{SourcePack, compile};
 
 const EXTERNAL_RULES: usize = 1_000;
 const MATCH_SAMPLES: usize = 200;

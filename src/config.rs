@@ -5,10 +5,10 @@ use std::fs::File;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
+use crate::rule_pack::CompiledPack;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use toml_edit::{Array, DocumentMut, Item, Table, value};
-use yarp_rule_pack::CompiledPack;
 
 pub const CONFIG_VERSION: u32 = 1;
 pub const DEFAULT_OUTPUT_CAP_BYTES: usize = 5 * 1024;

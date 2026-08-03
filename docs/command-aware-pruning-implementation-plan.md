@@ -938,7 +938,7 @@ yarp/
     └── command-aware-pruning-implementation-plan.md
 ```
 
-The root `yarp-cli` library remains the only live pruning implementation. The internal `yarp-rule-pack` crate holds the shared source model, validation, strict JSON decoder, and compiled-pack reader so the build script and runtime cannot drift. It contains no command execution or output reducers. `toolcall-extractor` depends on `yarp-cli` for benchmarking.
+The root `yarp-cli` library remains the only live pruning implementation and the only public crate. Its internal `rule_pack` module holds the shared source model, validation, strict JSON decoder, and compiled-pack reader so the build script and runtime cannot drift. It contains no command execution or output reducers. `toolcall-extractor` depends on `yarp-cli` for benchmarking.
 
 ## Implementation stages
 

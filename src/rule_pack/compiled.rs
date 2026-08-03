@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest as _, Sha256};
 
-use crate::model::{ENGINE_ABI_VERSION, Rule};
-use crate::source::SourcePack;
-use crate::strict_json;
-use crate::validation::{
+use super::model::{ENGINE_ABI_VERSION, Rule};
+use super::source::SourcePack;
+use super::strict_json;
+use super::validation::{
     MAX_COMPILED_BYTES, MAX_RULES, MAX_SOURCE_FILE_BYTES, validate_manifest, validate_rule,
     validate_rules,
 };
@@ -783,8 +783,8 @@ mod tests {
 
     use tempfile::{NamedTempFile, TempDir};
 
+    use super::super::source::SourcePack;
     use super::*;
-    use crate::source::SourcePack;
 
     #[test]
     fn compiles_and_verifies_a_deterministic_index() {
@@ -832,10 +832,10 @@ mod tests {
         file.flush().expect("flush pack");
         let mut pack = CompiledPack::open(file.path(), None, None).expect("open");
         let rule = pack.read_rule(0).expect("transform rule");
-        assert_eq!(rule.action, crate::model::Action::Transform);
+        assert_eq!(rule.action, super::super::model::Action::Transform);
         assert_eq!(
             rule.transform,
-            Some(crate::model::Transform::LinePreserving)
+            Some(super::super::model::Transform::LinePreserving)
         );
     }
 

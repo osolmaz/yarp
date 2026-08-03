@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::model::{
+use super::model::{
     Action, CommandMatcher, LinePattern, OutputPolicy, PackManifest, Reducer, Rule,
     SOURCE_SCHEMA_VERSION,
 };
@@ -423,8 +423,8 @@ fn matchers_may_overlap(left: &CommandMatcher, right: &CommandMatcher) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::{PatternCase, PatternKind, PatternTrim, Transform};
     use super::*;
-    use crate::model::{PatternCase, PatternKind, PatternTrim, Transform};
 
     fn policy() -> OutputPolicy {
         OutputPolicy {

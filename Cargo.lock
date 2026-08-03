@@ -2095,7 +2095,7 @@ dependencies = [
 
 [[package]]
 name = "yarp-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fs2",
  "regex",
@@ -2110,19 +2110,7 @@ dependencies = [
  "toml_edit",
  "tree-sitter",
  "tree-sitter-bash",
- "yarp-rule-pack",
  "zstd",
-]
-
-[[package]]
-name = "yarp-rule-pack"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_jcs",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
 ]
 
 [[package]]

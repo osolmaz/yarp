@@ -3,9 +3,9 @@ use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest as _, Sha256};
 
-use crate::model::{PackManifest, Rule};
-use crate::strict_json;
-use crate::validation::{
+use super::model::{PackManifest, Rule};
+use super::strict_json;
+use super::validation::{
     MAX_SOURCE_BYTES, MAX_SOURCE_FILE_BYTES, validate_manifest, validate_rules,
 };
 
