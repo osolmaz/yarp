@@ -1,6 +1,6 @@
 # YARP
 
-YARP is a command-output pruner and local tool-call archive for Pi. It applies a bounded typed summary chosen for each supported command before output enters Pi's context, stores every Pi tool call before and after processing, and keeps exact omitted output available through short local references. Remaining tool-result text is capped at 5 KiB by default after the exact text is archived.
+YARP (Yet Another Result Pruner) is a command-output pruner and local tool-call archive for Pi. It applies a bounded typed summary chosen for each supported command before output enters Pi's context, stores every Pi tool call before and after processing, and keeps exact omitted output available through short local references. Remaining tool-result text is capped at 5 KiB by default after the exact text is archived.
 
 YARP leaves unknown or ambiguous commands unchanged during execution. Structured-output and exact-inspection commands also bypass typed summaries, but their remaining text is normally subject to the global cap. Direct `yarp search` and `yarp read` recovery commands use their own configured bounds and never receive another outer cap marker. YARP never rewrites pipelines, redirects, substitutions, or compound shell source. The Pi extension may summarize the result of a conservatively classified compound command after execution, without replaying or changing it. Wrapped commands keep their exit codes, and stdout never mixes with stderr.
 
