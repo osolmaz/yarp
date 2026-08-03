@@ -260,6 +260,7 @@ export async function installYarpExtension(
     } | null = null
     const pruningEnabled = process.env["YARP_DISABLED"] !== "1"
     const completeness = resultCompleteness(event, fullOutputPath !== undefined)
+    const hostTextCompleteness = resultCompleteness(event, false)
     const text = singleTextContent(event.content)
     if (
       pruningEnabled
@@ -310,7 +311,7 @@ export async function installYarpExtension(
         const capped = capToolResultContent(
           content,
           active.archiveRef,
-          usesRawStreams ? "complete" : (typedRecovery?.completeness ?? completeness),
+          usesRawStreams ? "complete" : (typedRecovery?.completeness ?? hostTextCompleteness),
           outputCap.maxBytes,
           usesRawStreams ? "stdout" : (typedRecovery?.source ?? "result_text"),
         )
@@ -320,7 +321,7 @@ export async function installYarpExtension(
               session,
               event.toolCallId,
               capped.sourceText,
-              completeness,
+              hostTextCompleteness,
               Date.now(),
             )
           }

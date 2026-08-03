@@ -117,7 +117,7 @@ Tool inputs and structured results use RFC 8785 canonical JSON encoded as UTF-8.
 
 Result text, source output, stdout, and stderr keep their exact bytes. Result text is the ordered concatenation of the original text blocks without inserted separators. It is always valid UTF-8 and records whether the host proved it complete, reported it truncated, or exposed unknown completeness. Other valid UTF-8 text uses `text/plain; charset=utf-8`; non-text output uses `application/octet-stream`. YARP must not normalize line endings or remove terminal control bytes before hashing a stream payload.
 
-When `result_text/before` exists, `yarp search` and `yarp read` select it as the exact pre-cap visible text. Otherwise, wrapped `stdout/before` and `stderr/before` take precedence over `source_output/before`. This keeps capped host text searchable even when a complete Bash source is binary.
+When `result_text/before` exists, `yarp search` and `yarp read` select it as the exact pre-cap visible text. Its completeness comes from the host text metadata, not from a separate full-output path. Otherwise, wrapped `stdout/before` and `stderr/before` take precedence over `source_output/before`. This keeps capped host text searchable even when a complete Bash source is binary.
 
 `sha256` is the SHA-256 digest of the uncompressed bytes. `uncompressed_byte_length` is the length of those bytes.
 
