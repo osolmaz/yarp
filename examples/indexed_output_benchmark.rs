@@ -40,7 +40,7 @@ fn main() -> Result<(), String> {
     let search = benchmark_command(
         &executable,
         &database,
-        &["search", &archive_ref, "needle", "-m", "20"],
+        &["search", &archive_ref, "needle", "--max-results", "20"],
     )?;
     let read = benchmark_command(
         &executable,

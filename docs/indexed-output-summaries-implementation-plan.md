@@ -453,15 +453,15 @@ Support these options and no others in the first implementation:
 | `-A`, `--after-context N`  | Show lines after a selected line.            |
 | `-B`, `--before-context N` | Show lines before a selected line.           |
 | `-C`, `--context N`        | Set both context counts.                     |
-| `-m`, `--max-count N`      | Show at most N selected lines per source.    |
+| `-m`, `--max-results N`    | Show at most N selected results per source.  |
 | `--`                       | End option parsing.                          |
 
 Accept options before or after `REF` and the positional pattern. A pattern that
 starts with `-` requires `-e` or `--`. One positional pattern and repeated `-e`
 are mutually exclusive. Repeated `-e` patterns use OR semantics, matching `rg`.
 
-Defaults are two context lines and 20 selected lines per source. Accept context
-counts from 0 through 50 and match counts from 1 through 100 as canonical
+Defaults are two context lines and 20 selected results per source. Accept context
+counts from 0 through 50 and result limits from 1 through 100 as canonical
 unsigned decimal values. Reject duplicates that conflict, missing values,
 overflow, signs, whitespace-padded numbers, and unknown options. Context is
 coalesced when ranges overlap. Results keep source order, use one-based line
@@ -496,7 +496,7 @@ Search begins with a machine-generated header that states:
 - total selected lines;
 - displayed selected lines;
 - omitted selected lines;
-- the active context and match limits.
+- the active context and result limits.
 
 Every displayed selected line includes its source name and source line number.
 Use `:` between a source, selected line number, and selected text, and `-` for a
@@ -504,7 +504,7 @@ context line, matching familiar `rg -n -C` output. A complete result looks like:
 
 ```text
 [yarp search: ref=yr_4f91d03ab8d44712a48fa8b0d671e3d2]
-[source=stderr complete=true matches=17 showing=2 context=2]
+[source=stderr complete=true matches=17 showing=2 before=2 after=2 max_results=2]
 stderr-116-before context
 stderr-117-before context
 stderr:118:error[E0308]: mismatched types
@@ -535,7 +535,7 @@ system-prompt paragraph, custom tool schema, or host-specific tutorial.
 ```text
 yarp search REF 'error|FAILED'
 yarp search REF 'literal text' -F -i
-yarp search REF 'warning' -v -C 3 -m 20
+yarp search REF 'warning' -v -C 3 --max-results 20
 yarp read REF stdout 118:130
 ```
 

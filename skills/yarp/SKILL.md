@@ -23,11 +23,11 @@ Copy the opaque `yr_...` reference exactly from the YARP marker. Search for the 
 ```sh
 yarp search REF 'error|FAILED'
 yarp search REF 'literal text' -F -i
-yarp search REF 'warning' -v -C 3 -m 20
+yarp search REF 'warning' -v -C 3 --max-results 20
 yarp search REF -e 'panic' -e 'fatal' -C 2
 ```
 
-Search patterns are bounded regular expressions by default. Use `-F` for literal text, `-i` for case-insensitive matching, `-w` for ASCII word boundaries, and `-e` for multiple patterns. Use `-A`, `-B`, or `-C` for bounded context and `-m` to limit displayed matches.
+Search patterns are bounded regular expressions by default. Use `-F` for literal text, `-i` for case-insensitive matching, `-w` for ASCII word boundaries, and `-e` for multiple patterns. Use `-A`, `-B`, or `-C` for bounded context and `--max-results` (`-m`) to limit displayed results.
 
 An exit status of 1 with `No matches` means the search completed successfully but found nothing. Refine the terms before considering a rerun of the original command.
 

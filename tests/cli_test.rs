@@ -288,6 +288,7 @@ fn archive_search_help_is_model_sized_and_stable() {
     assert!(text.contains("yarp search REF PATTERN [options]"));
     assert!(text.contains("yarp read REF stdout 118:130"));
     assert!(text.contains("-F/--fixed-strings"));
+    assert!(text.contains("-m/--max-results"));
 }
 
 #[test]
@@ -316,12 +317,22 @@ fn searches_and_reads_verified_archived_output_by_opaque_reference() {
     drop(archive);
 
     let searched = yarp_with_archive(
-        &["search", &archive_ref, "error", "-i", "-C", "1"],
+        &[
+            "search",
+            &archive_ref,
+            "error",
+            "-i",
+            "-C",
+            "1",
+            "--max-results",
+            "1",
+        ],
         &database,
     );
     assert!(searched.status.success());
     let search_text = String::from_utf8(searched.stdout).expect("search UTF-8");
     assert!(search_text.contains("source=result_text complete=false"));
+    assert!(search_text.contains("max_results=1"));
     assert!(search_text.contains("result_text:2:ERROR failure"));
     assert!(search_text.contains(&format!("yarp read {archive_ref} result_text 1:3")));
     assert!(!search_text.contains("\x1b[31m"));

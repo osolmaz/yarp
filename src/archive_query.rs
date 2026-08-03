@@ -7,7 +7,7 @@ use regex::bytes::{Regex, RegexBuilder};
 use crate::archive::{Archive, SourceCompleteness, SourceName, VerifiedSource};
 use crate::reducers::filter::AnsiStripper;
 
-pub const SEARCH_HELP: &str = "Search one archived YARP call.\n\nExamples:\n  yarp search REF 'error|FAILED'\n  yarp search REF 'literal text' -F -i\n  yarp search REF 'warning' -v -C 3 -m 20\n  yarp read REF stdout 118:130\n\nUsage:\n  yarp search REF PATTERN [options]\n  yarp search REF -e PATTERN [-e PATTERN ...] [options]\n\nOptions: -e/--regexp -F/--fixed-strings -i/--ignore-case\n         -w/--word-regexp (ASCII boundaries) -v/--invert-match\n         -A/--after-context -B/--before-context -C/--context\n         -m/--max-count --\n";
+pub const SEARCH_HELP: &str = "Search one archived YARP call.\n\nExamples:\n  yarp search REF 'error|FAILED'\n  yarp search REF 'literal text' -F -i\n  yarp search REF 'warning' -v -C 3 --max-results 20\n  yarp read REF stdout 118:130\n\nUsage:\n  yarp search REF PATTERN [options]\n  yarp search REF -e PATTERN [-e PATTERN ...] [options]\n\nOptions: -e/--regexp -F/--fixed-strings -i/--ignore-case\n         -w/--word-regexp (ASCII boundaries) -v/--invert-match\n         -A/--after-context -B/--before-context -C/--context\n         -m/--max-results --\n";
 
 const MAX_PATTERN_BYTES: usize = 1_024;
 const MAX_PATTERNS: usize = 8;
@@ -39,7 +39,7 @@ struct SearchOptions {
     invert: bool,
     before: usize,
     after: usize,
-    max_count: usize,
+    max_results: usize,
 }
 
 #[derive(Debug)]
@@ -58,7 +58,7 @@ struct SourceSearch {
     lines: BTreeMap<u64, DisplayLine>,
     before: usize,
     after: usize,
-    max_count: usize,
+    max_results: usize,
 }
 
 /// Search verified archived sources with a deliberately small `rg`-style syntax.
@@ -119,7 +119,7 @@ fn parse_search(arguments: &[String]) -> Result<SearchOptions, String> {
     let mut invert = false;
     let mut before = None;
     let mut after = None;
-    let mut max_count = None;
+    let mut max_results = None;
     let mut end_options = false;
     let mut index = 0;
     while index < arguments.len() {
@@ -170,9 +170,9 @@ fn parse_search(arguments: &[String]) -> Result<SearchOptions, String> {
                 set_consistent(&mut after, value, "after-context")?;
                 index += 2;
             }
-            "-m" | "--max-count" => {
+            "-m" | "--max-results" => {
                 let value = parse_count(&require_value(arguments, index, argument)?, 1, 100)?;
-                set_consistent(&mut max_count, value, "max-count")?;
+                set_consistent(&mut max_results, value, "max-results")?;
                 index += 2;
             }
             value if value.starts_with('-') => {
@@ -226,7 +226,7 @@ fn parse_search(arguments: &[String]) -> Result<SearchOptions, String> {
         invert,
         before: before.unwrap_or(2),
         after: after.unwrap_or(2),
-        max_count: max_count.unwrap_or(20),
+        max_results: max_results.unwrap_or(20),
     })
 }
 
@@ -326,7 +326,7 @@ fn search_source(
         };
         if selected {
             total_selected = total_selected.saturating_add(1);
-            if displayed_selected.len() < options.max_count.min(MAX_RENDERED_SELECTED_LINES)
+            if displayed_selected.len() < options.max_results.min(MAX_RENDERED_SELECTED_LINES)
                 && display.insert(line_number, normalized.clone(), true)
             {
                 for (context_line, context) in &previous {
@@ -353,7 +353,7 @@ fn search_source(
         lines: display.lines,
         before: options.before,
         after: options.after,
-        max_count: options.max_count,
+        max_results: options.max_results,
     })
 }
 
@@ -478,14 +478,14 @@ fn render_search(archive_ref: &str, sources: &[SourceSearch]) -> Result<Vec<u8>,
         }
         output.extend_from_slice(
             format!(
-                "[source={} complete={} matches={} showing={} before={} after={} max_count={}]\n",
+                "[source={} complete={} matches={} showing={} before={} after={} max_results={}]\n",
                 source.name.as_str(),
                 completeness_label(source.completeness),
                 source.total_selected,
                 source.displayed_selected.len(),
                 source.before,
                 source.after,
-                source.max_count
+                source.max_results
             )
             .as_bytes(),
         );
@@ -751,21 +751,42 @@ mod tests {
     }
 
     #[test]
-    fn parses_familiar_search_options_in_any_position() {
+    fn parses_search_options_in_any_position() {
         let options = parse_search(&strings(&[
             "-i",
             "yr_0123456789abcdef0123456789abcdef",
             "error",
             "-C",
             "3",
-            "-m",
+            "--max-results",
             "20",
         ]))
         .expect("search options");
         assert!(options.ignore_case);
         assert_eq!(options.before, 3);
         assert_eq!(options.after, 3);
-        assert_eq!(options.max_count, 20);
+        assert_eq!(options.max_results, 20);
+    }
+
+    #[test]
+    fn supports_short_max_results_and_rejects_old_long_spelling() {
+        let options = parse_search(&strings(&[
+            "yr_0123456789abcdef0123456789abcdef",
+            "error",
+            "-m",
+            "7",
+        ]))
+        .expect("short max-results option");
+        assert_eq!(options.max_results, 7);
+        assert!(
+            parse_search(&strings(&[
+                "yr_0123456789abcdef0123456789abcdef",
+                "error",
+                "--max-count",
+                "7",
+            ]))
+            .is_err()
+        );
     }
 
     #[test]
