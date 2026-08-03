@@ -11,5 +11,11 @@
 - Add tests for every behavior change.
 - Avoid runtime dependencies when the standard library is enough.
 - Follow https://github.com/osolmaz/slophammer/blob/main/docs/AGENT_ENTRYPOINT.md.
-- Before finishing, run `cargo fmt --check`, `cargo check --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --all-targets --locked`, `cargo llvm-cov --workspace --all-targets --fail-under-lines 85`, `cargo audit --deny warnings`, `npm audit`, `npm run typecheck:pi`, `npm run test:pi`, `slophammer-rs check .`, and `git diff --check`.
+- Match validation effort to the changed surface:
+  - For documentation, skill text, and package-resource metadata, run the relevant focused test, `slophammer-rs check .`, and `git diff --check`. Run the Pi typecheck when TypeScript or the Pi manifest changes.
+  - For localized Rust or TypeScript changes, run formatting, check or typecheck, linting, and targeted tests for the affected package and behavior.
+  - When a dependency manifest or lockfile changes, run the relevant package audit.
+  - For core execution, archive, rewrite, reducer, parser, protocol, security, or privacy changes, run `cargo fmt --check`, `cargo check --workspace --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --all-targets --locked`, `cargo llvm-cov --workspace --all-targets --fail-under-lines 85`, `cargo audit --deny warnings`, `npm audit`, `npm run typecheck:pi`, `npm run test:pi`, `slophammer-rs check .`, and `git diff --check`.
+- Let CI provide broad workspace coverage for low-risk, localized changes. Run full local coverage only for high-risk or coverage-sensitive changes, or when the user explicitly requests it.
+- For a small, bounded change, commit and push after the targeted checks pass. Do not block the first push on broad checks that CI will run, and do not repeat an automated test with a manual canary unless there is a specific test gap or the user requests it.
 - Mutation tests are declared in CI. Run them only when explicitly requested or when investigating test quality.
