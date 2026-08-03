@@ -518,10 +518,11 @@ unrequested result metadata.
 
 #### Model usability
 
-The omission marker is the just-in-time instruction surface. Do not add a
-persistent system-prompt paragraph, skill requirement, custom tool schema, or
-host-specific tutorial. The marker contains exactly one valid command and only
-appears when retrieval is possible.
+The omission marker remains the just-in-time recovery surface and contains one
+valid command only when retrieval is possible. The package also includes a
+concise on-demand YARP skill for usage, bounded recovery, and troubleshooting.
+Keep its full instructions behind skill loading; do not add a persistent
+system-prompt paragraph, custom tool schema, or host-specific tutorial.
 
 `yarp search --help` must fit within 2 KiB and lead with these examples:
 

@@ -55,6 +55,51 @@ fn reports_help_and_version() {
 }
 
 #[test]
+fn exposes_the_bundled_yarp_skill_through_skillflag() {
+    let listed = yarp(&["--skill", "list"]);
+    assert!(listed.status.success());
+    let list_text = String::from_utf8_lossy(&listed.stdout);
+    assert!(list_text.starts_with("yarp\t"));
+    assert!(!list_text.contains("skillflag\t"));
+
+    let listed_json = yarp(&["--skill", "list", "--json"]);
+    assert!(listed_json.status.success());
+    let payload: serde_json::Value =
+        serde_json::from_slice(&listed_json.stdout).expect("skill list JSON");
+    let skills = payload["skills"].as_array().expect("skills array");
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0]["id"], "yarp");
+    assert_eq!(skills[0]["files"], 1);
+    assert!(
+        skills[0]["digest"]
+            .as_str()
+            .is_some_and(|digest| digest.starts_with("sha256:"))
+    );
+
+    let shown = yarp(&["--skill", "show", "yarp"]);
+    assert!(shown.status.success());
+    assert_eq!(shown.stdout, include_bytes!("../skills/yarp/SKILL.md"));
+
+    let first_export = yarp(&["--skill", "export", "yarp"]);
+    let second_export = yarp(&["--skill", "export", "yarp"]);
+    assert!(first_export.status.success());
+    assert_eq!(first_export.stdout, second_export.stdout);
+    assert!(
+        first_export
+            .stdout
+            .windows(b"yarp/SKILL.md".len())
+            .any(|window| window == b"yarp/SKILL.md")
+    );
+}
+
+#[test]
+fn skillflag_only_intercepts_the_top_level_skill_flag() {
+    let output = yarp(&["rewrite", "printf --skill list"]);
+    assert_eq!(output.status.code(), Some(3));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
 fn rewrite_has_clear_success_and_passthrough_statuses() {
     let rewritten = yarp(&["rewrite", "cargo test --workspace"]);
     assert!(rewritten.status.success());

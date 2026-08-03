@@ -1453,6 +1453,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
+name = "skillflag"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e33bebe6ed6908095508aead8203d7d73663709edb091ca7f01575b09ac4631"
+dependencies = [
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2038,6 +2047,7 @@ dependencies = [
  "serde_jcs",
  "serde_json",
  "sha2 0.11.0",
+ "skillflag",
  "tempfile",
  "time",
  "tree-sitter",

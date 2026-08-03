@@ -30,7 +30,7 @@ type Handler<K extends EventName> = (
   context: ExtensionContext,
 ) => Promise<ExtensionEventResultMap[K] | void> | ExtensionEventResultMap[K] | void
 
-test("keeps the Pi and Rust package versions in exact agreement", async () => {
+test("keeps the Pi package version and resources in agreement", async () => {
   const packageJson = JSON.parse(
     await readFile(new URL("../../package.json", import.meta.url), "utf8"),
   ) as unknown
@@ -39,6 +39,18 @@ test("keeps the Pi and Rust package versions in exact agreement", async () => {
       ? packageJson.version
       : undefined,
     YARP_PACKAGE_VERSION,
+  )
+  const pi =
+    typeof packageJson === "object" && packageJson !== null && "pi" in packageJson
+      ? packageJson.pi
+      : undefined
+  assert.deepEqual(
+    typeof pi === "object" && pi !== null && "extensions" in pi ? pi.extensions : undefined,
+    ["./hooks/pi/yarp.ts"],
+  )
+  assert.deepEqual(
+    typeof pi === "object" && pi !== null && "skills" in pi ? pi.skills : undefined,
+    ["./skills"],
   )
 })
 
