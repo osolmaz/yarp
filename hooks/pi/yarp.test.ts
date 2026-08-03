@@ -395,7 +395,8 @@ test("caps wrapped summaries against their exact raw streams", async () => {
   const visible = resultPatchText(patch)
   assert.ok(Buffer.byteLength(visible, "utf8") <= 5 * 1024)
   assert.match(visible, /stdout complete/u)
-  assert.deepEqual(sink.resultTexts, [])
+  assert.deepEqual(sink.resultTexts, [wrappedSummary])
+  assert.deepEqual(sink.resultTextCompleteness, ["unknown"])
 })
 
 test("archives unchanged non-shell calls and both result stages", async () => {
