@@ -4,7 +4,7 @@ This report measures the number of characters in textual tool results from the p
 
 ![Tool output size distribution](tool-output-size-distribution.svg)
 
-The figure separates all textual outputs from the shell subset. The first two panels show where outputs and characters fall by size. The last panel shows the maximum possible character reduction from replacing every result above a chosen character cap with exactly that many characters.
+The figure separates all textual outputs from the shell subset. In the first panel, each point gives the share of outputs at or below the size on the horizontal axis. The second panel gives the share of all characters contributed by those outputs. The last panel shows the maximum possible character reduction from replacing every result above a chosen character cap with exactly that many characters.
 
 ## Main numbers
 
@@ -53,6 +53,6 @@ The 704 rows count characters, while YARP's current rule policies use bytes. The
 
 The report reads the private `toolcall-extractor` DuckDB database and counts Unicode scalar values in each normalized `output_text`. Results without textual output are outside the report. Shell output uses the same fixed shell-tool classification as the YARP corpus benchmark.
 
-Percentiles use the nearest-rank method. Bands are mutually exclusive. The measurements were taken from the corpus state on 2026-08-03.
+Percentiles use the nearest-rank method. Bands are mutually exclusive. The figure uses 500 logarithmically spaced thresholds plus exact table boundaries, and its lines connect those aggregate points without fitting a model. The measurements were taken from the corpus state on 2026-08-03.
 
 Only the aggregate numbers and generated SVG are checked into the repository. The database, raw outputs, temporary aggregate JSON, and plotting script remain outside Git.
