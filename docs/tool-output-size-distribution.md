@@ -42,6 +42,10 @@ Half of all textual outputs contain at most 462 characters. The mean is much hig
 
 These scenarios show arithmetic limits. They do not propose a policy. For a cap of `C` characters, the calculation is `sum(max(output characters - C, 0))`. It assumes that no summary, warning, or recovery text consumes space, so a real implementation would remove less.
 
+![Hard-cap pruning and affected-output curves](hard-cap-tradeoff.svg)
+
+The left panel gives removed characters as a share of all characters in that scope. The right panel gives the share of textual outputs whose length exceeds the cap. Shell and non-shell are mutually exclusive subsets; the overall line is their weighted aggregate. An affected output would be shortened, but it would require a recovery call only when the retained text failed to answer the agent's question.
+
 | Character cap | All outputs above cap | Maximum reduction, all outputs | Shell outputs above cap | Maximum reduction, shell outputs |
 | ---: | ---: | ---: | ---: | ---: |
 | 704 | 248,954 (44.01%) | 1,696,363,805 (87.36%) | 197,374 (53.17%) | 1,259,185,364 (87.11%) |
@@ -59,6 +63,6 @@ The 704 rows count characters, while YARP's current rule policies use bytes. The
 
 The report reads the private `toolcall-extractor` DuckDB database and counts Unicode scalar values in each normalized `output_text`. Results without textual output are outside the report. Shell output uses the same fixed shell-tool classification as the YARP corpus benchmark.
 
-Percentiles use the nearest-rank method. Table bands are mutually exclusive. The binned panels use 40 equal-width bins on the logarithmic scale from 1 to 700,000 characters. The 12 zero-character outputs remain in the totals and table but cannot appear on that scale. The cumulative panels use 500 logarithmically spaced thresholds plus exact table boundaries, and their lines connect those aggregate points without fitting a model. The measurements were taken from the corpus state on 2026-08-03.
+Percentiles use the nearest-rank method. Table bands are mutually exclusive. The binned panels use 40 equal-width bins on the logarithmic scale from 1 to 700,000 characters. The 12 zero-character outputs remain in the totals and table but cannot appear on that scale. The cumulative panels and hard-cap trade-off figure use 500 logarithmically spaced thresholds plus exact table boundaries. Their lines connect those aggregate points without fitting a model. The measurements were taken from the corpus state on 2026-08-03.
 
-Only the aggregate numbers and generated SVG are checked into the repository. The database, raw outputs, temporary aggregate JSON, and plotting script remain outside Git.
+Only the aggregate numbers and generated SVG figures are checked into the repository. The database, raw outputs, temporary aggregate JSON, and plotting script remain outside Git.
