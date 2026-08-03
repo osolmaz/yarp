@@ -16,6 +16,10 @@ import {
   type ArchiveSink,
 } from "./archive-client.js"
 import {
+  capToolResultContent,
+  parseOutputCapConfiguration,
+} from "./output-cap.js"
+import {
   ResultReducerClient,
   type ResultReducer,
   type SourceCompleteness,
@@ -125,6 +129,10 @@ export async function installYarpExtension(
     return
   }
   const resultReducer = createResultReducer()
+  const outputCap = parseOutputCapConfiguration(process.env["YARP_OUTPUT_CAP_BYTES"])
+  if (outputCap.warning !== null) {
+    console.warn(`[yarp] ${outputCap.warning}; generic output cap disabled`)
+  }
 
   let sink: ArchiveSink | null = null
   let session: ArchiveSession | null = null
@@ -246,14 +254,15 @@ export async function installYarpExtension(
     }
 
     let patch: ResultPatch | undefined
+    const pruningEnabled = process.env["YARP_DISABLED"] !== "1"
+    const completeness = resultCompleteness(event, fullOutputPath !== undefined)
     const text = singleTextContent(event.content)
     if (
-      process.env["YARP_DISABLED"] !== "1"
+      pruningEnabled
       && !active.requiresStreams
       && active.command !== null
       && text !== null
     ) {
-      const completeness = resultCompleteness(event, fullOutputPath !== undefined)
       try {
         const reduced = await resultReducer.reduce(
           {
@@ -283,6 +292,29 @@ export async function installYarpExtension(
         }
       } catch (error) {
         console.warn(`[yarp] post-result reduction failed; keeping original output: ${errorMessage(error)}`)
+      }
+    }
+
+    if (pruningEnabled && patch === undefined && outputCap.maxBytes !== null) {
+      try {
+        const capped = capToolResultContent(
+          event.content,
+          active.archiveRef,
+          completeness,
+          outputCap.maxBytes,
+        )
+        if (capped !== null) {
+          await sink.resultText(
+            session,
+            event.toolCallId,
+            capped.sourceText,
+            completeness,
+            Date.now(),
+          )
+          patch = { content: capped.content }
+        }
+      } catch (error) {
+        console.warn(`[yarp] generic output cap failed; keeping original output: ${errorMessage(error)}`)
       }
     }
 

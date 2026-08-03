@@ -1,5 +1,10 @@
 # Shell result planning implementation plan
 
+> This document defines typed shell-result selection. A later
+> [global output cap](global-output-cap-implementation-plan.md) applies to
+> remaining Pi result text after this planner finishes; it does not make an
+> unsupported shell command executable or typed.
+
 ## Purpose
 
 YARP should understand the visible output of safe shell pipelines and command chains before selecting a typed reducer. The command must run exactly as written. YARP will archive the exact result first, then reduce it only when every possible visible output has one compatible type.

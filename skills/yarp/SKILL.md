@@ -6,13 +6,15 @@ compatibility: Requires the yarp CLI and access to the local YARP archive that c
 
 # YARP
 
-YARP gives the model a bounded typed summary of supported command output and keeps exact omitted output in a private local archive. The Pi extension handles normal rewriting, result reduction, and archival automatically.
+YARP gives the model a bounded typed summary of supported command output and keeps exact omitted output in a private local archive. After typed summarization, the Pi extension caps remaining result text at 5,120 UTF-8 bytes by default. It handles rewriting, result reduction, generic capping, and archival automatically.
 
 ## Use the inline summary first
 
 Treat the visible typed summary as the primary result. Do not retrieve omitted output merely because a recovery marker exists. Retrieve only when the omitted evidence is needed to answer the user, verify a claim, diagnose a failure, or choose the next action.
 
 Do not rerun the original command when the archived result can answer the question. A rerun may be slower, have side effects, or observe different state.
+
+A global-cap marker keeps content from both the beginning and end of the result. Read both visible sections before deciding that recovery is needed.
 
 ## Search omitted output
 
@@ -72,12 +74,14 @@ yarp archive verify
 yarp archive stats
 ```
 
-Unknown or ambiguous commands normally pass through unchanged. The same applies to structured-output forms and streaming or exact-inspection commands. Do not force them through a reducer.
+Unknown or ambiguous commands execute unchanged and bypass typed summaries. The same applies to structured-output forms and streaming or exact-inspection commands. Their remaining result text may still receive the archive-backed global cap.
+
+`YARP_OUTPUT_CAP_BYTES` configures that cap for a Pi process. Unset means 5,120 bytes, `0` disables only the generic cap, and values from 1,024 through 16,777,216 select an exact byte budget. Do not change or persist this setting unless the user asks.
 
 ## Safety boundaries
 
 - Do not invoke `yarp archive prune` unless the user explicitly requests deletion and provides the intended UTC boundary.
-- Do not set `YARP_DISABLED` or `YARP_ARCHIVE_DISABLED` persistently unless the user explicitly asks to disable that behavior.
+- Do not set `YARP_DISABLED`, `YARP_ARCHIVE_DISABLED`, or `YARP_OUTPUT_CAP_BYTES` persistently unless the user explicitly asks to change that behavior.
 - Do not inspect the SQLite archive directly. Use the bounded `search`, `read`, `stats`, and `verify` interfaces.
 - Do not treat the presence of a recovery marker as evidence that recovery is required.
 - Preserve command status and diagnostics when troubleshooting. YARP must fail open when it cannot reduce safely.

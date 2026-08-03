@@ -1,9 +1,11 @@
 # Command-aware pruning implementation plan
 
 > The command matching, integrity, and fail-open design in this document remains
-> current. The generic head-and-tail reducer and output-policy fields have been
-> replaced by the typed reducer contract in
+> current. The generic command reducer and output-policy fields were replaced by
+> the typed reducer contract in
 > [Indexed output summaries](indexed-output-summaries-implementation-plan.md).
+> A later [global output cap](global-output-cap-implementation-plan.md) now runs
+> after typed selection without changing command matching or execution.
 
 Command-Aware Pruning will replace YARP's single head-and-tail policy with a compiled rule engine. Each approved command will select one bounded streaming reducer before execution. Built-in rules will be embedded in the Rust binary, while users may compile their own declarative rules into one indexed local pack without rebuilding YARP.
 

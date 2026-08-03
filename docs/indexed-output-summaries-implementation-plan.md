@@ -1,7 +1,9 @@
 # Indexed output summaries implementation plan
 
 Status: implementation and the in-place archive schema change were approved by
-Onur Solmaz on 2026-08-01.
+Onur Solmaz on 2026-08-01. A later
+[global output cap](global-output-cap-implementation-plan.md) now applies after
+this typed policy when remaining result text exceeds its configured byte budget.
 
 YARP should keep the exact command output locally and give the model a smaller,
 command-specific summary when that summary is useful. The summary must show what

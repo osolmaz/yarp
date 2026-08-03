@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { Buffer } from "node:buffer"
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -123,6 +124,7 @@ class MemorySink implements ArchiveSink {
   readonly beforeResults: unknown[] = []
   readonly fullOutputPaths: Array<string | undefined> = []
   readonly resultTexts: string[] = []
+  readonly resultTextCompleteness: Array<"complete" | "incomplete" | "unknown"> = []
   readonly stagedResults: unknown[] = []
   readonly finishedResults: unknown[] = []
   readonly updatedResults: unknown[] = []
@@ -162,9 +164,11 @@ class MemorySink implements ArchiveSink {
     _session: ArchiveSession,
     _sourceCallId: string,
     text: string,
+    sourceCompleteness: "complete" | "incomplete" | "unknown",
   ): Promise<string> {
     if (this.failResultText) throw new Error("result text failed")
     this.resultTexts.push(text)
+    this.resultTextCompleteness.push(sourceCompleteness)
     return "yr_0123456789abcdef0123456789abcdef"
   }
 
@@ -416,6 +420,120 @@ test("archives unchanged non-shell calls and both result stages", async () => {
   assert.deepEqual(sink.finishRequiresPreResult, [])
 })
 
+test("caps every large archived text result at 5 KiB by default", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  await start(pi, sink)
+  await call(pi, "global-cap", "read", { path: "large.txt" })
+  const original = `first line\n${"middle data\n".repeat(1_000)}last line\n`
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "global-cap",
+      toolName: "read",
+      input: { path: "large.txt" },
+      content: [{ type: "text", text: original }],
+      details: { truncated: false },
+      isError: false,
+    },
+    context,
+  )
+
+  const visible = resultPatchText(patch)
+  assert.ok(Buffer.byteLength(visible, "utf8") <= 5 * 1024)
+  assert.ok(visible.startsWith("first line\n"))
+  assert.ok(visible.endsWith("last line\n"))
+  assert.match(visible, /Search omitted output: yarp search yr_0123456789abcdef0123456789abcdef/u)
+  assert.deepEqual(sink.resultTexts, [original])
+  assert.deepEqual(sink.resultTextCompleteness, ["complete"])
+  assert.deepEqual(sink.beforeResults[0], {
+    content: [{ type: "text", text: original }],
+    details: { truncated: false },
+    isError: false,
+    usage: null,
+  })
+})
+
+test("uses an explicit byte cap and allows zero to disable the generic cap", async () => {
+  const original = "large output\n".repeat(1_000)
+  process.env["YARP_OUTPUT_CAP_BYTES"] = "1024"
+  try {
+    const pi = new MockPi()
+    const sink = new MemorySink()
+    await start(pi, sink)
+    await call(pi, "custom-cap", "custom", {})
+    const patch = await pi.registry.emit(
+      "tool_result",
+      {
+        type: "tool_result",
+        toolCallId: "custom-cap",
+        toolName: "custom",
+        input: {},
+        content: [{ type: "text", text: original }],
+        details: undefined,
+        isError: false,
+      },
+      context,
+    )
+    assert.ok(Buffer.byteLength(resultPatchText(patch), "utf8") <= 1024)
+  } finally {
+    delete process.env["YARP_OUTPUT_CAP_BYTES"]
+  }
+
+  process.env["YARP_OUTPUT_CAP_BYTES"] = "0"
+  try {
+    const pi = new MockPi()
+    const sink = new MemorySink()
+    await start(pi, sink)
+    await call(pi, "disabled-cap", "custom", {})
+    const patch = await pi.registry.emit(
+      "tool_result",
+      {
+        type: "tool_result",
+        toolCallId: "disabled-cap",
+        toolName: "custom",
+        input: {},
+        content: [{ type: "text", text: original }],
+        details: undefined,
+        isError: false,
+      },
+      context,
+    )
+    assert.equal(patch, undefined)
+    assert.deepEqual(sink.resultTexts, [])
+  } finally {
+    delete process.env["YARP_OUTPUT_CAP_BYTES"]
+  }
+})
+
+test("keeps original output when exact generic-cap recovery cannot be committed", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  sink.failResultText = true
+  await start(pi, sink)
+  await call(pi, "cap-recovery-failure", "read", { path: "large.txt" })
+  const content = [{ type: "text" as const, text: "raw text\n".repeat(1_000) }]
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "cap-recovery-failure",
+      toolName: "read",
+      input: { path: "large.txt" },
+      content,
+      details: undefined,
+      isError: false,
+    },
+    context,
+  )
+  assert.equal(patch, undefined)
+  const staged = sink.stagedResults[0]
+  assert.equal(isRecord(staged), true)
+  if (!isRecord(staged)) throw new Error("missing staged result")
+  assert.deepEqual(staged["content"], content)
+})
+
 test("reduces one safe shell text result only after committing its recovery source", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
@@ -434,7 +552,7 @@ test("reduces one safe shell text result only after committing its recovery sour
   }
   await start(pi, sink, context, reducer)
   await call(pi, "post-result", "exec_command", { cmd: "cargo test" })
-  const original = "test routine ... ok\n".repeat(100)
+  const original = "test routine ... ok\n".repeat(1_000)
   const patch = await pi.registry.emit(
     "tool_result",
     {
@@ -839,6 +957,20 @@ test("archive opt-out keeps rewriting without archive metadata", async () => {
     assert.equal(input.command, "yarp run -- git status")
     assert.deepEqual(pi.rewriteArgs, ["rewrite", "git status"])
     assert.equal(sink.begins.length, 0)
+    const patch = await pi.registry.emit(
+      "tool_result",
+      {
+        type: "tool_result",
+        toolCallId: "call-6",
+        toolName: "bash",
+        input,
+        content: [{ type: "text", text: "uncapped\n".repeat(1_000) }],
+        details: undefined,
+        isError: false,
+      },
+      context,
+    )
+    assert.equal(patch, undefined)
   } finally {
     delete process.env["YARP_ARCHIVE_DISABLED"]
   }
@@ -855,6 +987,21 @@ test("pruning opt-out still archives every call", async () => {
     assert.equal(input.command, "git status")
     assert.equal(pi.rewriteArgs, null)
     assert.equal(sink.begins.length, 1)
+    const patch = await pi.registry.emit(
+      "tool_result",
+      {
+        type: "tool_result",
+        toolCallId: "call-7",
+        toolName: "bash",
+        input,
+        content: [{ type: "text", text: "uncapped\n".repeat(1_000) }],
+        details: undefined,
+        isError: false,
+      },
+      context,
+    )
+    assert.equal(patch, undefined)
+    assert.deepEqual(sink.resultTexts, [])
   } finally {
     delete process.env["YARP_DISABLED"]
   }
@@ -958,6 +1105,19 @@ test("reload closes the old writer and uses a new one", async () => {
   assert.equal(first.begins.length, 0)
   assert.equal(second.begins.length, 1)
 })
+
+function resultPatchText(
+  patch: ExtensionEventResultMap["tool_result"] | void,
+): string {
+  if (patch === undefined || !("content" in patch) || patch.content === undefined) {
+    throw new Error("missing result patch content")
+  }
+  return patch.content
+    .map((item) => isRecord(item) && item["type"] === "text" && typeof item["text"] === "string"
+      ? item["text"]
+      : "")
+    .join("")
+}
 
 test("session shutdown closes the archive writer", async () => {
   const pi = new MockPi()

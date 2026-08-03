@@ -2,12 +2,14 @@
 
 This extension archives every Pi tool call through Pi's documented public lifecycle events. It stores tool inputs and results before and after YARP processing without adding entries to Pi sessions or using Pi internals. The package and Rust binary must have the same exact version; a mismatch disables capture and pruning for that session.
 
-For supported `bash` and `exec_command` calls, the extension asks the local `yarp` binary whether the command can be wrapped safely. Unsupported commands and rewrite errors run unchanged. Wrapped commands add their exact stdout and stderr to the same archive before and after typed summarization.
+For supported `bash` and `exec_command` calls, the extension asks the local `yarp` binary whether the command can be wrapped safely. Unsupported commands and rewrite errors execute unchanged. Wrapped commands add their exact stdout and stderr to the same archive before and after typed summarization.
 
-When a safe shell command cannot be wrapped, the `tool_result` hook may invoke one bounded `yarp result-reduce` process through a length-framed stdin protocol. It accepts only one text item, gives explicit exit codes precedence, and uses Pi's documented complete Bash output when available. If host text is the only source and a summary wins, the extension commits that exact text before returning the result patch. Multiple content items, structured output, unsafe command graphs, archive failures, protocol failures, and reducer failures pass through unchanged.
+When a safe shell command cannot be wrapped, the `tool_result` hook may invoke one bounded `yarp result-reduce` process through a length-framed stdin protocol. It accepts one text item, gives explicit exit codes precedence, and uses Pi's documented complete Bash output when available. If host text is the only source and a typed summary wins, the extension commits that exact text before returning the result patch. Unsafe command graphs, protocol failures, and reducer failures bypass typed summarization.
+
+After typed summarization, the same public hook caps remaining tool-result text at 5,120 UTF-8 bytes by default. The cap covers all text blocks together and includes its recovery marker. YARP commits the exact ordered text to `result_text/before`, then retains UTF-8-safe content from the beginning and end. Image blocks remain unchanged in their original order and do not count toward the text budget. If recovery capture fails, the original uncapped result passes through.
+
+Set `YARP_OUTPUT_CAP_BYTES` to `0` to disable only the generic cap, or to an exact budget from 1,024 through 16,777,216 bytes. An invalid value disables the generic cap for that session and reports a warning. `YARP_DISABLED=1` disables rewriting and all result pruning while keeping capture active. `YARP_ARCHIVE_DISABLED=1` disables archive capture and the generic cap.
 
 When Pi reports the project as trusted, the extension also checks the single conventional path `.yarp/rules.yrp` and passes that compiled pack to the Rust binary. It rejects symlinked paths and never scans for source rules. Untrusted projects use embedded rules only.
 
 The extension starts a session-scoped `yarp archive ingest` process and closes it during `session_shutdown`. It does not install a system or user service.
-
-Set `YARP_DISABLED=1` to disable rewriting while keeping capture active. Set `YARP_ARCHIVE_DISABLED=1` to disable archive capture.
