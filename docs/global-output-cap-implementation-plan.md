@@ -31,7 +31,7 @@ YARP will process each result in this order:
 2. Apply an existing typed shell summary when one is selected safely.
 3. Measure the UTF-8 bytes in the remaining text content, including a typed summary.
 4. Leave text at or below the configured budget unchanged.
-5. For a large typed summary, reuse its already committed `source_output` or `result_text` recovery source.
+5. For a large typed summary, reuse its already committed raw streams, `source_output`, or `result_text` recovery source.
 6. For other large text, commit the exact concatenation of its original text blocks to `result_text/before`.
 7. Keep UTF-8-safe prefixes and suffixes within the budget and place a recovery marker between them.
 8. Stage the shortened result and complete the existing archive lifecycle.
@@ -57,7 +57,7 @@ Focused tests will cover:
 - UTF-8-safe head and tail selection;
 - a hard output bound including the marker;
 - preservation of image order around shortened text;
-- typed-summary precedence and capping of an oversized typed summary;
+- typed-summary precedence and capping of oversized post-result and wrapped summaries;
 - exact `result_text` capture before a generic cap;
 - pass-through when recovery capture fails;
 - interaction with `YARP_DISABLED` and `YARP_ARCHIVE_DISABLED`.

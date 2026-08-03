@@ -306,15 +306,16 @@ export async function installYarpExtension(
     if (pruningEnabled && outputCap.maxBytes !== null) {
       try {
         const content = patch?.content ?? event.content
+        const usesRawStreams = typedRecovery === null && active.requiresStreams
         const capped = capToolResultContent(
           content,
           active.archiveRef,
-          typedRecovery?.completeness ?? completeness,
+          usesRawStreams ? "complete" : (typedRecovery?.completeness ?? completeness),
           outputCap.maxBytes,
-          typedRecovery?.source ?? "result_text",
+          usesRawStreams ? "stdout" : (typedRecovery?.source ?? "result_text"),
         )
         if (capped !== null) {
-          if (typedRecovery === null) {
+          if (typedRecovery === null && !usesRawStreams) {
             await sink.resultText(
               session,
               event.toolCallId,
