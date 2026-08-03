@@ -18,7 +18,16 @@ Then install the Pi package:
 pi install git:github.com/osolmaz/yarp
 ```
 
-Both commands install from the public GitHub repository.
+Both commands install from the public GitHub repository. The Pi package loads YARP's bundled usage and recovery skill automatically.
+
+The Rust binary also exposes the skill through the Skillflag convention for inspection or installation in another agent:
+
+```sh
+yarp --skill list
+yarp --skill list --json
+yarp --skill show yarp
+yarp --skill export yarp | skill-install --agent portable --scope user
+```
 
 ## Use
 

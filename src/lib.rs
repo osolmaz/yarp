@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod agent_skill;
 pub mod archive;
 pub mod archive_query;
 pub mod reducers;
@@ -16,7 +17,7 @@ use std::io::Write as _;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-const HELP: &str = "YARP prunes developer command output and archives Pi tool calls.\n\nUsage:\n  yarp rewrite [--rule-pack <path>]... <shell-command>\n  yarp run [--rule-pack <path>]... -- <command> [arguments...]\n  yarp rules check <source-pack>\n  yarp rules compile <source-pack> --output <compiled-pack>\n  yarp rules verify <compiled-pack>\n  yarp rules list [--rule-pack <path>]... [--json]\n  yarp rules explain [--rule-pack <path>]... [--json] -- <command> [arguments...]\n  yarp search REF PATTERN [options]\n  yarp read REF [SOURCE] START:END\n  yarp read REF SOURCE --bytes START:END\n  yarp archive stats\n  yarp archive verify\n  yarp archive prune --before <UTC timestamp>\n  yarp archive ingest\n  yarp --help\n  yarp --version\n";
+const HELP: &str = "YARP prunes developer command output and archives Pi tool calls.\n\nUsage:\n  yarp rewrite [--rule-pack <path>]... <shell-command>\n  yarp run [--rule-pack <path>]... -- <command> [arguments...]\n  yarp rules check <source-pack>\n  yarp rules compile <source-pack> --output <compiled-pack>\n  yarp rules verify <compiled-pack>\n  yarp rules list [--rule-pack <path>]... [--json]\n  yarp rules explain [--rule-pack <path>]... [--json] -- <command> [arguments...]\n  yarp search REF PATTERN [options]\n  yarp read REF [SOURCE] START:END\n  yarp read REF SOURCE --bytes START:END\n  yarp archive stats\n  yarp archive verify\n  yarp archive prune --before <UTC timestamp>\n  yarp archive ingest\n  yarp --skill list\n  yarp --skill show yarp\n  yarp --skill export yarp\n  yarp --help\n  yarp --version\n";
 
 /// Run the command-line interface and return the process exit code.
 #[must_use]

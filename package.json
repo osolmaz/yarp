@@ -18,6 +18,9 @@
   "pi": {
     "extensions": [
       "./hooks/pi/yarp.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   }
 }
