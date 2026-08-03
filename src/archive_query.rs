@@ -1,10 +1,11 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::io::{Read, Seek, SeekFrom};
 
 use regex::bytes::{Regex, RegexBuilder};
 
 use crate::archive::{Archive, SourceCompleteness, SourceName, VerifiedSource};
+use crate::config;
 use crate::reducers::filter::AnsiStripper;
 
 pub const SEARCH_HELP: &str = "Search one archived YARP call.\n\nExamples:\n  yarp search REF 'error|FAILED'\n  yarp search REF 'literal text' -F -i\n  yarp search REF 'warning' -v -C 3 --max-results 20\n  yarp read REF stdout 118:130\n\nUsage:\n  yarp search REF PATTERN [options]\n  yarp search REF -e PATTERN [-e PATTERN ...] [options]\n\nOptions: -e/--regexp -F/--fixed-strings -i/--ignore-case\n         -w/--word-regexp (ASCII boundaries) -v/--invert-match\n         -A/--after-context -B/--before-context -C/--context\n         -m/--max-results --\n";
@@ -16,7 +17,6 @@ const MAX_DISPLAY_LINE_BYTES: usize = 4 * 1024;
 const MAX_DISPLAY_BYTES_PER_SOURCE: usize = 7 * 1024;
 const MAX_DISPLAY_RECORDS: usize = 2_048;
 const MAX_RENDERED_SELECTED_LINES: usize = 32;
-const MAX_QUERY_OUTPUT_BYTES: usize = 32 * 1024;
 const REGEX_SIZE_LIMIT: usize = 512 * 1024;
 
 #[derive(Debug, Eq, PartialEq)]
@@ -45,15 +45,20 @@ struct SearchOptions {
 #[derive(Debug)]
 struct DisplayLine {
     text: String,
-    selected: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
+struct QueryLimits {
+    max_bytes: usize,
+    max_lines: usize,
+}
+
 struct SourceSearch {
     name: SourceName,
     completeness: SourceCompleteness,
     total_lines: u64,
     total_selected: u64,
+    first_selected: Option<u64>,
     displayed_selected: Vec<u64>,
     lines: BTreeMap<u64, DisplayLine>,
     before: usize,
@@ -71,6 +76,11 @@ pub fn search(arguments: &[String]) -> Result<SearchOutcome, String> {
     if matches!(arguments, [argument] if argument == "--help" || argument == "-h") {
         return Ok(SearchOutcome::Matches(SEARCH_HELP.as_bytes().to_vec()));
     }
+    let config = config::load()?;
+    let limits = QueryLimits {
+        max_bytes: config.output.recovery_cap_bytes,
+        max_lines: config.output.recovery_cap_lines,
+    };
     let options = parse_search(arguments)?;
     let matcher = compile_matcher(&options)?;
     let archive = Archive::open_read_only()?;
@@ -85,7 +95,7 @@ pub fn search(arguments: &[String]) -> Result<SearchOutcome, String> {
     if selected == 0 {
         return Ok(SearchOutcome::NoMatches(b"No matches\n".to_vec()));
     }
-    let output = render_search(&options.archive_ref, &results)?;
+    let output = render_search(&options.archive_ref, &mut results, limits)?;
     Ok(SearchOutcome::Matches(output))
 }
 
@@ -96,13 +106,18 @@ pub fn search(arguments: &[String]) -> Result<SearchOutcome, String> {
 /// Returns an error before stdout when arguments, references, payloads, sources, or ranges are
 /// invalid.
 pub fn read(arguments: &[String]) -> Result<Vec<u8>, String> {
+    let config = config::load()?;
+    let limits = QueryLimits {
+        max_bytes: config.output.recovery_cap_bytes,
+        max_lines: config.output.recovery_cap_lines,
+    };
     let request = parse_read(arguments)?;
     let archive = Archive::open_read_only()?;
     let sources = archive.searchable_sources(&request.archive_ref)?;
     let mut source = choose_source(sources, request.source.as_deref())?;
     match request.range {
-        ReadRange::Lines { start, end } => read_line_range(&mut source, start, end),
-        ReadRange::Bytes { start, end } => read_byte_range(&mut source, start, end),
+        ReadRange::Lines { start, end } => read_line_range(&mut source, start, end, limits),
+        ReadRange::Bytes { start, end } => read_byte_range(&mut source, start, end, limits),
     }
 }
 
@@ -308,6 +323,7 @@ fn search_source(
     let mut display = DisplayStore::default();
     let mut displayed_selected = Vec::new();
     let mut total_selected = 0_u64;
+    let mut first_selected = None;
     let mut total_lines = 0_u64;
     let mut after_remaining = 0_usize;
     let mut stripper = AnsiStripper::new();
@@ -315,7 +331,7 @@ fn search_source(
         total_lines = line_number;
         let normalized = normalize_line(raw, &mut stripper)?;
         if after_remaining > 0 {
-            display.insert(line_number, normalized.clone(), false);
+            display.insert(line_number, normalized.clone());
             after_remaining -= 1;
         }
         let line_matches = matcher.is_match(normalized.as_bytes());
@@ -326,11 +342,12 @@ fn search_source(
         };
         if selected {
             total_selected = total_selected.saturating_add(1);
+            first_selected.get_or_insert(line_number);
             if displayed_selected.len() < options.max_results.min(MAX_RENDERED_SELECTED_LINES)
-                && display.insert(line_number, normalized.clone(), true)
+                && display.insert(line_number, normalized.clone())
             {
                 for (context_line, context) in &previous {
-                    display.insert(*context_line, context.clone(), false);
+                    display.insert(*context_line, context.clone());
                 }
                 displayed_selected.push(line_number);
                 after_remaining = options.after;
@@ -349,6 +366,7 @@ fn search_source(
         completeness: source.completeness,
         total_lines,
         total_selected,
+        first_selected,
         displayed_selected,
         lines: display.lines,
         before: options.before,
@@ -364,9 +382,8 @@ struct DisplayStore {
 }
 
 impl DisplayStore {
-    fn insert(&mut self, number: u64, text: String, selected: bool) -> bool {
-        if let Some(existing) = self.lines.get_mut(&number) {
-            existing.selected |= selected;
+    fn insert(&mut self, number: u64, text: String) -> bool {
+        if self.lines.contains_key(&number) {
             return true;
         }
         let text = truncate_display_line(text);
@@ -376,7 +393,7 @@ impl DisplayStore {
             return false;
         }
         self.bytes = self.bytes.saturating_add(text.len());
-        self.lines.insert(number, DisplayLine { text, selected });
+        self.lines.insert(number, DisplayLine { text });
         true
     }
 }
@@ -469,8 +486,52 @@ fn truncate_display_line(mut value: String) -> String {
     value
 }
 
-fn render_search(archive_ref: &str, sources: &[SourceSearch]) -> Result<Vec<u8>, String> {
-    let mut output = Vec::with_capacity(MAX_QUERY_OUTPUT_BYTES);
+fn render_search(
+    archive_ref: &str,
+    sources: &mut [SourceSearch],
+    limits: QueryLimits,
+) -> Result<Vec<u8>, String> {
+    loop {
+        let output = render_search_once(archive_ref, sources, limits.max_bytes);
+        if output.len() <= limits.max_bytes && output_line_count(&output) <= limits.max_lines {
+            return Ok(output);
+        }
+        if !shrink_search(sources) {
+            return Err(format!(
+                "search output cannot fit configured recovery limits of {} bytes and {} lines; narrow the pattern or context",
+                limits.max_bytes, limits.max_lines
+            ));
+        }
+    }
+}
+
+fn render_search_once(archive_ref: &str, sources: &[SourceSearch], max_bytes: usize) -> Vec<u8> {
+    let mut output = Vec::with_capacity(max_bytes);
+    let display_line_bytes = MAX_DISPLAY_LINE_BYTES.min(max_bytes.saturating_div(2).max(64));
+    if sources
+        .iter()
+        .all(|source| source.displayed_selected.is_empty())
+    {
+        let total = sources
+            .iter()
+            .map(|source| source.total_selected)
+            .sum::<u64>();
+        if let Some((source, line)) = sources
+            .iter()
+            .find_map(|source| source.first_selected.map(|line| (source, line)))
+        {
+            output.extend_from_slice(
+                format!(
+                    "[yarp search: ref={archive_ref}; matches={total}; showing=0; omitted={total}; first={}:{}; read=yarp read {archive_ref} {} {line}:{line}]\n",
+                    source.name.as_str(),
+                    line,
+                    source.name.as_str(),
+                )
+                .as_bytes(),
+            );
+        }
+        return output;
+    }
     output.extend_from_slice(format!("[yarp search: ref={archive_ref}]\n").as_bytes());
     for (source_index, source) in sources.iter().enumerate() {
         if source_index > 0 {
@@ -490,18 +551,23 @@ fn render_search(archive_ref: &str, sources: &[SourceSearch]) -> Result<Vec<u8>,
             .as_bytes(),
         );
         let groups = displayed_groups(source);
+        let selected = source
+            .displayed_selected
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
         for (group_index, (start, end)) in groups.iter().enumerate() {
             if group_index > 0 {
                 output.extend_from_slice(b"--\n");
             }
             for (number, line) in source.lines.range(*start..=*end) {
-                let separator = if line.selected { ':' } else { '-' };
+                let separator = if selected.contains(number) { ':' } else { '-' };
                 output.extend_from_slice(
                     format!(
                         "{}{separator}{}{separator}{}\n",
                         source.name.as_str(),
                         number,
-                        line.text
+                        truncate_rendered_line(&line.text, display_line_bytes)
                     )
                     .as_bytes(),
                 );
@@ -525,10 +591,58 @@ fn render_search(archive_ref: &str, sources: &[SourceSearch]) -> Result<Vec<u8>,
             );
         }
     }
-    if output.len() > MAX_QUERY_OUTPUT_BYTES {
-        return Err("bounded search rendering exceeded 32 KiB".to_owned());
+    output
+}
+
+fn shrink_search(sources: &mut [SourceSearch]) -> bool {
+    if let Some(source) = sources
+        .iter_mut()
+        .filter(|source| source.before > 0 || source.after > 0)
+        .max_by_key(|source| source.before.saturating_add(source.after))
+    {
+        if source.after >= source.before && source.after > 0 {
+            source.after -= 1;
+        } else {
+            source.before = source.before.saturating_sub(1);
+        }
+        return true;
     }
-    Ok(output)
+    let displayed = sources
+        .iter()
+        .map(|source| source.displayed_selected.len())
+        .sum::<usize>();
+    if displayed == 0 {
+        return false;
+    }
+    if let Some(source) = sources
+        .iter_mut()
+        .filter(|source| !source.displayed_selected.is_empty())
+        .max_by_key(|source| source.displayed_selected.len())
+    {
+        source.displayed_selected.pop();
+        return true;
+    }
+    false
+}
+
+fn truncate_rendered_line(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let mut end = max_bytes.saturating_sub(3);
+    while !value.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    format!("{}...", &value[..end])
+}
+
+#[expect(
+    clippy::naive_bytecount,
+    reason = "recovery output is already bounded below 48 KiB"
+)]
+fn output_line_count(output: &[u8]) -> usize {
+    let newlines = output.iter().filter(|byte| **byte == b'\n').count();
+    newlines + usize::from(!output.is_empty() && !output.ends_with(b"\n"))
 }
 
 fn displayed_groups(source: &SourceSearch) -> Vec<(u64, u64)> {
@@ -657,7 +771,12 @@ fn choose_source(
         .ok_or_else(|| "archive reference has no readable source".to_owned())
 }
 
-fn read_byte_range(source: &mut VerifiedSource, start: u64, end: u64) -> Result<Vec<u8>, String> {
+fn read_byte_range(
+    source: &mut VerifiedSource,
+    start: u64,
+    end: u64,
+    limits: QueryLimits,
+) -> Result<Vec<u8>, String> {
     if end > source.byte_length {
         return Err(format!(
             "byte range ends at {end}, but {} has {} bytes",
@@ -666,9 +785,10 @@ fn read_byte_range(source: &mut VerifiedSource, start: u64, end: u64) -> Result<
         ));
     }
     let length = end.saturating_sub(start);
-    if length > MAX_QUERY_OUTPUT_BYTES as u64 {
+    if length > limits.max_bytes as u64 {
         return Err(format!(
-            "exact read is {length} bytes; use a range no larger than {MAX_QUERY_OUTPUT_BYTES} bytes"
+            "exact read is {length} bytes; use a range no larger than {} bytes",
+            limits.max_bytes
         ));
     }
     source
@@ -681,10 +801,28 @@ fn read_byte_range(source: &mut VerifiedSource, start: u64, end: u64) -> Result<
         .body
         .read_exact(&mut output)
         .map_err(|error| format!("could not read archived byte range: {error}"))?;
+    if output_line_count(&output) > limits.max_lines {
+        return Err(format!(
+            "exact read exceeds the configured {} line limit; use a smaller byte range",
+            limits.max_lines
+        ));
+    }
     Ok(output)
 }
 
-fn read_line_range(source: &mut VerifiedSource, start: u64, end: u64) -> Result<Vec<u8>, String> {
+fn read_line_range(
+    source: &mut VerifiedSource,
+    start: u64,
+    end: u64,
+    limits: QueryLimits,
+) -> Result<Vec<u8>, String> {
+    let requested_lines = end.saturating_sub(start).saturating_add(1);
+    if requested_lines > limits.max_lines as u64 {
+        return Err(format!(
+            "exact read requests {requested_lines} lines; use a range no larger than {} lines",
+            limits.max_lines
+        ));
+    }
     source
         .body
         .seek(SeekFrom::Start(0))
@@ -707,9 +845,10 @@ fn read_line_range(source: &mut VerifiedSource, start: u64, end: u64) -> Result<
             saw_byte = true;
             last_was_newline = *byte == b'\n';
             if (start..=end).contains(&line_number) {
-                if output.len() == MAX_QUERY_OUTPUT_BYTES {
+                if output.len() == limits.max_bytes {
                     return Err(format!(
-                        "exact line read exceeds {MAX_QUERY_OUTPUT_BYTES} bytes; use yarp read REF {} --bytes START:END",
+                        "exact line read exceeds {} bytes; use yarp read REF {} --bytes START:END",
+                        limits.max_bytes,
                         source.name.as_str()
                     ));
                 }

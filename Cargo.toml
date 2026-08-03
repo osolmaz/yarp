@@ -33,6 +33,7 @@ sha2 = "0.11"
 skillflag = "=0.1.0"
 tempfile = "3"
 time = { version = "0.3", features = ["parsing", "formatting"] }
+toml_edit = { version = "=0.25.13", features = ["serde"] }
 tree-sitter = "=0.25.10"
 tree-sitter-bash = "=0.25.1"
 yarp-rule-pack = { path = "rule-pack" }

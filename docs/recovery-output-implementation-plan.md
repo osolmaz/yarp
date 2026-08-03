@@ -1,20 +1,24 @@
 # Recovery output implementation plan
 
+## Status
+
+Implemented. Rust owns configuration, shell classification, and recovery bounds. The Pi extension validates both machine-readable contracts and applies the selected result policy through public extension hooks.
+
 ## Goal
 
-A direct `yarp search` or `yarp read` command will return bounded recovery output or a bounded diagnostic. The Pi extension will not shorten that result again or create another recovery reference.
+A direct `yarp search` or `yarp read` command returns bounded recovery output or a bounded diagnostic. The Pi extension does not shorten that result again or create another recovery reference.
 
-Ordinary tool results will keep the configured 5,120-byte default. Recovery commands will use the byte and line ceilings from [the YARP configuration specification](configuration-spec.md), with defaults of 32,768 bytes and 1,900 lines.
+Ordinary tool results keep the configured 5,120-byte default. Recovery commands use the byte and line ceilings from [the YARP configuration specification](configuration-spec.md), with defaults of 32,768 bytes and 1,900 lines.
 
-## Current problem
+## Resolved problem
 
-The Pi extension applies its generic output cap after every tool result. This includes the shell commands that recover omitted YARP output. A large `yarp search` or `yarp read` result can therefore receive another cap marker and another archive reference. The model must then recover the recovery output instead of reading the requested evidence.
+The old Pi extension applied its generic output cap after every tool result, including shell commands that recover omitted YARP output. A large `yarp search` or `yarp read` result could therefore receive another cap marker and another archive reference. The model then had to recover the recovery output instead of reading the requested evidence.
 
-The archive prevents data loss, but chained retrieval adds tool calls and can hide the line ranges printed by the first query.
+The archive prevented data loss, but chained retrieval added tool calls and could hide the line ranges printed by the first query.
 
 ## Result policies
 
-The extension will use three result policies.
+The extension uses three result policies.
 
 ### Ordinary
 
@@ -45,7 +49,7 @@ Pass-through applies when the shell policy process fails, times out, returns mal
 
 YARP's Rust shell parser remains the authority for command meaning. The Pi extension must not classify recovery commands with string prefixes, regular expressions, output markers, tool names, or shell parsing written in TypeScript.
 
-The binary will expose `yarp plan --json <shell-command>`, one versioned machine command that plans both execution and result handling. The existing `yarp rewrite` command will call the same Rust planner and keep its human-facing output. The JSON response has one stable shape:
+The binary exposes `yarp plan --json <shell-command>`, one versioned machine command that plans both execution and result handling. The existing `yarp rewrite` command calls the same Rust planner and keeps its human-facing output. The JSON response has one stable shape:
 
 ```json
 {
@@ -74,7 +78,7 @@ A rewritten command includes its replacement:
 }
 ```
 
-The TypeScript extension will validate this response without `any`, unchecked casts, or permissive fallback fields. Unknown versions, fields, and enum values are invalid.
+The TypeScript extension validates this response without `any`, unchecked casts, or permissive fallback fields. Unknown versions, fields, and enum values are invalid.
 
 The parser may return `recovery` only when all of these are true:
 
@@ -105,7 +109,7 @@ The extension then uses the documented `tool_result` return value to apply the c
 
 ## Recovery bounds
 
-`yarp search` and `yarp read` will load the resolved configuration directly in Rust.
+`yarp search` and `yarp read` load the resolved configuration directly in Rust.
 
 `yarp search` must fit its complete rendered stdout within both `output.recovery_cap_bytes` and `output.recovery_cap_lines`. It may reduce displayed match groups and context to fit. It reports the number of omitted selected lines and prints exact reads against the original archive reference.
 
@@ -141,9 +145,9 @@ A smaller recovery ceiling produces smaller search pages and requires smaller ex
 - A recovery command that cannot load valid configuration exits with a concise error instead of emitting unbounded output.
 - No failure path creates a second archive, a temporary recovery file, or an outer recovery marker.
 
-## Tests
+## Verification
 
-Rust tests will cover:
+Rust tests cover:
 
 - Direct `yarp search` and `yarp read` classification.
 - Quoted patterns and valid options.
@@ -155,7 +159,7 @@ Rust tests will cover:
 - Bounded diagnostics.
 - Preservation of the original archive reference in every suggestion.
 
-Pi extension tests will cover:
+Pi extension tests cover:
 
 - Ordinary output still capped at the configured budget.
 - Recovery output from above 5,120 bytes through the configured recovery ceiling remains unchanged.
@@ -167,7 +171,7 @@ Pi extension tests will cover:
 - Archive and staging failures preserve pre-cap output.
 - No recovery result contains a new outer cap reference.
 
-End-to-end tests will run the package through Pi's public extension hooks in interactive and non-interactive modes, reload configuration, and recover omitted evidence with `search` followed by `read`.
+A non-interactive smoke check loads the source extension with `pi -e` against the built binary. The Pi test harness exercises config loading, reload, planning, archiving, result policies, and recovery bypass through the same public hook registrations.
 
 ## Contract impact
 

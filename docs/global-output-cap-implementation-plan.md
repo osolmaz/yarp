@@ -14,16 +14,16 @@ These figures locate the operating range; they do not prove task quality. The ru
 
 ## Configuration
 
-`YARP_OUTPUT_CAP_BYTES` controls the visible text budget:
+`output.cap_bytes` in the versioned TOML file controls the visible text budget:
 
-- unset: 5,120 bytes;
+- omitted: 5,120 bytes;
 - `0`: disable the generic cap while retaining command-aware summaries;
 - 1,024 through 16,777,216: use that exact UTF-8 byte budget;
-- any other value: report a warning and disable the generic cap for the session.
+- any other value: reject the configuration.
 
-`YARP_DISABLED=1` continues to disable all pruning. `YARP_ARCHIVE_DISABLED=1` disables the generic cap because YARP cannot shorten text without a committed recovery source.
+`pruning.enabled = false` disables rewriting and pruning while retaining archive capture. `archive.enabled = false` disables live capture and the generic cap because YARP cannot shorten text without a committed recovery source.
 
-A later configuration change will replace these environment settings with the versioned TOML file and `yarp config` commands in [the YARP configuration specification](configuration-spec.md). The ordinary cap will keep its 5,120-byte default. Direct `yarp search` and `yarp read` commands will use separate configurable byte and line ceilings and will not pass through the ordinary cap. See [the recovery output implementation plan](recovery-output-implementation-plan.md).
+[The YARP configuration specification](configuration-spec.md) defines the full file and `yarp config` commands. Direct `yarp search` and `yarp read` commands use separate configurable byte and line ceilings and do not pass through the ordinary cap. See [the recovery output implementation plan](recovery-output-implementation-plan.md).
 
 ## Result policy
 
@@ -62,7 +62,7 @@ Focused tests will cover:
 - typed-summary precedence and capping of oversized post-result and wrapped summaries;
 - exact `result_text` capture before a generic cap;
 - pass-through when recovery capture fails;
-- interaction with `YARP_DISABLED` and `YARP_ARCHIVE_DISABLED`.
+- interaction with `pruning.enabled` and `archive.enabled`.
 
 Race and mutation tests are outside this change's completion path, as requested.
 

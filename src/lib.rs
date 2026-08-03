@@ -3,6 +3,8 @@
 pub mod agent_skill;
 pub mod archive;
 pub mod archive_query;
+pub mod config;
+mod config_cli;
 pub mod reducers;
 mod result_reducer;
 pub mod rewrite;
@@ -17,7 +19,7 @@ use std::io::Write as _;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-const HELP: &str = "YARP prunes developer command output and archives Pi tool calls.\n\nUsage:\n  yarp rewrite [--rule-pack <path>]... <shell-command>\n  yarp run [--rule-pack <path>]... -- <command> [arguments...]\n  yarp rules check <source-pack>\n  yarp rules compile <source-pack> --output <compiled-pack>\n  yarp rules verify <compiled-pack>\n  yarp rules list [--rule-pack <path>]... [--json]\n  yarp rules explain [--rule-pack <path>]... [--json] -- <command> [arguments...]\n  yarp search REF PATTERN [options]\n  yarp read REF [SOURCE] START:END\n  yarp read REF SOURCE --bytes START:END\n  yarp archive stats\n  yarp archive verify\n  yarp archive prune --before <UTC timestamp>\n  yarp archive ingest\n  yarp --skill list\n  yarp --skill show yarp\n  yarp --skill export yarp\n  yarp --help\n  yarp --version\n";
+const HELP: &str = "YARP prunes developer command output and archives Pi tool calls.\n\nUsage:\n  yarp plan --json [--rule-pack <path>]... <shell-command>\n  yarp rewrite [--rule-pack <path>]... <shell-command>\n  yarp run [--rule-pack <path>]... -- <command> [arguments...]\n  yarp config <path|init|show|get|set|unset|check>\n  yarp rules check <source-pack>\n  yarp rules compile <source-pack> --output <compiled-pack>\n  yarp rules verify <compiled-pack>\n  yarp rules list [--rule-pack <path>]... [--json]\n  yarp rules explain [--rule-pack <path>]... [--json] -- <command> [arguments...]\n  yarp search REF PATTERN [options]\n  yarp read REF [SOURCE] START:END\n  yarp read REF SOURCE --bytes START:END\n  yarp archive stats\n  yarp archive verify\n  yarp archive prune --before <UTC timestamp>\n  yarp archive ingest\n  yarp --skill list\n  yarp --skill show yarp\n  yarp --skill export yarp\n  yarp --help\n  yarp --version\n";
 
 /// Run the command-line interface and return the process exit code.
 #[must_use]
@@ -35,6 +37,12 @@ pub fn run_cli(arguments: &[String]) -> i32 {
             println!("yarp {}", env!("CARGO_PKG_VERSION"));
             0
         }
+        [command, format, rest @ ..] if command == "plan" && format == "--json" => {
+            match parse_rewrite(rest) {
+                Ok((packs, reference, shell_command)) => plan(shell_command, reference, &packs),
+                Err(error) => usage_error(&error),
+            }
+        }
         [command, rest @ ..] if command == "rewrite" => match parse_rewrite(rest) {
             Ok((packs, reference, shell_command)) => rewrite(shell_command, reference, &packs),
             Err(error) => usage_error(&error),
@@ -48,6 +56,7 @@ pub fn run_cli(arguments: &[String]) -> i32 {
             }
             Err(error) => usage_error(&error),
         },
+        [command, rest @ ..] if command == "config" => config_cli::run(rest),
         [command, rest @ ..] if command == "rules" => rules_cli::run(rest),
         [command, rest @ ..] if command == "search" => archive_search(rest),
         [command, rest @ ..] if command == "read" => archive_read(rest),
@@ -80,6 +89,25 @@ pub fn run_cli(arguments: &[String]) -> i32 {
             archive_prune(timestamp)
         }
         _ => usage_error("invalid arguments"),
+    }
+}
+
+fn plan(
+    shell_command: &str,
+    reference: Option<ArchiveCommandRef<'_>>,
+    packs: &[rules::PackRequest],
+) -> i32 {
+    match rewrite::plan_with_options(shell_command, reference, packs)
+        .and_then(|plan| serde_json::to_string(&plan).map_err(|error| error.to_string()))
+    {
+        Ok(plan) => {
+            println!("{plan}");
+            0
+        }
+        Err(error) => {
+            eprintln!("yarp: {error}");
+            3
+        }
     }
 }
 
@@ -227,7 +255,7 @@ fn archive_prune(timestamp: &str) -> i32 {
 fn parse_rewrite(
     arguments: &[String],
 ) -> Result<(Vec<rules::PackRequest>, Option<ArchiveCommandRef<'_>>, &str), String> {
-    let mut packs = rules::requests_from_environment()?;
+    let mut packs = rules::requests_from_config()?;
     let mut project_root = None;
     let mut project_pack_seen = false;
     let mut agent = None;
@@ -398,9 +426,9 @@ fn parse_run(arguments: &[String]) -> Result<ParsedRun<'_>, String> {
         _ => return Err("archived run requires every archive identifier".to_owned()),
     };
     if expected.is_none() {
-        let mut environment = rules::requests_from_environment()?;
-        environment.extend(packs);
-        packs = environment;
+        let mut configured = rules::requests_from_config()?;
+        configured.extend(packs);
+        packs = configured;
     }
     Ok((archive_key, child, packs, expected))
 }

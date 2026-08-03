@@ -31,7 +31,7 @@ Search patterns are bounded regular expressions by default. Use `-F` for literal
 
 An exit status of 1 with `No matches` means the search completed successfully but found nothing. Refine the terms before considering a rerun of the original command.
 
-Search output includes copyable exact-read commands. Prefer those commands instead of inventing line ranges.
+Search output includes copyable exact-read commands. Prefer those commands instead of inventing line ranges. Direct `yarp search` and `yarp read` results use their own configured byte and line limits, so the Pi extension does not cap them again.
 
 ## Read an exact range
 
@@ -76,12 +76,12 @@ yarp archive stats
 
 Unknown or ambiguous commands execute unchanged and bypass typed summaries. The same applies to structured-output forms and streaming or exact-inspection commands. Their remaining result text may still receive the archive-backed global cap.
 
-`YARP_OUTPUT_CAP_BYTES` configures that cap for a Pi process. Unset means 5,120 bytes, `0` disables only the generic cap, and values from 1,024 through 16,777,216 select an exact byte budget. Do not change or persist this setting unless the user asks.
+Use `yarp config show` to inspect the resolved settings. `output.cap_bytes` controls the ordinary cap, while `output.recovery_cap_bytes` and `output.recovery_cap_lines` bound `search` and `read`. Do not change or persist these settings unless the user asks.
 
 ## Safety boundaries
 
 - Do not invoke `yarp archive prune` unless the user explicitly requests deletion and provides the intended UTC boundary.
-- Do not set `YARP_DISABLED`, `YARP_ARCHIVE_DISABLED`, or `YARP_OUTPUT_CAP_BYTES` persistently unless the user explicitly asks to change that behavior.
+- Do not run `yarp config set`, `unset`, or `init` unless the user explicitly asks to change persistent behavior.
 - Do not inspect the SQLite archive directly. Use the bounded `search`, `read`, `stats`, and `verify` interfaces.
 - Do not treat the presence of a recovery marker as evidence that recovery is required.
 - Preserve command status and diagnostics when troubleshooting. YARP must fail open when it cannot reduce safely.

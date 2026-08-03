@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use yarp_rule_pack::{Action, CompiledPack, Rule};
 
+use crate::config;
+
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/builtin_rules.rs"));
 }
@@ -236,20 +238,13 @@ pub fn requests_from_paths(paths: &[PathBuf]) -> Vec<PackRequest> {
         .collect()
 }
 
-/// Read explicit pack paths from `YARP_RULE_PACKS`.
+/// Read explicit pack paths from the YARP configuration.
 ///
 /// # Errors
 ///
-/// Returns an error when the operating-system path list contains an empty entry.
-pub fn requests_from_environment() -> Result<Vec<PackRequest>, String> {
-    let Some(value) = std::env::var_os("YARP_RULE_PACKS") else {
-        return Ok(Vec::new());
-    };
-    let paths = std::env::split_paths(&value).collect::<Vec<_>>();
-    if paths.is_empty() || paths.iter().any(|path| path.as_os_str().is_empty()) {
-        return Err("YARP_RULE_PACKS contains an empty path".to_owned());
-    }
-    Ok(requests_from_paths(&paths))
+/// Returns an error when configuration loading or pack validation fails.
+pub fn requests_from_config() -> Result<Vec<PackRequest>, String> {
+    config::load().map(|resolved| requests_from_paths(&resolved.rules.packs))
 }
 
 #[must_use]

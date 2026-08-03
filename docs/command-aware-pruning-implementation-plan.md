@@ -554,7 +554,7 @@ The build script must emit `cargo:rerun-if-changed` for the manifest, every list
 
 Built-in rules are always available without file I/O. External packs participate only when the caller supplies them explicitly.
 
-The Rust CLI accepts repeated `--rule-pack PATH` arguments. It may also read `YARP_RULE_PACKS` through the operating system path-list parser. An empty path entry is invalid.
+The Rust CLI accepts repeated `--rule-pack PATH` arguments. User-wide compiled packs come from `rules.packs` in the YARP configuration file. An empty path entry is invalid.
 
 The direct Rust command never searches the current directory for a pack. The Pi extension may pass the conventional project pack `.yarp/rules.yrp` only when all of these conditions hold:
 

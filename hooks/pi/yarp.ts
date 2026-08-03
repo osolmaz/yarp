@@ -16,9 +16,11 @@ import {
   type ArchiveSink,
 } from "./archive-client.js"
 import {
-  capToolResultContent,
-  parseOutputCapConfiguration,
-} from "./output-cap.js"
+  parseResolvedConfiguration,
+  type YarpConfiguration,
+} from "./configuration.js"
+import { capToolResultContent } from "./output-cap.js"
+import { parseShellPlan, type ShellPlan } from "./shell-plan.js"
 import {
   ResultReducerClient,
   type ResultReducer,
@@ -42,11 +44,15 @@ type PendingCall = {
   capturedAtMs: number
 }
 
+type ResultHandlingPolicy = "ordinary" | "recovery" | "pass_through"
+
 type ActiveCall = {
   requiresStreams: boolean
   staged: boolean
   archiveRef: string
-  command: string | null
+  sourceCommand: string | null
+  executedCommand: string | null
+  resultPolicy: ResultHandlingPolicy
 }
 
 type ResultPatch = {
@@ -78,7 +84,7 @@ export function commandBinding(toolName: string, input: unknown): CommandBinding
   }
 }
 
-async function rewriteCommand(
+async function planCommand(
   pi: ExtensionAPI,
   command: string,
   session: ArchiveSession | null,
@@ -86,8 +92,8 @@ async function rewriteCommand(
   rulePack: string | null,
   projectRoot: string,
   signal?: AbortSignal,
-): Promise<string | null> {
-  const args = ["rewrite"]
+): Promise<ShellPlan> {
+  const args = ["plan", "--json"]
   if (rulePack !== null) {
     args.push("--project-root", projectRoot, "--rule-pack", rulePack)
   }
@@ -108,8 +114,10 @@ async function rewriteCommand(
     ? { timeout: REWRITE_TIMEOUT_MS }
     : { timeout: REWRITE_TIMEOUT_MS, signal }
   const result = await pi.exec("yarp", args, options)
-  if (result.killed || result.code !== 0) return null
-  return result.stdout.trim() || null
+  if (result.killed || result.code !== 0) {
+    throw new Error(result.stderr.trim() || `shell plan exited ${result.code}`)
+  }
+  return parseShellPlan(result.stdout)
 }
 
 export async function installYarpExtension(
@@ -128,11 +136,26 @@ export async function installYarpExtension(
     )
     return
   }
-  const resultReducer = createResultReducer()
-  const outputCap = parseOutputCapConfiguration(process.env["YARP_OUTPUT_CAP_BYTES"])
-  if (outputCap.warning !== null) {
-    console.warn(`[yarp] ${outputCap.warning}; generic output cap disabled`)
+  const configResult = await pi.exec("yarp", ["config", "show", "--json"], {
+    timeout: REWRITE_TIMEOUT_MS,
+  })
+  if (configResult.killed || configResult.code !== 0) {
+    console.warn(
+      `[yarp] configuration could not be loaded: ${configResult.stderr.trim() || `exit ${configResult.code}`}; extension disabled`,
+    )
+    return
   }
+  let configuration: YarpConfiguration
+  try {
+    configuration = parseResolvedConfiguration(configResult.stdout)
+  } catch (error) {
+    console.warn(`[yarp] configuration response is invalid: ${errorMessage(error)}; extension disabled`)
+    return
+  }
+  const resultReducer = createResultReducer()
+  const outputCapBytes = configuration.output.cap_bytes === 0
+    ? null
+    : configuration.output.cap_bytes
 
   let sink: ArchiveSink | null = null
   let session: ArchiveSession | null = null
@@ -143,10 +166,9 @@ export async function installYarpExtension(
 
   pi.on("session_start", async (_event, context) => {
     projectRulePack = await trustedProjectRulePack(context)
-    if (archiveDisabled()) return
     await sink?.close()
-    sink = createSink()
-    session = sessionIdentity(context)
+    sink = configuration.archive.enabled ? createSink() : null
+    session = configuration.archive.enabled ? sessionIdentity(context) : null
     activeCalls.clear()
     pendingCalls.clear()
     restoredFinalResults.clear()
@@ -164,7 +186,7 @@ export async function installYarpExtension(
   })
 
   pi.on("tool_execution_start", (event, context) => {
-    if (archiveDisabled() || sink === null || session === null) return
+    if (sink === null || session === null) return
     const capturedAtMs = Date.now()
     pendingCalls.set(event.toolCallId, {
       call: callIdentity(event, context, false, capturedAtMs),
@@ -174,18 +196,19 @@ export async function installYarpExtension(
   })
 
   pi.on("tool_call", async (event, context) => {
-    const archive = archiveDisabled() ? null : requireArchive(sink, session, context)
+    const archive = configuration.archive.enabled
+      ? requireArchive(sink, session, context)
+      : null
     const inputBefore = structuredClone(event.input)
     const binding = commandBinding(event.toolName, event.input)
     let rewritten: string | null = null
+    let resultPolicy: ResultHandlingPolicy = configuration.pruning.enabled
+      ? "ordinary"
+      : "pass_through"
 
-    if (
-      process.env["YARP_DISABLED"] !== "1"
-      && binding !== null
-      && !binding.command.startsWith("yarp ")
-    ) {
+    if (configuration.pruning.enabled && binding !== null) {
       try {
-        rewritten = await rewriteCommand(
+        const plan = await planCommand(
           pi,
           binding.command,
           archive?.session ?? null,
@@ -194,11 +217,18 @@ export async function installYarpExtension(
           context.cwd,
           context.signal,
         )
-      } catch {
-        console.warn("[yarp] rewrite failed; running the original command")
+        resultPolicy = plan.result.kind
+        if (plan.execution.kind === "rewrite") {
+          rewritten = plan.execution.command
+        }
+      } catch (error) {
+        resultPolicy = "pass_through"
+        console.warn(`[yarp] shell planning failed; running and preserving the original command: ${errorMessage(error)}`)
       }
     }
 
+    const sourceCommand = binding?.command ?? null
+    const executedCommand = rewritten ?? sourceCommand
     const inputAfter = structuredClone(event.input)
     if (rewritten !== null && binding !== null && rewritten !== binding.command) {
       commandBinding(event.toolName, inputAfter)?.replace(rewritten)
@@ -221,7 +251,9 @@ export async function installYarpExtension(
         requiresStreams,
         staged: false,
         archiveRef,
-        command: binding?.command ?? null,
+        sourceCommand,
+        executedCommand,
+        resultPolicy,
       })
     }
 
@@ -234,6 +266,11 @@ export async function installYarpExtension(
     if (sink === null || session === null) return
     const active = activeCalls.get(event.toolCallId)
     if (active === undefined) return
+    const finalBinding = commandBinding(event.toolName, event.input)
+    const resultPolicy = active.executedCommand === null
+      || finalBinding?.command === active.executedCommand
+      ? active.resultPolicy
+      : "pass_through"
     const fullOutputPath = sourceFullOutputPath(event)
     const beforeSnapshot = resultSnapshot(event)
     try {
@@ -258,20 +295,19 @@ export async function installYarpExtension(
       source: "source_output" | "result_text"
       completeness: SourceCompleteness
     } | null = null
-    const pruningEnabled = process.env["YARP_DISABLED"] !== "1"
     const completeness = resultCompleteness(event, fullOutputPath !== undefined)
     const hostTextCompleteness = resultCompleteness(event, false)
     const text = singleTextContent(event.content)
     if (
-      pruningEnabled
+      resultPolicy === "ordinary"
       && !active.requiresStreams
-      && active.command !== null
+      && active.sourceCommand !== null
       && text !== null
     ) {
       try {
         const reduced = await resultReducer.reduce(
           {
-            command: active.command,
+            command: active.sourceCommand,
             text,
             isError: event.isError,
             ...explicitExitCode(event.details),
@@ -304,7 +340,7 @@ export async function installYarpExtension(
       }
     }
 
-    if (pruningEnabled && outputCap.maxBytes !== null) {
+    if (resultPolicy === "ordinary" && outputCapBytes !== null) {
       try {
         const content = patch?.content ?? event.content
         const usesRawStreams = typedRecovery === null && active.requiresStreams
@@ -312,7 +348,7 @@ export async function installYarpExtension(
           content,
           active.archiveRef,
           usesRawStreams ? "complete" : (typedRecovery?.completeness ?? hostTextCompleteness),
-          outputCap.maxBytes,
+          outputCapBytes,
           usesRawStreams ? "stdout" : (typedRecovery?.source ?? "result_text"),
         )
         if (capped !== null) {
@@ -604,10 +640,6 @@ export async function trustedProjectRulePack(
     return null
   }
   return resolved
-}
-
-function archiveDisabled(): boolean {
-  return process.env["YARP_ARCHIVE_DISABLED"] === "1"
 }
 
 function errorMessage(error: unknown): string {

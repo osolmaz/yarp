@@ -1,6 +1,6 @@
 # YARP configuration specification
 
-This document defines the target YARP configuration format. The current release still uses `YARP_*` environment variables. The configuration file and `yarp config` commands described here will become active when the configuration work is implemented.
+This document defines the YARP configuration format and `yarp config` commands.
 
 ## File
 
@@ -122,9 +122,9 @@ A direct CLI invocation reads the file when that process starts. A running Pi se
 
 Explicit command arguments still control one invocation. For example, `yarp search --max-results` can request fewer matches than the configured recovery ceiling. Command arguments cannot raise the configured byte or line ceiling.
 
-## Existing environment settings
+## Removed environment settings
 
-Implementation replaces these YARP-specific environment settings in place:
+The configuration file replaces these former YARP-specific environment settings:
 
 | Current setting | Configuration field |
 | --- | --- |
@@ -134,7 +134,7 @@ Implementation replaces these YARP-specific environment settings in place:
 | `YARP_ARCHIVE_PATH` | `archive.path` |
 | `YARP_RULE_PACKS` | `rules.packs` |
 
-The old environment readers will be removed. YARP will not keep aliases or merge environment values with the file. Standard `HOME`, `XDG_CONFIG_HOME`, and `XDG_DATA_HOME` remain part of file and data path resolution.
+YARP does not keep aliases or merge these old environment values with the file. Standard `HOME`, `XDG_CONFIG_HOME`, and `XDG_DATA_HOME` remain part of file and data path resolution.
 
 ## Fixed limits
 

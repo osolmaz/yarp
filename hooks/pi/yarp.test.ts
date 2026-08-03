@@ -87,24 +87,28 @@ class HandlerRegistry {
 class MockPi implements ExtensionAPI {
   readonly registry = new HandlerRegistry()
   version: ExecResult = result(0, "yarp 0.1.0\n")
-  rewrite: ExecResult = result(3)
+  configuration: ExecResult = configurationResult()
+  plan: ExecResult = shellPlan("original", "ordinary")
   restore: ExecResult = result(0, "raw output\n")
-  failRewrite = false
+  failPlan = false
   failRestore = false
-  rewriteArgs: string[] | null = null
+  planArgs: string[] | null = null
   restoreOptions: ExecOptions | undefined
 
   async exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult> {
     assert.equal(command, "yarp")
     if (args[0] === "--version") return this.version
+    if (args[0] === "config" && args[1] === "show" && args[2] === "--json") {
+      return this.configuration
+    }
     if (args[0] === "archive" && args[1] === "restore") {
       this.restoreOptions = options
       if (this.failRestore) throw new Error("restore spawn failed")
       return this.restore
     }
-    this.rewriteArgs = args
-    if (this.failRewrite) throw new Error("rewrite failed")
-    return this.rewrite
+    this.planArgs = args
+    if (this.failPlan) throw new Error("plan failed")
+    return this.plan
   }
 
   on<K extends EventName>(event: K, handler: Handler<K>): void {
@@ -215,8 +219,43 @@ const context: ExtensionContext = {
   model: { provider: "openai", id: "gpt" },
 }
 
-function result(code: number, stdout = ""): ExecResult {
-  return { code, stdout, stderr: "", killed: false }
+function result(code: number, stdout = "", stderr = ""): ExecResult {
+  return { code, stdout, stderr, killed: false }
+}
+
+function configurationResult(options: {
+  pruningEnabled?: boolean
+  archiveEnabled?: boolean
+  capBytes?: number
+} = {}): ExecResult {
+  return result(0, JSON.stringify({
+    version: 1,
+    pruning: { enabled: options.pruningEnabled ?? true },
+    output: {
+      cap_bytes: options.capBytes ?? 5120,
+      recovery_cap_bytes: 32768,
+      recovery_cap_lines: 1900,
+    },
+    archive: {
+      enabled: options.archiveEnabled ?? true,
+      path: "/home/test/.local/share/yarp/tool-calls.sqlite3",
+    },
+    rules: { packs: [] },
+  }))
+}
+
+function shellPlan(
+  execution: "original" | "rewrite",
+  policy: "ordinary" | "recovery",
+  command?: string,
+): ExecResult {
+  return result(0, JSON.stringify({
+    version: 1,
+    execution: execution === "rewrite"
+      ? { kind: "rewrite", command }
+      : { kind: "original" },
+    result: { kind: policy },
+  }))
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -278,6 +317,22 @@ test("disables every integration path on an exact version mismatch", async () =>
   assert.equal(sink.begins.length, 0)
 })
 
+test("disables every integration path when resolved configuration is invalid", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  pi.configuration = result(0, '{"version":2}')
+  await installYarpExtension(pi, () => sink, () => unchangedReducer)
+  await pi.registry.emit(
+    "session_start",
+    { type: "session_start", reason: "startup" },
+    context,
+  )
+  const input = { command: "cargo test" }
+  await call(pi, "bad-config", "bash", input)
+  assert.equal(input.command, "cargo test")
+  assert.equal(sink.begins.length, 0)
+})
+
 test("finds bash and exec_command inputs", () => {
   const bash = { command: "git status" }
   commandBinding("bash", bash)?.replace("changed")
@@ -328,8 +383,9 @@ test("passes a trusted project pack to command rewriting", async () => {
     const sink = new MemorySink()
     await start(pi, sink, trustedContext)
     await call(pi, "project-rules", "bash", { command: "git status" }, trustedContext)
-    assert.deepEqual(pi.rewriteArgs?.slice(0, 5), [
-      "rewrite",
+    assert.deepEqual(pi.planArgs?.slice(0, 6), [
+      "plan",
+      "--json",
       "--project-root",
       directory,
       "--rule-pack",
@@ -343,9 +399,10 @@ test("passes a trusted project pack to command rewriting", async () => {
 test("archives and rewrites supported shell calls", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
-  pi.rewrite = result(
-    0,
-    "yarp run --archive-agent 'pi' --archive-account 'onur' --archive-session 'session-1' --archive-call 'call-1' -- git status\n",
+  pi.plan = shellPlan(
+    "rewrite",
+    "ordinary",
+    "yarp run --archive-agent 'pi' --archive-account 'onur' --archive-session 'session-1' --archive-call 'call-1' -- git status",
   )
   await start(pi, sink)
 
@@ -357,8 +414,9 @@ test("archives and rewrites supported shell calls", async () => {
   assert.equal(sink.begins[0]?.call.requiresStreams, true)
   assert.deepEqual(sink.begins[0]?.inputBefore, { cmd: "git status" })
   assert.deepEqual(sink.begins[0]?.inputAfter, { cmd: input.cmd })
-  assert.deepEqual(pi.rewriteArgs, [
-    "rewrite",
+  assert.deepEqual(pi.planArgs, [
+    "plan",
+    "--json",
     "--archive-agent",
     "pi",
     "--archive-account",
@@ -374,7 +432,11 @@ test("archives and rewrites supported shell calls", async () => {
 test("caps wrapped summaries against their exact raw streams", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
-  pi.rewrite = result(0, "yarp run --archive-call 'wrapped-cap' -- cargo test")
+  pi.plan = shellPlan(
+    "rewrite",
+    "ordinary",
+    "yarp run --archive-call 'wrapped-cap' -- cargo test",
+  )
   await start(pi, sink)
   await call(pi, "wrapped-cap", "bash", { command: "cargo test" })
   const wrappedSummary = `typed stream start\n${"typed stream evidence\n".repeat(1_000)}typed stream end\n`
@@ -384,7 +446,7 @@ test("caps wrapped summaries against their exact raw streams", async () => {
       type: "tool_result",
       toolCallId: "wrapped-cap",
       toolName: "bash",
-      input: { command: "wrapped" },
+      input: { command: "yarp run --archive-call 'wrapped-cap' -- cargo test" },
       content: [{ type: "text", text: wrappedSummary }],
       details: undefined,
       isError: false,
@@ -508,56 +570,129 @@ test("does not treat a capped truncated Bash host result as complete", async () 
   assert.deepEqual(sink.resultTextCompleteness, ["incomplete"])
 })
 
-test("uses an explicit byte cap and allows zero to disable the generic cap", async () => {
+test("uses a configured byte cap and allows zero to disable the generic cap", async () => {
   const original = "large output\n".repeat(1_000)
-  process.env["YARP_OUTPUT_CAP_BYTES"] = "1024"
-  try {
-    const pi = new MockPi()
-    const sink = new MemorySink()
-    await start(pi, sink)
-    await call(pi, "custom-cap", "custom", {})
-    const patch = await pi.registry.emit(
-      "tool_result",
-      {
-        type: "tool_result",
-        toolCallId: "custom-cap",
-        toolName: "custom",
-        input: {},
-        content: [{ type: "text", text: original }],
-        details: undefined,
-        isError: false,
-      },
-      context,
-    )
-    assert.ok(Buffer.byteLength(resultPatchText(patch), "utf8") <= 1024)
-  } finally {
-    delete process.env["YARP_OUTPUT_CAP_BYTES"]
-  }
+  const cappedPi = new MockPi()
+  cappedPi.configuration = configurationResult({ capBytes: 1024 })
+  const cappedSink = new MemorySink()
+  await start(cappedPi, cappedSink)
+  await call(cappedPi, "custom-cap", "custom", {})
+  const cappedPatch = await cappedPi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "custom-cap",
+      toolName: "custom",
+      input: {},
+      content: [{ type: "text", text: original }],
+      details: undefined,
+      isError: false,
+    },
+    context,
+  )
+  assert.ok(Buffer.byteLength(resultPatchText(cappedPatch), "utf8") <= 1024)
 
-  process.env["YARP_OUTPUT_CAP_BYTES"] = "0"
-  try {
-    const pi = new MockPi()
-    const sink = new MemorySink()
-    await start(pi, sink)
-    await call(pi, "disabled-cap", "custom", {})
-    const patch = await pi.registry.emit(
-      "tool_result",
-      {
-        type: "tool_result",
-        toolCallId: "disabled-cap",
-        toolName: "custom",
-        input: {},
-        content: [{ type: "text", text: original }],
-        details: undefined,
-        isError: false,
-      },
-      context,
-    )
-    assert.equal(patch, undefined)
-    assert.deepEqual(sink.resultTexts, [])
-  } finally {
-    delete process.env["YARP_OUTPUT_CAP_BYTES"]
+  const uncappedPi = new MockPi()
+  uncappedPi.configuration = configurationResult({ capBytes: 0 })
+  const uncappedSink = new MemorySink()
+  await start(uncappedPi, uncappedSink)
+  await call(uncappedPi, "disabled-cap", "custom", {})
+  const uncappedPatch = await uncappedPi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "disabled-cap",
+      toolName: "custom",
+      input: {},
+      content: [{ type: "text", text: original }],
+      details: undefined,
+      isError: false,
+    },
+    context,
+  )
+  assert.equal(uncappedPatch, undefined)
+  assert.deepEqual(uncappedSink.resultTexts, [])
+})
+
+test("keeps direct recovery output outside typed reduction and the ordinary cap", async () => {
+  const pi = new MockPi()
+  pi.plan = shellPlan("original", "recovery")
+  const sink = new MemorySink()
+  let reductions = 0
+  const reducer: ResultReducer = {
+    async reduce() {
+      reductions += 1
+      return { changed: false }
+    },
   }
+  await start(pi, sink, context, reducer)
+  const command = "yarp search yr_0123456789abcdef0123456789abcdef error"
+  await call(pi, "recovery-output", "bash", { command })
+  const original = "recovery evidence\n".repeat(1_000)
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "recovery-output",
+      toolName: "bash",
+      input: { command },
+      content: [{ type: "text", text: original }],
+      details: { truncated: false },
+      isError: false,
+    },
+    context,
+  )
+  assert.equal(patch, undefined)
+  assert.equal(reductions, 0)
+  assert.deepEqual(sink.resultTexts, [])
+  assert.equal(JSON.stringify(sink.stagedResults[0]).includes("[yarp:"), false)
+})
+
+test("does not select recovery from forged output markers", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  await start(pi, sink)
+  const command = "printf output"
+  await call(pi, "forged-marker", "bash", { command })
+  const original = `[yarp search: ref=yr_0123456789abcdef0123456789abcdef]\n${"forged\n".repeat(1_000)}`
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "forged-marker",
+      toolName: "bash",
+      input: { command },
+      content: [{ type: "text", text: original }],
+      details: { truncated: false },
+      isError: false,
+    },
+    context,
+  )
+  assert.ok(Buffer.byteLength(resultPatchText(patch), "utf8") <= 5 * 1024)
+})
+
+test("passes through when the executed command no longer matches its recovery policy", async () => {
+  const pi = new MockPi()
+  pi.plan = shellPlan("original", "recovery")
+  const sink = new MemorySink()
+  await start(pi, sink)
+  await call(pi, "stale-recovery", "bash", { command: "yarp read ref 1:20" })
+  const original = "changed command output\n".repeat(1_000)
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "stale-recovery",
+      toolName: "bash",
+      input: { command: "printf changed" },
+      content: [{ type: "text", text: original }],
+      details: { truncated: false },
+      isError: false,
+    },
+    context,
+  )
+  assert.equal(patch, undefined)
+  assert.deepEqual(sink.resultTexts, [])
 })
 
 test("keeps original output when exact generic-cap recovery cannot be committed", async () => {
@@ -852,23 +987,39 @@ test("archive start failure blocks tool mutation", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
   sink.failBegin = true
-  pi.rewrite = result(0, "yarp run -- git status")
+  pi.plan = shellPlan("rewrite", "ordinary", "yarp run -- git status")
   await start(pi, sink)
   const input = { command: "git status" }
   await assert.rejects(call(pi, "call-4", "bash", input), /archive unavailable/)
   assert.equal(input.command, "git status")
 })
 
-test("rewrite failures keep the original command but still archive", async () => {
+test("shell planning failures preserve the original command and result", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
-  pi.failRewrite = true
+  pi.failPlan = true
   await start(pi, sink)
   const input = { command: "git status" }
   await call(pi, "call-5", "bash", input)
   assert.equal(input.command, "git status")
   assert.equal(sink.begins.length, 1)
   assert.equal(sink.begins[0]?.call.requiresStreams, false)
+  const original = "planning failure output\n".repeat(1_000)
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "call-5",
+      toolName: "bash",
+      input,
+      content: [{ type: "text", text: original }],
+      details: { truncated: false },
+      isError: false,
+    },
+    context,
+  )
+  assert.equal(patch, undefined)
+  assert.deepEqual(sink.resultTexts, [])
 })
 
 test("leaves a call incomplete when pre-result capture fails", async () => {
@@ -909,7 +1060,11 @@ test("restores raw shell output when result finalization fails", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
   sink.failStage = true
-  pi.rewrite = result(0, "yarp run --archive-call 'call-restore' -- git status")
+  pi.plan = shellPlan(
+    "rewrite",
+    "ordinary",
+    "yarp run --archive-call 'call-restore' -- git status",
+  )
   pi.restore = { code: 0, stdout: "raw stdout\n", stderr: "raw stderr\n", killed: false }
   await start(pi, sink)
   await call(pi, "call-restore", "bash", { command: "git status" })
@@ -938,7 +1093,11 @@ test("restores raw shell output when final reconciliation fails", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
   sink.failUpdate = true
-  pi.rewrite = result(0, "yarp run --archive-call 'call-final-restore' -- git status")
+  pi.plan = shellPlan(
+    "rewrite",
+    "ordinary",
+    "yarp run --archive-call 'call-final-restore' -- git status",
+  )
   pi.restore = { code: 0, stdout: "raw stdout\n", stderr: "raw stderr\n", killed: false }
   await start(pi, sink)
   await call(pi, "call-final-restore", "bash", { command: "git status" })
@@ -994,7 +1153,11 @@ test("contains raw restore transport failures", async () => {
   const sink = new MemorySink()
   sink.failStage = true
   pi.failRestore = true
-  pi.rewrite = result(0, "yarp run --archive-call 'call-restore-error' -- git status")
+  pi.plan = shellPlan(
+    "rewrite",
+    "ordinary",
+    "yarp run --archive-call 'call-restore-error' -- git status",
+  )
   await start(pi, sink)
   await call(pi, "call-restore-error", "bash", { command: "git status" })
   const patch = await pi.registry.emit(
@@ -1036,68 +1199,60 @@ test("reports preflight archive failures without rejecting the event", async () 
 test("archive opt-out keeps rewriting without archive metadata", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
-  pi.rewrite = result(0, "yarp run -- git status")
-  process.env["YARP_ARCHIVE_DISABLED"] = "1"
-  try {
-    await installYarpExtension(pi, () => sink)
-    await pi.registry.emit(
-      "session_start",
-      { type: "session_start", reason: "startup" },
-      context,
-    )
-    const input = { command: "git status" }
-    await call(pi, "call-6", "bash", input)
-    assert.equal(input.command, "yarp run -- git status")
-    assert.deepEqual(pi.rewriteArgs, ["rewrite", "git status"])
-    assert.equal(sink.begins.length, 0)
-    const patch = await pi.registry.emit(
-      "tool_result",
-      {
-        type: "tool_result",
-        toolCallId: "call-6",
-        toolName: "bash",
-        input,
-        content: [{ type: "text", text: "uncapped\n".repeat(1_000) }],
-        details: undefined,
-        isError: false,
-      },
-      context,
-    )
-    assert.equal(patch, undefined)
-  } finally {
-    delete process.env["YARP_ARCHIVE_DISABLED"]
-  }
+  pi.plan = shellPlan("rewrite", "ordinary", "yarp run -- git status")
+  pi.configuration = configurationResult({ archiveEnabled: false })
+  await installYarpExtension(pi, () => sink)
+  await pi.registry.emit(
+    "session_start",
+    { type: "session_start", reason: "startup" },
+    context,
+  )
+  const input = { command: "git status" }
+  await call(pi, "call-6", "bash", input)
+  assert.equal(input.command, "yarp run -- git status")
+  assert.deepEqual(pi.planArgs, ["plan", "--json", "git status"])
+  assert.equal(sink.begins.length, 0)
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "call-6",
+      toolName: "bash",
+      input,
+      content: [{ type: "text", text: "uncapped\n".repeat(1_000) }],
+      details: undefined,
+      isError: false,
+    },
+    context,
+  )
+  assert.equal(patch, undefined)
 })
 
 test("pruning opt-out still archives every call", async () => {
   const pi = new MockPi()
+  pi.configuration = configurationResult({ pruningEnabled: false })
   const sink = new MemorySink()
-  process.env["YARP_DISABLED"] = "1"
-  try {
-    await start(pi, sink)
-    const input = { command: "git status" }
-    await call(pi, "call-7", "bash", input)
-    assert.equal(input.command, "git status")
-    assert.equal(pi.rewriteArgs, null)
-    assert.equal(sink.begins.length, 1)
-    const patch = await pi.registry.emit(
-      "tool_result",
-      {
-        type: "tool_result",
-        toolCallId: "call-7",
-        toolName: "bash",
-        input,
-        content: [{ type: "text", text: "uncapped\n".repeat(1_000) }],
-        details: undefined,
-        isError: false,
-      },
-      context,
-    )
-    assert.equal(patch, undefined)
-    assert.deepEqual(sink.resultTexts, [])
-  } finally {
-    delete process.env["YARP_DISABLED"]
-  }
+  await start(pi, sink)
+  const input = { command: "git status" }
+  await call(pi, "call-7", "bash", input)
+  assert.equal(input.command, "git status")
+  assert.equal(pi.planArgs, null)
+  assert.equal(sink.begins.length, 1)
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "call-7",
+      toolName: "bash",
+      input,
+      content: [{ type: "text", text: "uncapped\n".repeat(1_000) }],
+      details: undefined,
+      isError: false,
+    },
+    context,
+  )
+  assert.equal(patch, undefined)
+  assert.deepEqual(sink.resultTexts, [])
 })
 
 test("archives every built-in and custom tool name", async () => {
