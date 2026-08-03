@@ -1,0 +1,12 @@
+{
+  "id": "guards/hf-format-json-equals",
+  "match": {
+    "program": [
+      "hf"
+    ],
+    "argv_contains_all": [
+      "--format=json"
+    ]
+  },
+  "action": "passthrough"
+}
