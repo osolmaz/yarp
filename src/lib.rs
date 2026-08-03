@@ -133,20 +133,20 @@ fn archive_search(arguments: &[String]) -> i32 {
     match archive_query::search(arguments) {
         Ok(archive_query::SearchOutcome::Matches(output)) => {
             if let Err(error) = io::stdout().write_all(&output) {
-                eprintln!("yarp: could not write search output: {error}");
+                write_recovery_error(&format!("could not write search output: {error}"));
                 return 74;
             }
             0
         }
         Ok(archive_query::SearchOutcome::NoMatches(output)) => {
             if let Err(error) = io::stdout().write_all(&output) {
-                eprintln!("yarp: could not write search output: {error}");
+                write_recovery_error(&format!("could not write search output: {error}"));
                 return 74;
             }
             1
         }
         Err(error) => {
-            eprintln!("yarp: {error}");
+            write_recovery_error(&error);
             65
         }
     }
@@ -157,15 +157,47 @@ fn archive_read(arguments: &[String]) -> i32 {
         Ok(output) => match io::stdout().write_all(&output) {
             Ok(()) => 0,
             Err(error) => {
-                eprintln!("yarp: could not write exact archive range: {error}");
+                write_recovery_error(&format!("could not write exact archive range: {error}"));
                 74
             }
         },
         Err(error) => {
-            eprintln!("yarp: {error}");
+            write_recovery_error(&error);
             65
         }
     }
+}
+
+fn write_recovery_error(error: &str) {
+    const PREFIX_BYTES: usize = "yarp: ".len();
+    const NEWLINE_BYTES: usize = 1;
+    const ELLIPSIS: &str = "...";
+
+    let max_bytes = config::load().map_or(config::MIN_RECOVERY_CAP_BYTES, |resolved| {
+        resolved.output.recovery_cap_bytes
+    });
+    let body_budget = max_bytes.saturating_sub(PREFIX_BYTES + NEWLINE_BYTES);
+    let mut body = String::with_capacity(body_budget.min(error.len()));
+    let mut truncated = false;
+    for character in error.chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if body.len().saturating_add(character.len_utf8()) > body_budget {
+            truncated = true;
+            break;
+        }
+        body.push(character);
+    }
+    if truncated && body_budget >= ELLIPSIS.len() {
+        while body.len().saturating_add(ELLIPSIS.len()) > body_budget {
+            body.pop();
+        }
+        body.push_str(ELLIPSIS);
+    }
+    eprintln!("yarp: {body}");
 }
 
 fn archive_stats() -> i32 {
