@@ -4,7 +4,7 @@ This report measures the number of characters in textual tool results from the p
 
 ![Tool output size distribution](tool-output-size-distribution.svg)
 
-The figure separates all textual outputs from the shell subset. In the first panel, each point gives the share of outputs at or below the size on the horizontal axis. The second panel gives the share of all characters contributed by those outputs. The last panel shows the maximum possible character reduction from replacing every result above a chosen character cap with exactly that many characters.
+The figure separates all textual outputs from the shell subset. The top row uses 40 equal-width bins on a logarithmic scale. The left panel shows the share of outputs in each bin, and the right panel shows each bin's share of all characters. The lower-left panel gives the cumulative share of outputs at or below each size. The lower-right panel shows the maximum possible character reduction from replacing every result above a chosen character cap with exactly that many characters.
 
 ## Main numbers
 
@@ -53,6 +53,6 @@ The 704 rows count characters, while YARP's current rule policies use bytes. The
 
 The report reads the private `toolcall-extractor` DuckDB database and counts Unicode scalar values in each normalized `output_text`. Results without textual output are outside the report. Shell output uses the same fixed shell-tool classification as the YARP corpus benchmark.
 
-Percentiles use the nearest-rank method. Bands are mutually exclusive. The figure uses 500 logarithmically spaced thresholds plus exact table boundaries, and its lines connect those aggregate points without fitting a model. The measurements were taken from the corpus state on 2026-08-03.
+Percentiles use the nearest-rank method. Table bands are mutually exclusive. The binned panels use 40 equal-width bins on the logarithmic scale from 1 to 700,000 characters. The 12 zero-character outputs remain in the totals and table but cannot appear on that scale. The cumulative panels use 500 logarithmically spaced thresholds plus exact table boundaries, and their lines connect those aggregate points without fitting a model. The measurements were taken from the corpus state on 2026-08-03.
 
 Only the aggregate numbers and generated SVG are checked into the repository. The database, raw outputs, temporary aggregate JSON, and plotting script remain outside Git.
