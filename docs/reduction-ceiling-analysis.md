@@ -73,9 +73,9 @@ The read-only analyzer examined the same 371,241 shell results and 1,445,526,406
 | Shell function | 297 | 0.08% | 470,289 | 0.03% |
 | Parser failure | 211 | 0.06% | 162,887 | 0.01% |
 
-The result planner accepts a chain or pipeline only when every possible visible output has one reducer family. It also accepts reviewed setup commands and assignments along with known wrappers and the `2>&1` and `1>&2` stream merges. The planner selected 16,945 compound results. Of those, 10,086 changed and removed 82,457,471 characters. Pipelines accounted for 12,990 selected results, 8,659 changed results, and 71,111,489 removed characters.
+The result planner accepts a chain or pipeline only when every possible visible output has one reducer family. It also accepts reviewed setup commands and assignments along with known wrappers and the `2>&1` and `1>&2` stream merges. The planner selected 17,082 compound results. Of those, 10,178 changed and removed 82,891,848 characters. Pipelines accounted for 13,058 selected results, 8,710 changed results, and 71,330,116 removed characters.
 
-The broad `shell/unsupported-syntax` family now contains 167,134 unchanged results and 628,070,213 output characters. The operator and syntax rows above explain much of that family, but they must not be added together because of overlap. Exact-text inspection, structured output, count-only output, and machine-readable forms remain separate intentional pass-through categories.
+The broad `shell/unsupported-syntax` family now contains 167,001 unchanged results and 627,569,772 output characters. The operator and syntax rows above explain much of that family, but they must not be added together because of overlap. Exact-text inspection, structured output, count-only output, and machine-readable forms remain separate intentional pass-through categories.
 
 ## Shell result planning
 
@@ -87,7 +87,7 @@ YARP executes the original pipeline unchanged. Rewriting individual stages could
 
 Parameter expansion, command substitution, arbitrary redirection, loops, background jobs, nested shells, process substitution, here documents, executable paths, and aliases still pass through when their meaning cannot be established without running or expanding shell source.
 
-Before this work, typed summaries changed 29,439 results and removed 306,302,222 characters. The combined parser, planner, transforms, and ranked evidence selector change 37,459 results and remove 374,851,952 characters. The absolute gain is 8,020 changed results and 68,549,730 removed characters, or 4.7422 percentage points of shell output. This clears the proposed one-point minimum effect by 54,094,466 characters. Registered diagnostic vetoes and missing recovery markers remain zero. Release still requires retrieval checks, bounded memory, and the throughput and latency gates.
+Before this work, typed summaries changed 29,439 results and removed 306,302,222 characters. The combined typed rule set, parser, planner, transforms, and ranked evidence selector change 38,064 results and remove 377,272,234 characters. The absolute gain is 8,625 changed results and 70,970,012 removed characters, or 4.9096 percentage points of shell output. This clears the proposed one-point minimum effect by 56,514,748 characters. Registered diagnostic vetoes and missing recovery markers remain zero. Release still requires retrieval checks, bounded memory, and the throughput and latency gates.
 
 This design changes no Pi internals or session entries. It adds no persistent schema or runtime state. It continues using Pi's documented shell-tool hooks.
 

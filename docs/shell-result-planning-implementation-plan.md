@@ -20,7 +20,7 @@ Shell operators and syntax account for a large part of the unchanged output. The
 
 Before this implementation, the classifier accepted simple `;`, `&&`, and `||` chains when every output command selected the same reducer family. It selected 3,958 compound results. Of those, 1,486 changed and removed 11,782,428 characters. Pipelines passed through.
 
-The finished planner selects 16,945 compound results. Of those, 10,086 change and remove 82,457,471 characters. The full candidate changes 37,459 shell results and removes 374,851,952 characters, or 25.9319% of shell output.
+The finished planner selects 17,082 compound results. Of those, 10,178 change and remove 82,891,848 characters. The full typed candidate changes 38,064 shell results and removes 377,272,234 characters, or 26.0993% of shell output.
 
 ## Required result
 
@@ -319,7 +319,7 @@ The configured stream memory bound remains below 4 MiB per stream. Parser limits
 
 ## Release decision
 
-The retrospective minimum worthwhile effect is one additional percentage point of shell-output reduction, equal to 14,455,264 characters in the frozen corpus. The candidate removes 68,549,730 more characters than the branch baseline, a gain of 4.7422 percentage points. The measured effect clears the threshold; the maintainer still controls release approval.
+The retrospective minimum worthwhile effect is one additional percentage point of shell-output reduction, equal to 14,455,264 characters in the frozen corpus. The candidate removes 70,970,012 more characters than the branch baseline, a gain of 4.9096 percentage points. The measured effect clears the threshold; the maintainer still controls release approval.
 
 A candidate may ship only when all of these conditions hold:
 

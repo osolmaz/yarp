@@ -1080,6 +1080,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn classifies_reviewed_commands_and_guards_streaming_or_structured_output() {
+        for arguments in [
+            &["hf", "jobs", "logs", "job-id"][..],
+            &["hf", "spaces", "logs", "owner/space", "--build"][..],
+        ] {
+            let Ok(Selection::Reduce(selected)) = select_builtin_argv(&strings(arguments)) else {
+                panic!("did not reduce {arguments:?}");
+            };
+            assert!(matches!(
+                selected.rule.reducer,
+                Some(yarp_rule_pack::Reducer::LogSummary)
+            ));
+        }
+        for arguments in [
+            &["herdr", "pane", "list"][..],
+            &["herdr", "tab", "list", "--workspace", "w1"][..],
+            &["herdr", "workspace", "list"][..],
+        ] {
+            let Ok(Selection::Reduce(selected)) = select_builtin_argv(&strings(arguments)) else {
+                panic!("did not reduce {arguments:?}");
+            };
+            assert!(matches!(
+                selected.rule.reducer,
+                Some(yarp_rule_pack::Reducer::ListSummary)
+            ));
+        }
+        let arguments = ["pnpm", "vitest", "run", "src/example.test.ts"];
+        let Ok(Selection::Reduce(selected)) = select_builtin_argv(&strings(&arguments)) else {
+            panic!("did not reduce {arguments:?}");
+        };
+        assert!(matches!(
+            selected.rule.reducer,
+            Some(yarp_rule_pack::Reducer::TestSummary)
+        ));
+        for arguments in [
+            &["hf", "jobs", "logs", "job-id", "--follow"][..],
+            &["hf", "jobs", "logs", "job-id", "-f"][..],
+            &["hf", "jobs", "logs", "job-id", "--json"][..],
+            &["hf", "jobs", "logs", "job-id", "--format=json"][..],
+            &["hf", "jobs", "logs", "job-id", "--format", "quiet"][..],
+            &["pnpm", "vitest", "run", "--watch"][..],
+        ] {
+            assert!(matches!(
+                select_builtin_argv(&strings(arguments)),
+                Ok(Selection::Passthrough(_))
+            ));
+        }
+        for arguments in [&["pnpm", "vitest"][..], &["pnpm", "vitest", "watch"][..]] {
+            assert!(!matches!(
+                select_builtin_argv(&strings(arguments)),
+                Ok(Selection::Reduce(_))
+            ));
+        }
+    }
+
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(ToString::to_string).collect()
     }

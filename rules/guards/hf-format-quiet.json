@@ -1,0 +1,13 @@
+{
+  "id": "guards/hf-format-quiet",
+  "match": {
+    "program": [
+      "hf"
+    ],
+    "argv_contains_all": [
+      "--format",
+      "quiet"
+    ]
+  },
+  "action": "passthrough"
+}

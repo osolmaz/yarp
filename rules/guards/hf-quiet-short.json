@@ -1,0 +1,12 @@
+{
+  "id": "guards/hf-quiet-short",
+  "match": {
+    "program": [
+      "hf"
+    ],
+    "argv_contains_all": [
+      "-q"
+    ]
+  },
+  "action": "passthrough"
+}

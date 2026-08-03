@@ -3044,6 +3044,108 @@
       "rule_id": "guards/uniq-group",
       "argv": ["uniq", "--group"],
       "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-hf-follow-long-match",
+      "rule_id": "guards/hf-follow-long",
+      "argv": ["hf", "jobs", "logs", "job-id", "--follow"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-hf-follow-short-match",
+      "rule_id": "guards/hf-follow-short",
+      "argv": ["hf", "spaces", "logs", "owner/space", "-f"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-hf-json-match",
+      "rule_id": "guards/hf-json",
+      "argv": ["hf", "jobs", "logs", "job-id", "--json"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-hf-format-json-match",
+      "rule_id": "guards/hf-format-json",
+      "argv": ["hf", "spaces", "logs", "owner/space", "--format", "json"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-hf-format-json-equals-match",
+      "rule_id": "guards/hf-format-json-equals",
+      "argv": ["hf", "jobs", "logs", "job-id", "--format=json"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-hf-quiet-long-match",
+      "rule_id": "guards/hf-quiet-long",
+      "argv": ["hf", "jobs", "logs", "job-id", "--quiet"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-hf-quiet-short-match",
+      "rule_id": "guards/hf-quiet-short",
+      "argv": ["hf", "spaces", "logs", "owner/space", "-q"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-hf-format-quiet-match",
+      "rule_id": "guards/hf-format-quiet",
+      "argv": ["hf", "jobs", "logs", "job-id", "--format", "quiet"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "guards-hf-format-quiet-equals-match",
+      "rule_id": "guards/hf-format-quiet-equals",
+      "argv": ["hf", "spaces", "logs", "owner/space", "--format=quiet"],
+      "expected_action": "passthrough"
+    },
+    {
+      "id": "hf-jobs-logs-match",
+      "rule_id": "hf/jobs-logs",
+      "argv": ["hf", "jobs", "logs", "job-id", "--tail", "100"],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "hf-spaces-logs-match",
+      "rule_id": "hf/spaces-logs",
+      "argv": ["hf", "spaces", "logs", "owner/space", "--build", "--tail", "100"],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "herdr-pane-list-match",
+      "rule_id": "herdr/pane-list",
+      "argv": ["herdr", "pane", "list", "--workspace", "w1"],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "herdr-tab-list-match",
+      "rule_id": "herdr/tab-list",
+      "argv": ["herdr", "tab", "list", "--workspace", "w1"],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "herdr-workspace-list-match",
+      "rule_id": "herdr/workspace-list",
+      "argv": ["herdr", "workspace", "list"],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "js-pnpm-vitest-shorthand-match",
+      "rule_id": "js/pnpm-vitest-shorthand",
+      "argv": ["pnpm", "vitest", "run", "src/example.test.ts"],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-slophammer-go-check-match",
+      "rule_id": "build/slophammer-go-check",
+      "argv": ["slophammer-go", "check", "."],
+      "expected_action": "reduce"
+    },
+    {
+      "id": "build-slophammer-rs-check-match",
+      "rule_id": "build/slophammer-rs-check",
+      "argv": ["slophammer-rs", "check", "."],
+      "expected_action": "reduce"
     }
   ]
 }

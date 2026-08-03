@@ -22,7 +22,7 @@ Both commands install from the public GitHub repository.
 
 ## Use
 
-The Pi extension handles supported `bash` and `exec_command` calls automatically. Built-in rules cover common repository inspection and search plus tests and builds. They also cover linting and package scripts. Search coverage includes `rg`, `grep`, `egrep`, `fgrep`, and `git grep`. File and system coverage includes `ls`, `find`, `fd`, `tree`, `du`, `df`, `free`, `lsof`, and common `ps` listings. YARP also handles common Git and GitHub lists, container inventories, and Kubernetes inspection. Exact-output forms such as structured JSON, NUL-delimited output, custom process columns, child-executing file searches, streaming output, and Git object inspection stay untouched.
+The Pi extension handles supported `bash` and `exec_command` calls automatically. Built-in rules cover common repository inspection and search plus tests and builds. They also cover linting and package scripts. Search coverage includes `rg`, `grep`, `egrep`, `fgrep`, and `git grep`. File and system coverage includes `ls`, `find`, `fd`, `tree`, `du`, `df`, `free`, `lsof`, and common `ps` listings. YARP also handles common Git and GitHub lists, container inventories, Kubernetes inspection, Hugging Face Job and Space logs, and Herdr lists. Exact-output forms such as structured JSON, NUL-delimited output, custom process columns, child-executing file searches, streaming output, and Git object inspection stay untouched.
 
 Run a supported command directly when needed:
 
@@ -176,7 +176,7 @@ This sends framed normalized records through the pipe and creates no intermediat
 
 The default database is `~/.local/share/toolcall-extractor/toolcalls.duckdb`. Tool inputs and outputs can contain secrets, so its directory and files are private. The extractor reads agent state without modifying it, has no network code, and stops before its files reach 10,000,000,000 bytes. See [the implementation plan](docs/toolcall-extractor-implementation-plan.md) for supported formats and privacy boundaries.
 
-A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The production matcher evaluated all 371,241 stored shell results. Typed summaries changed 37,459 results and removed 374,851,952 characters: 91.6279% of eligible output, 25.9319% of shell output, and 19.3052% of all rendered output. No ambiguous reduction or registered diagnostic veto occurred. The generated database and transcripts remain outside the repository, as does the report.
+A complete local validation across Pi, Codex, Claude Code, and Cursor imported 718,008 calls with no orphan records. The production matcher evaluated all 371,241 stored shell results. Typed summaries changed 38,064 results and removed 377,272,234 characters: 91.5737% of eligible output, 26.0993% of shell output, and 19.4298% of all rendered output. No ambiguous reduction or registered diagnostic veto occurred. The generated database and transcripts remain outside the repository, as does the report.
 
 ## Limits
 
