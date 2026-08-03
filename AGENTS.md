@@ -4,6 +4,7 @@
 - Preserve child exit codes and keep stdout and stderr on their original streams.
 - Do not add telemetry, analytics, or network access.
 - Keep persistent runtime state limited to the local tool-call archive defined in `docs/tool-call-archive-spec.md` unless the user explicitly approves another store.
+- Do not use universal archive-backed truncation as a compression strategy. Recovery through `yarp search` or `yarp read` requires extra tool calls and adds latency, so summaries must preserve enough immediately useful evidence to avoid routine archive retrieval.
 - Keep `toolcall-extractor` offline and independent from the live archive and pruning runtime. It may read only explicitly supplied local session roots, must never alter agent state, and writes only its own DuckDB database. Follow `docs/toolcall-extractor-implementation-plan.md`.
 - Use strict TypeScript without explicit `any`, unsafe casts, or unchecked external input.
 - Do not use unsafe Rust.
