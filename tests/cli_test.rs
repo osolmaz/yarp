@@ -546,6 +546,37 @@ fn recovery_commands_enforce_configured_byte_and_line_limits() {
             .contains(&format!("read=yarp read {archive_ref} result_text 1:1"))
     );
 
+    let oversized_argument = format!("-{}", "x".repeat(64 * 1024));
+    let (mut malformed_search, _malformed_search_config) =
+        yarp_command_with_limits(&database, Some((1024, 1)));
+    let malformed_search = malformed_search
+        .args(["search", &archive_ref, &oversized_argument])
+        .output()
+        .expect("malformed search");
+    assert_eq!(malformed_search.status.code(), Some(65));
+    assert!(malformed_search.stderr.len() <= 1024);
+    assert_eq!(
+        String::from_utf8_lossy(&malformed_search.stderr)
+            .lines()
+            .count(),
+        1,
+    );
+
+    let (mut malformed_read, _malformed_read_config) =
+        yarp_command_with_limits(&database, Some((1024, 1)));
+    let malformed_read = malformed_read
+        .args(["read", &archive_ref, &oversized_argument, "1:2"])
+        .output()
+        .expect("malformed read");
+    assert_eq!(malformed_read.status.code(), Some(65));
+    assert!(malformed_read.stderr.len() <= 1024);
+    assert_eq!(
+        String::from_utf8_lossy(&malformed_read.stderr)
+            .lines()
+            .count(),
+        1,
+    );
+
     let (mut large_read, _large_read_config) =
         yarp_command_with_limits(&database, Some((1024, 10)));
     let rejected = large_read

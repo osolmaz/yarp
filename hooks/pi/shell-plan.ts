@@ -31,6 +31,9 @@ export function parseShellPlan(text: string): ShellPlan {
   if (resultKind !== "ordinary" && resultKind !== "recovery") {
     throw new Error("shell plan result kind is invalid")
   }
+  if (execution.kind === "rewrite" && resultKind !== "ordinary") {
+    throw new Error("rewritten shell plans must use the ordinary result policy")
+  }
   return {
     version: 1,
     execution,
