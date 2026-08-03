@@ -371,6 +371,33 @@ test("archives and rewrites supported shell calls", async () => {
   ])
 })
 
+test("caps wrapped summaries against their exact raw streams", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  pi.rewrite = result(0, "yarp run --archive-call 'wrapped-cap' -- cargo test")
+  await start(pi, sink)
+  await call(pi, "wrapped-cap", "bash", { command: "cargo test" })
+  const wrappedSummary = `typed stream start\n${"typed stream evidence\n".repeat(1_000)}typed stream end\n`
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "wrapped-cap",
+      toolName: "bash",
+      input: { command: "wrapped" },
+      content: [{ type: "text", text: wrappedSummary }],
+      details: undefined,
+      isError: false,
+    },
+    context,
+  )
+
+  const visible = resultPatchText(patch)
+  assert.ok(Buffer.byteLength(visible, "utf8") <= 5 * 1024)
+  assert.match(visible, /stdout complete/u)
+  assert.deepEqual(sink.resultTexts, [])
+})
+
 test("archives unchanged non-shell calls and both result stages", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
