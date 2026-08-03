@@ -31,7 +31,7 @@ YARP will process each result in this order:
 2. Apply an existing typed shell summary when one is selected safely.
 3. Measure the UTF-8 bytes in the remaining text content, including a typed summary.
 4. Leave text at or below the configured budget unchanged.
-5. For a large typed summary, reuse its already committed raw streams, `source_output`, or `result_text` recovery source.
+5. For a large typed summary, reuse its already committed raw streams, `source_output`, or `result_text` recovery source. A wrapped summary also commits its exact visible text as a fallback without displacing the raw streams.
 6. For other large text, commit the exact concatenation of its original text blocks to `result_text/before`.
 7. Keep UTF-8-safe prefixes and suffixes within the budget and place a recovery marker between them.
 8. Stage the shortened result and complete the existing archive lifecycle.
@@ -42,7 +42,7 @@ The recovery marker names the archive reference and provides a valid bounded sea
 
 ## Archive contract
 
-The existing schema remains at version 1. `result_text/before` expands from a single host text item to the exact ordered concatenation of all text blocks exposed immediately before the generic cap. This source remains valid UTF-8 and records whether Pi described the host text as complete, incomplete, or unknown, independently of a separate full-output path. Recovery selects `result_text` when it exists, then wrapped streams, then `source_output`. This keeps capped host text searchable when another source is binary.
+The existing schema remains at version 1. `result_text/before` expands from a single host text item to the exact ordered concatenation of all text blocks exposed immediately before the generic cap. This source remains valid UTF-8 and records whether Pi described the host text as complete, incomplete, or unknown, independently of a separate full-output path. Recovery selects wrapped streams first, then `result_text`, then `source_output`. This keeps capped host text searchable when another source is binary without hiding raw wrapped output.
 
 No telemetry, network access, service, watcher, socket, or second database is added. Existing archive permissions, integrity checks, retention behavior, and local recovery commands remain unchanged.
 

@@ -415,10 +415,12 @@ supported host adapter.
 A call reference can own more than one snapshot. Search chooses sources without
 asking the model for a subject:
 
-1. Prefer `result_text/before` when it exists. A global cap stores the exact
-   pre-cap host text there, including when another raw source is binary.
-2. Otherwise, for a wrapped call, search `stdout/before` and `stderr/before`
-   separately.
+1. For a wrapped call, search `stdout/before` and `stderr/before` separately.
+   A capped wrapped summary may keep `result_text/before` as a fallback, but it
+   must not hide the original streams.
+2. Otherwise, prefer `result_text/before` when it exists. A global cap stores
+   the exact pre-cap host text there, including when another raw source is
+   binary.
 3. Otherwise, use a verified `source_output/before` produced by a documented
    host full-output path.
 4. If none exists, report that the call has no searchable text.

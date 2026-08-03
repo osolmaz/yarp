@@ -316,7 +316,7 @@ export async function installYarpExtension(
           usesRawStreams ? "stdout" : (typedRecovery?.source ?? "result_text"),
         )
         if (capped !== null) {
-          if (typedRecovery === null && !usesRawStreams) {
+          if (typedRecovery === null) {
             await sink.resultText(
               session,
               event.toolCallId,

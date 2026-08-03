@@ -561,23 +561,6 @@ impl Archive {
                 |row| row.get(0),
             )
             .map_err(|error| format!("could not find archive reference {archive_ref}: {error}"))?;
-        if self.snapshot_exists(call_id, "result_text", "before")? {
-            let value: String = self
-                .connection
-                .query_row(
-                    "SELECT source_completeness FROM snapshots
-                     WHERE tool_call_id = ?1 AND subject = 'result_text' AND stage = 'before'",
-                    [call_id],
-                    |row| row.get(0),
-                )
-                .map_err(|error| format!("could not read result text completeness: {error}"))?;
-            let completeness = parse_completeness(&value)?;
-            return Ok(vec![self.verified_source(
-                call_id,
-                SourceName::ResultText,
-                completeness,
-            )?]);
-        }
         let stdout = self.snapshot_exists(call_id, "stdout", "before")?;
         let stderr = self.snapshot_exists(call_id, "stderr", "before")?;
         if stdout || stderr {
@@ -597,6 +580,23 @@ impl Archive {
                 )?);
             }
             return Ok(sources);
+        }
+        if self.snapshot_exists(call_id, "result_text", "before")? {
+            let value: String = self
+                .connection
+                .query_row(
+                    "SELECT source_completeness FROM snapshots
+                     WHERE tool_call_id = ?1 AND subject = 'result_text' AND stage = 'before'",
+                    [call_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("could not read result text completeness: {error}"))?;
+            let completeness = parse_completeness(&value)?;
+            return Ok(vec![self.verified_source(
+                call_id,
+                SourceName::ResultText,
+                completeness,
+            )?]);
         }
         if self.snapshot_exists(call_id, "source_output", "before")? {
             return Ok(vec![self.verified_source(
@@ -2803,7 +2803,7 @@ mod tests {
     #[test]
     fn stores_binary_and_text_streams() {
         let (_directory, mut archive) = archive();
-        archive
+        let archive_ref = archive
             .begin_call(
                 &session(),
                 &call(),
@@ -2831,6 +2831,21 @@ mod tests {
             .expect("rows");
         assert!(media.contains(&"application/octet-stream".to_owned()));
         assert!(media.contains(&"text/plain; charset=utf-8".to_owned()));
+
+        archive
+            .result_text(
+                &session(),
+                "call-1",
+                "capped wrapped summary\n",
+                SourceCompleteness::Unknown,
+                40,
+            )
+            .expect("wrapped summary fallback");
+        let sources = archive.searchable_sources(&archive_ref).expect("sources");
+        assert_eq!(
+            sources.iter().map(|source| source.name).collect::<Vec<_>>(),
+            vec![SourceName::Stdout, SourceName::Stderr]
+        );
     }
 
     #[test]
