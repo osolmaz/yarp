@@ -11,6 +11,8 @@ export type OutputCapConfiguration = {
   warning: string | null
 }
 
+export type RecoverySource = "stdout" | "stderr" | "source_output" | "result_text"
+
 export type CappedToolContent = {
   content: ToolResultEvent["content"]
   sourceText: string
@@ -40,6 +42,7 @@ export function capToolResultContent(
   archiveRef: string,
   completeness: SourceCompleteness,
   maxBytes: number,
+  recoverySource: RecoverySource = "result_text",
 ): CappedToolContent | null {
   if (
     !Number.isSafeInteger(maxBytes)
@@ -59,7 +62,13 @@ export function capToolResultContent(
   const source = Buffer.from(sourceText, "utf8")
   if (source.length <= maxBytes) return null
 
-  const marker = recoveryMarker(archiveRef, completeness, source.length, maxBytes)
+  const marker = recoveryMarker(
+    archiveRef,
+    recoverySource,
+    completeness,
+    source.length,
+    maxBytes,
+  )
   const markerBytes = Buffer.byteLength(marker, "utf8")
   const retainedBudget = maxBytes - markerBytes
   if (retainedBudget <= 0) {
@@ -119,11 +128,12 @@ function invalidConfiguration(): OutputCapConfiguration {
 
 function recoveryMarker(
   archiveRef: string,
+  recoverySource: RecoverySource,
   completeness: SourceCompleteness,
   sourceBytes: number,
   maxBytes: number,
 ): string {
-  return `\n[yarp: ${sourceBytes} byte(s) capped at ${maxBytes}; ref=${archiveRef}; result_text ${completeness}]\nSearch omitted output: yarp search ${archiveRef} 'term|alternate'\n`
+  return `\n[yarp: ${sourceBytes} byte(s) capped at ${maxBytes}; ref=${archiveRef}; ${recoverySource} ${completeness}]\nSearch omitted output: yarp search ${archiveRef} 'term|alternate'\n`
 }
 
 function utf8PrefixEnd(body: Buffer, budget: number): number {

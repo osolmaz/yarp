@@ -254,6 +254,10 @@ export async function installYarpExtension(
     }
 
     let patch: ResultPatch | undefined
+    let typedRecovery: {
+      source: "source_output" | "result_text"
+      completeness: SourceCompleteness
+    } | null = null
     const pruningEnabled = process.env["YARP_DISABLED"] !== "1"
     const completeness = resultCompleteness(event, fullOutputPath !== undefined)
     const text = singleTextContent(event.content)
@@ -289,32 +293,40 @@ export async function installYarpExtension(
           patch = {
             content: [{ type: "text", text: reduced.content }],
           }
+          typedRecovery = {
+            source: reduced.source,
+            completeness: reduced.sourceCompleteness,
+          }
         }
       } catch (error) {
         console.warn(`[yarp] post-result reduction failed; keeping original output: ${errorMessage(error)}`)
       }
     }
 
-    if (pruningEnabled && patch === undefined && outputCap.maxBytes !== null) {
+    if (pruningEnabled && outputCap.maxBytes !== null) {
       try {
+        const content = patch?.content ?? event.content
         const capped = capToolResultContent(
-          event.content,
+          content,
           active.archiveRef,
-          completeness,
+          typedRecovery?.completeness ?? completeness,
           outputCap.maxBytes,
+          typedRecovery?.source ?? "result_text",
         )
         if (capped !== null) {
-          await sink.resultText(
-            session,
-            event.toolCallId,
-            capped.sourceText,
-            completeness,
-            Date.now(),
-          )
-          patch = { content: capped.content }
+          if (typedRecovery === null) {
+            await sink.resultText(
+              session,
+              event.toolCallId,
+              capped.sourceText,
+              completeness,
+              Date.now(),
+            )
+          }
+          patch = { ...patch, content: capped.content }
         }
       } catch (error) {
-        console.warn(`[yarp] generic output cap failed; keeping original output: ${errorMessage(error)}`)
+        console.warn(`[yarp] generic output cap failed; keeping pre-cap output: ${errorMessage(error)}`)
       }
     }
 

@@ -584,6 +584,46 @@ test("reduces one safe shell text result only after committing its recovery sour
   assert.deepEqual(staged["content"], patch?.content)
 })
 
+test("applies the configured cap after a large typed summary", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  const typedSummary = `typed start\n${"typed evidence\n".repeat(1_000)}typed end\n`
+  const reducer: ResultReducer = {
+    async reduce() {
+      return {
+        changed: true,
+        content: typedSummary,
+        source: "result_text",
+        sourceCompleteness: "incomplete",
+        needsResultText: true,
+      }
+    },
+  }
+  await start(pi, sink, context, reducer)
+  await call(pi, "large-typed-summary", "exec_command", { cmd: "cargo test" })
+  const original = "raw test output\n".repeat(1_000)
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "large-typed-summary",
+      toolName: "exec_command",
+      input: { cmd: "cargo test" },
+      content: [{ type: "text", text: original }],
+      details: { truncated: true },
+      isError: true,
+    },
+    context,
+  )
+
+  const visible = resultPatchText(patch)
+  assert.ok(Buffer.byteLength(visible, "utf8") <= 5 * 1024)
+  assert.ok(visible.startsWith("typed start\n"))
+  assert.ok(visible.endsWith("typed end\n"))
+  assert.match(visible, /result_text incomplete/u)
+  assert.deepEqual(sink.resultTexts, [original])
+})
+
 test("prefers a documented complete Bash source for a composite command", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()

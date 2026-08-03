@@ -54,6 +54,19 @@ test("caps ASCII text with bounded head, tail, and recovery instructions", () =>
   assert.match(visible, /result_text unknown/u)
 })
 
+test("points capped typed summaries at their committed recovery source", () => {
+  const capped = capToolResultContent(
+    [{ type: "text", text: "typed summary\n".repeat(1_000) }],
+    archiveRef,
+    "complete",
+    1024,
+    "source_output",
+  )
+  assert.notEqual(capped, null)
+  if (capped === null) throw new Error("expected capped output")
+  assert.match(textOnly(capped.content), /source_output complete/u)
+})
+
 test("never splits UTF-8 code points", () => {
   const source = `start\n${"🙂界".repeat(2_000)}\nend`
   const capped = capToolResultContent(
