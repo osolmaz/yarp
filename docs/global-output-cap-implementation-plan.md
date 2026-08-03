@@ -42,7 +42,7 @@ The recovery marker names the archive reference and provides a valid bounded sea
 
 ## Archive contract
 
-The existing schema remains at version 1. `result_text/before` expands from a single host text item to the exact ordered concatenation of all text blocks exposed immediately before the generic cap. This source remains valid UTF-8 and records whether Pi described the source as complete, incomplete, or unknown.
+The existing schema remains at version 1. `result_text/before` expands from a single host text item to the exact ordered concatenation of all text blocks exposed immediately before the generic cap. This source remains valid UTF-8 and records whether Pi described the source as complete, incomplete, or unknown. Recovery selects `result_text` when it exists, then wrapped streams, then `source_output`. This keeps capped host text searchable when another source is binary.
 
 No telemetry, network access, service, watcher, socket, or second database is added. Existing archive permissions, integrity checks, retention behavior, and local recovery commands remain unchanged.
 
