@@ -2,7 +2,7 @@
 
 ## Goal
 
-YARP will limit archived Pi tool-result text to 5 KiB by default after applying any command-aware summary. Larger text will keep bounded evidence from the beginning and end plus a local recovery reference. The exact pre-cap text must be committed to the existing private archive before YARP returns shortened content.
+YARP will limit archived Pi tool-result text to 5 KiB by default after applying any command-aware summary. Larger text will keep bounded evidence from the beginning and end plus a local recovery reference. The exact source behind the pre-cap text must be committed to the existing private archive before YARP returns shortened content.
 
 The cap applies through Pi's documented `tool_result` hook. It does not change Pi session state, add another persistent store, or use Pi internals.
 
@@ -29,11 +29,12 @@ YARP will process each result in this order:
 
 1. Commit the complete structured result exposed by Pi to `result/before`.
 2. Apply an existing typed shell summary when one is selected safely.
-3. Measure the UTF-8 bytes in the remaining text content.
+3. Measure the UTF-8 bytes in the remaining text content, including a typed summary.
 4. Leave text at or below the configured budget unchanged.
-5. For larger text, commit the exact concatenation of its original text blocks to `result_text/before`.
-6. Keep UTF-8-safe prefixes and suffixes within the budget and place a recovery marker between them.
-7. Stage the shortened result and complete the existing archive lifecycle.
+5. For a large typed summary, reuse its already committed `source_output` or `result_text` recovery source.
+6. For other large text, commit the exact concatenation of its original text blocks to `result_text/before`.
+7. Keep UTF-8-safe prefixes and suffixes within the budget and place a recovery marker between them.
+8. Stage the shortened result and complete the existing archive lifecycle.
 
 The budget includes retained text and the recovery marker. Image blocks remain unchanged and do not count toward the text budget. Their relative order is preserved. If recovery capture, result staging, or configuration validation fails, YARP keeps the uncapped result and reports the failure through the existing fail-open path.
 
@@ -56,7 +57,7 @@ Focused tests will cover:
 - UTF-8-safe head and tail selection;
 - a hard output bound including the marker;
 - preservation of image order around shortened text;
-- typed-summary precedence;
+- typed-summary precedence and capping of an oversized typed summary;
 - exact `result_text` capture before a generic cap;
 - pass-through when recovery capture fails;
 - interaction with `YARP_DISABLED` and `YARP_ARCHIVE_DISABLED`.
