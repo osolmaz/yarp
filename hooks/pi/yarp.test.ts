@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { Buffer } from "node:buffer"
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -356,7 +356,7 @@ test("uses a compiled project pack only for a trusted regular file", async () =>
     await writeFile(rulePack, "compiled")
     const trusted = { cwd: directory, isProjectTrusted: () => true }
     const untrusted = { cwd: directory, isProjectTrusted: () => false }
-    assert.equal(await trustedProjectRulePack(trusted), rulePack)
+    assert.equal(await trustedProjectRulePack(trusted), await realpath(rulePack))
     assert.equal(await trustedProjectRulePack(untrusted), null)
 
     await rm(rulePack)
@@ -381,6 +381,7 @@ test("passes a trusted project pack to command rewriting", async () => {
     }
     const pi = new MockPi()
     const sink = new MemorySink()
+    const resolvedRulePack = await realpath(rulePack)
     await start(pi, sink, trustedContext)
     await call(pi, "project-rules", "bash", { command: "git status" }, trustedContext)
     assert.deepEqual(pi.planArgs?.slice(0, 6), [
@@ -389,7 +390,7 @@ test("passes a trusted project pack to command rewriting", async () => {
       "--project-root",
       directory,
       "--rule-pack",
-      rulePack,
+      resolvedRulePack,
     ])
   } finally {
     await rm(directory, { recursive: true, force: true })

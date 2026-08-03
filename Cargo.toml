@@ -8,7 +8,9 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Prune Pi command output and archive tool calls locally"
-publish = false
+license = "MIT"
+repository = "https://github.com/osolmaz/yarp"
+publish = ["crates-io"]
 build = "build.rs"
 
 [[bin]]
@@ -36,9 +38,9 @@ time = { version = "0.3", features = ["parsing", "formatting"] }
 toml_edit = { version = "=0.25.13", features = ["serde"] }
 tree-sitter = "=0.25.10"
 tree-sitter-bash = "=0.25.1"
-yarp-rule-pack = { path = "rule-pack" }
+yarp-rule-pack = { version = "=0.1.0", path = "rule-pack" }
 zstd = "0.13"
 
 [build-dependencies]
 serde = { version = "1", features = ["derive"] }
-yarp-rule-pack = { path = "rule-pack" }
+yarp-rule-pack = { version = "=0.1.0", path = "rule-pack" }

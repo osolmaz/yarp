@@ -9,7 +9,7 @@ YARP leaves unknown or ambiguous commands unchanged during execution. Structured
 Install the Rust binary:
 
 ```sh
-cargo install --git https://github.com/osolmaz/yarp.git --locked yarp-cli
+cargo install yarp-cli --locked
 ```
 
 Then install the Pi package:
@@ -18,7 +18,7 @@ Then install the Pi package:
 pi install git:github.com/osolmaz/yarp
 ```
 
-Both commands install from the public GitHub repository. The Pi package loads YARP's bundled usage and recovery skill automatically.
+Cargo installs the Rust binary from crates.io. Pi installs the package from the public GitHub repository and loads YARP's bundled usage and recovery skill automatically.
 
 The Rust binary also exposes the skill through the Skillflag convention for inspection or installation in another agent:
 
@@ -207,3 +207,7 @@ Each rule selects a typed search, diff, test, build, log, status, list, or liter
 After typed processing, YARP measures the UTF-8 bytes across all text blocks in an archived Pi result. Text within the configured cap stays byte-for-byte exact. Larger text keeps UTF-8-safe content from the beginning and end, with the recovery marker counted inside the same budget. Image blocks remain unchanged and do not count toward the text cap. The output-size study used Unicode characters, so its thresholds are not byte-identical for non-ASCII output.
 
 YARP does not collect usage data or access the network. Archive capture is local and enabled by default. The offline extractor writes only when invoked explicitly.
+
+## License
+
+[MIT](LICENSE)
