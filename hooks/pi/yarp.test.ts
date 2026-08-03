@@ -482,6 +482,31 @@ test("caps every large archived text result at 5 KiB by default", async () => {
   })
 })
 
+test("does not treat a capped truncated Bash host result as complete", async () => {
+  const pi = new MockPi()
+  const sink = new MemorySink()
+  await start(pi, sink)
+  await call(pi, "truncated-host-cap", "bash", { command: "printf output" })
+  const original = "truncated host text\n".repeat(1_000)
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "truncated-host-cap",
+      toolName: "bash",
+      input: { command: "printf output" },
+      content: [{ type: "text", text: original }],
+      details: { fullOutputPath: "/tmp/pi-full-output.log", truncated: true },
+      isError: false,
+    },
+    context,
+  )
+
+  assert.match(resultPatchText(patch), /result_text incomplete/u)
+  assert.deepEqual(sink.resultTexts, [original])
+  assert.deepEqual(sink.resultTextCompleteness, ["incomplete"])
+})
+
 test("uses an explicit byte cap and allows zero to disable the generic cap", async () => {
   const original = "large output\n".repeat(1_000)
   process.env["YARP_OUTPUT_CAP_BYTES"] = "1024"
