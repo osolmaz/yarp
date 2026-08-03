@@ -9,7 +9,7 @@ YARP leaves unknown or ambiguous commands unchanged during execution. Structured
 Install the Rust binary:
 
 ```sh
-cargo install --git https://github.com/osolmaz/yarp.git --locked
+cargo install --git https://github.com/osolmaz/yarp.git --locked yarp-cli
 ```
 
 Then install the Pi package:
