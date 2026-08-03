@@ -96,7 +96,9 @@ export function capToolResultContent(
       const end = Math.min(itemEnd, prefixEnd) - itemStart
       pushText(capped, body.subarray(0, end).toString("utf8"))
     }
-    if (!markerInserted && itemEnd >= prefixEnd) {
+    const omittedStart = Math.max(itemStart, prefixEnd)
+    const omittedEnd = Math.min(itemEnd, suffixStart)
+    if (!markerInserted && omittedStart < omittedEnd) {
       pushText(capped, marker)
       markerInserted = true
     }

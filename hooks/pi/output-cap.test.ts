@@ -86,6 +86,40 @@ test("never splits UTF-8 code points", () => {
   assert.equal(capped.sourceText, source)
 })
 
+test("keeps an intervening image before a marker at a text boundary", () => {
+  const source = "A".repeat(5_000)
+  const single = capToolResultContent(
+    [{ type: "text", text: source }],
+    archiveRef,
+    "complete",
+    1024,
+  )
+  assert.notEqual(single, null)
+  if (single === null) throw new Error("expected capped output")
+  const prefixBytes = textOnly(single.content).indexOf("\n[yarp:")
+  assert.ok(prefixBytes > 0)
+
+  const image = { type: "image" as const, data: "middle", mimeType: "image/png" }
+  const split = capToolResultContent(
+    [
+      { type: "text", text: source.slice(0, prefixBytes) },
+      image,
+      { type: "text", text: source.slice(prefixBytes) },
+    ],
+    archiveRef,
+    "complete",
+    1024,
+  )
+  assert.notEqual(split, null)
+  if (split === null) throw new Error("expected split capped output")
+  const imageIndex = split.content.indexOf(image)
+  const markerIndex = split.content.findIndex(
+    (item) => isTextContent(item) && item.text.includes("[yarp:"),
+  )
+  assert.ok(imageIndex >= 0)
+  assert.ok(markerIndex > imageIndex)
+})
+
 test("preserves image order while capping all text blocks together", () => {
   const firstImage = { type: "image" as const, data: "first", mimeType: "image/png" }
   const secondImage = { type: "image" as const, data: "second", mimeType: "image/png" }
