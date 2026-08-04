@@ -4,13 +4,15 @@ This report measures the number of characters in textual tool results from the p
 
 ![Tool output size distribution](tool-output-size-distribution.svg)
 
-The figure separates all textual outputs from the shell subset. The top row uses 40 equal-width bins on a logarithmic scale, with distinct bars for each scope. The left panel shows the share of outputs in each bin, and the right panel shows each bin's share of all characters. The lower-left panel gives the cumulative share of outputs at or below each size. The lower-right panel shows the maximum possible character reduction from replacing every result above a chosen character cap with exactly that many characters.
+The figure compares all textual outputs with the overlapping shell subset. All textual outputs include shell commands, file reads, searches, web tools, and other tools that return text. The shell subset contains 65.63% of those outputs and 74.45% of their characters; the non-shell difference is 194,441 outputs and 496,191,107 characters. Each plotted percentage uses the total for its own population.
+
+The top row uses 40 equal-width ranges on a logarithmic scale, with distinct bars for each population. The left panel shows the share of outputs in each range, and the right panel shows each range's share of all characters. The lower-left panel gives the cumulative share of outputs at or below each size. The lower-right panel shows the maximum possible character reduction from replacing every result above a chosen character cap with exactly that many characters.
 
 ## Host truncation at about 40k characters
 
 The high bar between 20,000 and 100,000 characters comes mainly from a host truncation boundary. It does not mark a natural peak in command output. The 40,000–40,999 range contains 7,208 outputs, or 1.27% of the corpus, but those outputs hold 14.91% of all characters. Of those outputs, 7,159 (99.32%) came from Codex-adapted sessions and 7,111 (98.65%) contain an explicit token or character omission marker.
 
-Codex's default tool-output budget is 10,000 approximate tokens, implemented as a 40,000-byte truncation budget. Headers and truncation markers put the final textual results slightly above 40,000 characters. The wider 33,881–47,432 plot bin captures that cluster, which is why it contributes 20.53% of all character mass. It should be read as already-truncated host output. It does not show that commands naturally produce results of that size.
+Codex's default tool-output budget is 10,000 approximate tokens, implemented as a 40,000-byte truncation budget. Headers and truncation markers put the final textual results slightly above 40,000 characters. The wider 33,881–47,432 plot range captures that cluster, which is why it contains 20.53% of all characters. It should be read as already-truncated host output. It does not show that commands naturally produce results of that size.
 
 ## Main numbers
 
