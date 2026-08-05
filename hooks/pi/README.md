@@ -2,7 +2,7 @@
 
 This extension archives every Pi tool call through Pi's documented public lifecycle events. It stores tool inputs and results before and after YARP processing without adding entries to Pi sessions or using Pi internals. The package and Rust binary must have the same exact version; a mismatch disables capture and pruning for that session.
 
-For `bash` and `exec_command` calls, the extension asks the local `yarp` binary for one versioned shell plan. Rust decides whether to wrap the command and whether its result is ordinary, pass-through, or direct recovery output. Planning failures execute unchanged. Wrapped commands add their exact stdout and stderr to the same archive before and after typed summarization.
+For `bash` and `exec_command` calls, the extension asks the local `yarp` binary for one versioned shell plan. Rust decides whether to wrap the command and whether its result is ordinary or direct recovery output. The extension assigns pass-through handling for non-recovery commands when pruning is disabled, planning fails, or the executed command no longer matches. Wrapped commands add their exact stdout and stderr to the same archive before and after typed summarization.
 
 When a safe shell command cannot be wrapped, the `tool_result` hook may invoke one bounded `yarp result-reduce` process through a length-framed stdin protocol. It accepts one text item, gives explicit exit codes precedence, and uses Pi's documented complete Bash output when available. If host text is the only source and a typed summary wins, the extension commits that exact text before returning the result patch. Unsafe command graphs, protocol failures, and reducer failures bypass typed summarization.
 

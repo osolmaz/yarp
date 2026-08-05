@@ -65,6 +65,8 @@ packs = [
 | `archive.path` | string | XDG data path | Archive database path. An omitted value uses `$XDG_DATA_HOME/yarp/tool-calls.sqlite3`, falling back to `$HOME/.local/share/yarp/tool-calls.sqlite3`. The value must not be empty. |
 | `rules.packs` | array of strings | `[]` | Additional compiled rule packs. Empty entries are invalid. |
 
+When `pruning.enabled = false`, YARP may still run its shell planner to identify direct `yarp search` and `yarp read` recovery commands. It never rewrites the command in that mode, and recovery output keeps its separate bounds.
+
 The recovery byte ceiling stays below Pi's 50 KiB tool-output limit. The recovery line ceiling leaves room below Pi's 2,000-line limit. These bounds prevent Pi from shortening recovery output before YARP can report it accurately.
 
 The trusted project pack at `.yarp/rules.yrp` remains governed by Pi project trust and YARP's existing path checks. It is not a user setting.
