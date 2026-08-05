@@ -2,7 +2,7 @@
 
 ## Goal
 
-YARP will limit archived Pi tool-result text to 5 KiB by default after applying any command-aware summary. Larger text will keep bounded evidence from the beginning and end plus a local recovery reference. The exact source behind the pre-cap text must be committed to the existing private archive before YARP returns shortened content.
+YARP will limit archived Pi tool-result text to 5 KiB by default after applying any command-aware summary. Every non-recovery result is in scope, including pass-through results from unknown or ambiguous commands. Larger text will keep bounded evidence from the beginning and end plus a local recovery reference. The exact source behind the pre-cap text must be committed to the existing private archive before YARP returns shortened content.
 
 The cap applies through Pi's documented `tool_result` hook. It does not change Pi session state, add another persistent store, or use Pi internals.
 
@@ -21,7 +21,7 @@ These figures locate the operating range; they do not prove task quality. The ru
 - 1,024 through 16,777,216: use that exact UTF-8 byte budget;
 - any other value: reject the configuration.
 
-`pruning.enabled = false` disables rewriting and pruning while retaining archive capture. `archive.enabled = false` disables live capture and the generic cap because YARP cannot shorten text without a committed recovery source.
+`pruning.enabled = false` disables command rewriting and typed result reduction while retaining archive capture. The generic cap still runs when `output.cap_bytes` allows it. `archive.enabled = false` disables live capture and the generic cap because YARP cannot shorten text without a committed recovery source.
 
 [The YARP configuration specification](configuration-spec.md) defines the full file and `yarp config` commands. Direct `yarp search` and `yarp read` commands use separate configurable byte and line ceilings and do not pass through the ordinary cap. See [the recovery output implementation plan](recovery-output-implementation-plan.md).
 
@@ -34,9 +34,11 @@ YARP will process each result in this order:
 3. Measure the UTF-8 bytes in the remaining text content, including a typed summary.
 4. Leave text at or below the configured budget unchanged.
 5. For a large typed summary, reuse its already committed raw streams, `source_output`, or `result_text` recovery source. A wrapped summary also commits its exact visible text as a fallback without displacing the raw streams.
-6. For other large text, commit the exact concatenation of its original text blocks to `result_text/before`.
+6. For any other large ordinary or pass-through text, commit the exact concatenation of its original text blocks to `result_text/before`.
 7. Keep UTF-8-safe prefixes and suffixes within the budget and place a recovery marker between them.
 8. Stage the shortened result and complete the existing archive lifecycle.
+
+Only statically proven direct `yarp search` and `yarp read` recovery output skips this generic cap. Recovery commands have separate byte and line limits.
 
 The budget includes retained text and the recovery marker. Image blocks remain unchanged and do not count toward the text budget. Their relative order is preserved. If recovery capture, result staging, or configuration validation fails, YARP keeps the uncapped result and reports the failure through the existing fail-open path.
 
@@ -61,6 +63,7 @@ Focused tests will cover:
 - preservation of image order around shortened text;
 - typed-summary precedence and capping of oversized post-result and wrapped summaries;
 - exact `result_text` capture before a generic cap;
+- generic capping after pass-through command handling;
 - pass-through when recovery capture fails;
 - interaction with `pruning.enabled` and `archive.enabled`.
 
