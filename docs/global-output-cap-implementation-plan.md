@@ -21,7 +21,7 @@ These figures locate the operating range; they do not prove task quality. The ru
 - 1,024 through 16,777,216: use that exact UTF-8 byte budget;
 - any other value: reject the configuration.
 
-`pruning.enabled = false` disables command rewriting and typed result reduction while retaining archive capture. The generic cap still runs when `output.cap_bytes` allows it. `archive.enabled = false` disables live capture and the generic cap because YARP cannot shorten text without a committed recovery source.
+`pruning.enabled = false` disables command rewriting and typed result reduction while retaining archive capture. The shell planner may still identify direct recovery commands. The generic cap still runs for non-recovery results when `output.cap_bytes` allows it. `archive.enabled = false` disables live capture and the generic cap because YARP cannot shorten text without a committed recovery source.
 
 [The YARP configuration specification](configuration-spec.md) defines the full file and `yarp config` commands. Direct `yarp search` and `yarp read` commands use separate configurable byte and line ceilings and do not pass through the ordinary cap. See [the recovery output implementation plan](recovery-output-implementation-plan.md).
 

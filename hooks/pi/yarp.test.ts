@@ -246,7 +246,7 @@ function configurationResult(options: {
 
 function shellPlan(
   execution: "original" | "rewrite",
-  policy: "ordinary" | "recovery" | "pass_through",
+  policy: "ordinary" | "recovery",
   command?: string,
 ): ExecResult {
   return result(0, JSON.stringify({
@@ -649,19 +649,20 @@ test("keeps direct recovery output outside typed reduction and the ordinary cap"
   assert.equal(JSON.stringify(sink.stagedResults[0]).includes("[yarp:"), false)
 })
 
-test("caps planned pass-through shell output after archiving exact text", async () => {
+test("keeps direct recovery outside the cap when pruning is disabled", async () => {
   const pi = new MockPi()
-  pi.plan = shellPlan("original", "pass_through")
+  pi.configuration = configurationResult({ pruningEnabled: false })
+  pi.plan = shellPlan("original", "recovery")
   const sink = new MemorySink()
   await start(pi, sink)
-  const command = "unknown-tool --json"
-  await call(pi, "planned-pass-through", "bash", { command })
-  const original = "structured output\n".repeat(1_000)
+  const command = "yarp read yr_0123456789abcdef0123456789abcdef stdout 1:80"
+  await call(pi, "disabled-pruning-recovery", "bash", { command })
+  const original = "recovery evidence\n".repeat(1_000)
   const patch = await pi.registry.emit(
     "tool_result",
     {
       type: "tool_result",
-      toolCallId: "planned-pass-through",
+      toolCallId: "disabled-pruning-recovery",
       toolName: "bash",
       input: { command },
       content: [{ type: "text", text: original }],
@@ -670,10 +671,9 @@ test("caps planned pass-through shell output after archiving exact text", async 
     },
     context,
   )
-  const visible = resultPatchText(patch)
-  assert.ok(Buffer.byteLength(visible, "utf8") <= 5 * 1024)
-  assert.match(visible, /capped at 5120/u)
-  assert.deepEqual(sink.resultTexts, [original])
+  assert.equal(patch, undefined)
+  assert.deepEqual(sink.resultTexts, [])
+  assert.equal(JSON.stringify(sink.stagedResults[0]).includes("[yarp:"), false)
 })
 
 test("does not select recovery from forged output markers", async () => {
@@ -1260,7 +1260,7 @@ test("archive opt-out keeps rewriting without archive metadata", async () => {
   assert.equal(patch, undefined)
 })
 
-test("pruning opt-out archives and caps without planning", async () => {
+test("pruning opt-out archives and caps without rewriting", async () => {
   const pi = new MockPi()
   pi.configuration = configurationResult({ pruningEnabled: false })
   const sink = new MemorySink()
@@ -1268,7 +1268,7 @@ test("pruning opt-out archives and caps without planning", async () => {
   const input = { command: "git status" }
   await call(pi, "call-7", "bash", input)
   assert.equal(input.command, "git status")
-  assert.equal(pi.planArgs, null)
+  assert.equal(pi.planArgs?.at(-1), "git status")
   assert.equal(sink.begins.length, 1)
   const original = "uncapped\n".repeat(1_000)
   const patch = await pi.registry.emit(

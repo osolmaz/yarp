@@ -206,7 +206,7 @@ export async function installYarpExtension(
       ? "ordinary"
       : "pass_through"
 
-    if (configuration.pruning.enabled && binding !== null) {
+    if (binding !== null) {
       try {
         const plan = await planCommand(
           pi,
@@ -217,8 +217,10 @@ export async function installYarpExtension(
           context.cwd,
           context.signal,
         )
-        resultPolicy = plan.result.kind
-        if (plan.execution.kind === "rewrite") {
+        resultPolicy = configuration.pruning.enabled && plan.result.kind === "ordinary"
+          ? "ordinary"
+          : plan.result.kind
+        if (configuration.pruning.enabled && plan.execution.kind === "rewrite") {
           rewritten = plan.execution.command
         }
       } catch (error) {
