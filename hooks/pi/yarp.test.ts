@@ -1260,11 +1260,18 @@ test("archive opt-out keeps rewriting without archive metadata", async () => {
   assert.equal(patch, undefined)
 })
 
-test("pruning opt-out archives and caps without rewriting", async () => {
+test("pruning opt-out archives and caps without rewriting or typed reduction", async () => {
   const pi = new MockPi()
   pi.configuration = configurationResult({ pruningEnabled: false })
   const sink = new MemorySink()
-  await start(pi, sink)
+  let reductions = 0
+  const reducer: ResultReducer = {
+    async reduce() {
+      reductions += 1
+      return { changed: false }
+    },
+  }
+  await start(pi, sink, context, reducer)
   const input = { command: "git status" }
   await call(pi, "call-7", "bash", input)
   assert.equal(input.command, "git status")
@@ -1288,6 +1295,7 @@ test("pruning opt-out archives and caps without rewriting", async () => {
   assert.ok(Buffer.byteLength(visible, "utf8") <= 5 * 1024)
   assert.match(visible, /capped at 5120/u)
   assert.deepEqual(sink.resultTexts, [original])
+  assert.equal(reductions, 0)
 })
 
 test("archives every built-in and custom tool name", async () => {
