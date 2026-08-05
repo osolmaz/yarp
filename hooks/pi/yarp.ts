@@ -217,9 +217,11 @@ export async function installYarpExtension(
           context.cwd,
           context.signal,
         )
-        resultPolicy = configuration.pruning.enabled && plan.result.kind === "ordinary"
-          ? "ordinary"
-          : plan.result.kind
+        resultPolicy = configuration.pruning.enabled
+          ? plan.result.kind
+          : plan.result.kind === "recovery"
+            ? "recovery"
+            : "pass_through"
         if (configuration.pruning.enabled && plan.execution.kind === "rewrite") {
           rewritten = plan.execution.command
         }
