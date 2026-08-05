@@ -57,8 +57,8 @@ packs = [
 | Field | Type | Default | Rule |
 | --- | --- | ---: | --- |
 | `version` | integer | none | Required when the file exists. Must equal `1`. |
-| `pruning.enabled` | boolean | `true` | Enables command rewriting, typed result reduction, and generic output capping. Archive capture is controlled separately. |
-| `output.cap_bytes` | integer | `5120` | Visible UTF-8 byte budget for ordinary tool results after typed reduction. `0` disables only the generic cap. Other values must be from `1024` through `16777216`. |
+| `pruning.enabled` | boolean | `true` | Enables command rewriting and typed result reduction. Archive capture and generic output capping are controlled separately. |
+| `output.cap_bytes` | integer | `5120` | Visible UTF-8 byte budget for non-recovery tool results after typed reduction. `0` disables only the generic cap. Other values must be from `1024` through `16777216`. |
 | `output.recovery_cap_bytes` | integer | `32768` | Maximum stdout bytes produced by `yarp search` or `yarp read`. Must be from `1024` through `49152`. |
 | `output.recovery_cap_lines` | integer | `1900` | Maximum stdout lines produced by `yarp search` or `yarp read`. Must be from `1` through `1900`. |
 | `archive.enabled` | boolean | `true` | Enables live Pi tool-call archive capture. Generic capping cannot run without successful capture. |

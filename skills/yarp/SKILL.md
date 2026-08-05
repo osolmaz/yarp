@@ -74,7 +74,7 @@ yarp archive verify
 yarp archive stats
 ```
 
-Unknown or ambiguous commands execute unchanged and bypass typed summaries. The same applies to structured-output forms and streaming or exact-inspection commands. Their remaining result text may still receive the archive-backed global cap.
+Unknown or ambiguous commands execute unchanged and bypass typed summaries. The same applies to structured-output forms and streaming or exact-inspection commands. Their remaining result text receives the archive-backed global cap unless it is direct `yarp search` or `yarp read` recovery output.
 
 Use `yarp config show` to inspect the resolved settings. `output.cap_bytes` controls the ordinary cap, while `output.recovery_cap_bytes` and `output.recovery_cap_lines` bound `search` and `read`. Do not change or persist these settings unless the user asks.
 

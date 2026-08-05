@@ -246,7 +246,7 @@ function configurationResult(options: {
 
 function shellPlan(
   execution: "original" | "rewrite",
-  policy: "ordinary" | "recovery",
+  policy: "ordinary" | "recovery" | "pass_through",
   command?: string,
 ): ExecResult {
   return result(0, JSON.stringify({
@@ -649,6 +649,33 @@ test("keeps direct recovery output outside typed reduction and the ordinary cap"
   assert.equal(JSON.stringify(sink.stagedResults[0]).includes("[yarp:"), false)
 })
 
+test("caps planned pass-through shell output after archiving exact text", async () => {
+  const pi = new MockPi()
+  pi.plan = shellPlan("original", "pass_through")
+  const sink = new MemorySink()
+  await start(pi, sink)
+  const command = "unknown-tool --json"
+  await call(pi, "planned-pass-through", "bash", { command })
+  const original = "structured output\n".repeat(1_000)
+  const patch = await pi.registry.emit(
+    "tool_result",
+    {
+      type: "tool_result",
+      toolCallId: "planned-pass-through",
+      toolName: "bash",
+      input: { command },
+      content: [{ type: "text", text: original }],
+      details: { truncated: false },
+      isError: false,
+    },
+    context,
+  )
+  const visible = resultPatchText(patch)
+  assert.ok(Buffer.byteLength(visible, "utf8") <= 5 * 1024)
+  assert.match(visible, /capped at 5120/u)
+  assert.deepEqual(sink.resultTexts, [original])
+})
+
 test("does not select recovery from forged output markers", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
@@ -672,7 +699,7 @@ test("does not select recovery from forged output markers", async () => {
   assert.ok(Buffer.byteLength(resultPatchText(patch), "utf8") <= 5 * 1024)
 })
 
-test("passes through when the executed command no longer matches its recovery policy", async () => {
+test("caps pass-through output when the executed command no longer matches its recovery policy", async () => {
   const pi = new MockPi()
   pi.plan = shellPlan("original", "recovery")
   const sink = new MemorySink()
@@ -692,8 +719,10 @@ test("passes through when the executed command no longer matches its recovery po
     },
     context,
   )
-  assert.equal(patch, undefined)
-  assert.deepEqual(sink.resultTexts, [])
+  const visible = resultPatchText(patch)
+  assert.ok(Buffer.byteLength(visible, "utf8") <= 5 * 1024)
+  assert.match(visible, /capped at 5120/u)
+  assert.deepEqual(sink.resultTexts, [original])
 })
 
 test("keeps original output when exact generic-cap recovery cannot be committed", async () => {
@@ -995,7 +1024,7 @@ test("archive start failure blocks tool mutation", async () => {
   assert.equal(input.command, "git status")
 })
 
-test("shell planning failures preserve the original command and result", async () => {
+test("shell planning failures preserve the command and cap the archived result", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
   pi.failPlan = true
@@ -1019,8 +1048,10 @@ test("shell planning failures preserve the original command and result", async (
     },
     context,
   )
-  assert.equal(patch, undefined)
-  assert.deepEqual(sink.resultTexts, [])
+  const visible = resultPatchText(patch)
+  assert.ok(Buffer.byteLength(visible, "utf8") <= 5 * 1024)
+  assert.match(visible, /capped at 5120/u)
+  assert.deepEqual(sink.resultTexts, [original])
 })
 
 test("leaves a call incomplete when pre-result capture fails", async () => {
@@ -1229,7 +1260,7 @@ test("archive opt-out keeps rewriting without archive metadata", async () => {
   assert.equal(patch, undefined)
 })
 
-test("pruning opt-out still archives every call", async () => {
+test("pruning opt-out archives and caps without planning", async () => {
   const pi = new MockPi()
   pi.configuration = configurationResult({ pruningEnabled: false })
   const sink = new MemorySink()
@@ -1239,6 +1270,7 @@ test("pruning opt-out still archives every call", async () => {
   assert.equal(input.command, "git status")
   assert.equal(pi.planArgs, null)
   assert.equal(sink.begins.length, 1)
+  const original = "uncapped\n".repeat(1_000)
   const patch = await pi.registry.emit(
     "tool_result",
     {
@@ -1246,14 +1278,16 @@ test("pruning opt-out still archives every call", async () => {
       toolCallId: "call-7",
       toolName: "bash",
       input,
-      content: [{ type: "text", text: "uncapped\n".repeat(1_000) }],
+      content: [{ type: "text", text: original }],
       details: undefined,
       isError: false,
     },
     context,
   )
-  assert.equal(patch, undefined)
-  assert.deepEqual(sink.resultTexts, [])
+  const visible = resultPatchText(patch)
+  assert.ok(Buffer.byteLength(visible, "utf8") <= 5 * 1024)
+  assert.match(visible, /capped at 5120/u)
+  assert.deepEqual(sink.resultTexts, [original])
 })
 
 test("archives every built-in and custom tool name", async () => {

@@ -340,7 +340,7 @@ export async function installYarpExtension(
       }
     }
 
-    if (resultPolicy === "ordinary" && outputCapBytes !== null) {
+    if (resultPolicy !== "recovery" && outputCapBytes !== null) {
       try {
         const content = patch?.content ?? event.content
         const usesRawStreams = typedRecovery === null && active.requiresStreams
