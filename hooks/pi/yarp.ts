@@ -28,7 +28,7 @@ import {
 } from "./result-client.js"
 
 const REWRITE_TIMEOUT_MS = 2_000
-export const YARP_PACKAGE_VERSION = "0.2.0"
+export const YARP_PACKAGE_VERSION = "0.2.1"
 
 type CommandBinding = {
   command: string

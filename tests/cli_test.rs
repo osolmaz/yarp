@@ -83,7 +83,7 @@ fn reports_help_and_version() {
 
     let version = yarp(&["--version"]);
     assert!(version.status.success());
-    assert!(String::from_utf8_lossy(&version.stdout).starts_with("yarp 0.2.0"));
+    assert!(String::from_utf8_lossy(&version.stdout).starts_with("yarp 0.2.1"));
 }
 
 #[test]
