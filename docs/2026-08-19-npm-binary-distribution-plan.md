@@ -26,7 +26,7 @@ YARP currently has two distribution paths:
 
 ```sh
 cargo install yarp-cli --locked
-pi install git:github.com/osolmaz/pi-yarp
+pi install git:github.com/osolmaz/yarp
 ```
 
 The `yarp-cli` crate supplies the Rust binary. The Git repository supplies the Pi extension and skill. The npm package manifest remains private, and the repository does not publish a Pi package to npm.
