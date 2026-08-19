@@ -15,10 +15,10 @@ cargo install yarp-cli --locked
 Then install the Pi package:
 
 ```sh
-pi install npm:yarp-cli
+pi install git:github.com/osolmaz/yarp
 ```
 
-Cargo installs the Rust binary from crates.io. Pi installs the extension and its bundled usage and recovery skill from npm. The binary and Pi package versions must match. Rule-pack parsing and compilation remain internal.
+Cargo installs the Rust binary from crates.io. Pi installs the package from the public GitHub repository and loads YARP's bundled usage and recovery skill automatically. `yarp-cli` is the only published Rust crate; rule-pack parsing and compilation remain internal.
 
 The Rust binary also exposes the skill through the Skillflag convention for inspection or installation in another agent:
 

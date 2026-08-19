@@ -1,46 +1,13 @@
 {
   "name": "yarp-cli",
-  "version": "0.2.2",
+  "version": "0.2.1",
+  "private": true,
   "description": "Prune Pi command output and archive tool calls locally",
-  "keywords": [
-    "pi-package",
-    "pi-extension",
-    "output-pruning",
-    "tool-archive",
-    "cli"
-  ],
   "type": "module",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/osolmaz/yarp.git"
-  },
-  "bugs": {
-    "url": "https://github.com/osolmaz/yarp/issues"
-  },
-  "homepage": "https://github.com/osolmaz/yarp#readme",
-  "engines": {
-    "node": ">=22.19.0"
-  },
-  "files": [
-    "hooks/pi/*.ts",
-    "!hooks/pi/*.test.ts",
-    "skills/**",
-    "README.md",
-    "LICENSE"
-  ],
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
-  },
   "scripts": {
     "typecheck:pi": "tsc --noEmit",
     "test:pi": "tsx --test hooks/pi/*.test.ts",
-    "coverage:pi": "c8 --all --include='hooks/pi/*.ts' --exclude='hooks/pi/*.test.ts' --check-coverage --lines=80 --functions=80 --branches=70 --statements=80 npm run test:pi",
-    "prepublishOnly": "npm run typecheck:pi && npm run test:pi"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "coverage:pi": "c8 --all --include='hooks/pi/*.ts' --exclude='hooks/pi/*.test.ts' --check-coverage --lines=80 --functions=80 --branches=70 --statements=80 npm run test:pi"
   },
   "devDependencies": {
     "@types/node": "22.19.7",
