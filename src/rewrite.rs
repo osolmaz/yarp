@@ -879,7 +879,7 @@ mod tests {
         assert!(rewrite("podman ps").is_some());
         assert!(rewrite("git reflog --date=iso").is_some());
         assert!(rewrite("git remote show origin").is_some());
-        assert!(rewrite("gh repo view osolmaz/yarp").is_some());
+        assert!(rewrite("gh repo view osolmaz/pi-yarp").is_some());
         assert!(rewrite("pnpm -s build").is_some());
         assert!(rewrite("git -C /repo diff --check").is_some());
         assert!(rewrite("pnpm -C frontend test").is_some());

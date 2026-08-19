@@ -9,7 +9,7 @@ edition = "2024"
 rust-version = "1.91"
 description = "Prune Pi command output and archive tool calls locally"
 license = "MIT"
-repository = "https://github.com/osolmaz/yarp"
+repository = "https://github.com/osolmaz/pi-yarp"
 publish = ["crates-io"]
 build = "build.rs"
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/osolmaz/yarp/blob/main/rules/schema/rule.schema.json",
+  "$id": "https://github.com/osolmaz/pi-yarp/blob/main/rules/schema/rule.schema.json",
   "title": "YARP command pruning rule",
   "oneOf": [
     { "$ref": "#/$defs/reduceRule" },
