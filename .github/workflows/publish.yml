@@ -95,3 +95,96 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish --locked -p yarp-cli
+
+  npm:
+    name: npm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release tag
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG:-${INPUT_TAG:-}}"
+          if [ -z "$tag" ]; then
+            echo "missing release tag" >&2
+            exit 1
+          fi
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            release_state="$(gh release view "$tag" --repo "$REPO" --json isDraft,publishedAt \
+              --jq 'if .isDraft == false and .publishedAt != null then "published" else "unpublished" end')"
+            if [ "$release_state" != "published" ]; then
+              echo "release tag '$tag' is not a published GitHub Release" >&2
+              exit 1
+            fi
+          fi
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+
+      - name: Checkout release tag
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Install Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Validate npm release
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag_version="${RELEASE_TAG#v}"
+          if [ "$tag_version" != "$version" ]; then
+            echo "release tag '$RELEASE_TAG' does not match package version '$version'" >&2
+            exit 1
+          fi
+          node - <<'NODE'
+          const pkg = require("./package.json");
+          const errors = [];
+          if (pkg.name !== "yarp-cli") errors.push("package name must be yarp-cli");
+          if (pkg.private === true) errors.push("package must be public");
+          if (!pkg.keywords?.includes("pi-package")) errors.push("pi-package keyword is required");
+          if (!pkg.pi?.extensions?.includes("./hooks/pi/yarp.ts")) errors.push("Pi extension manifest is missing");
+          if (!pkg.pi?.skills?.includes("./skills")) errors.push("Pi skill manifest is missing");
+          if (pkg.publishConfig?.access !== "public") errors.push("npm access must be public");
+          if (errors.length > 0) {
+            for (const error of errors) console.error(error);
+            process.exit(1);
+          }
+          NODE
+          git fetch --no-tags origin "$DEFAULT_BRANCH"
+          tag_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
+          git merge-base --is-ancestor "$tag_commit" "origin/$DEFAULT_BRANCH"
+
+      - run: npm ci
+      - run: npm run typecheck:pi
+      - run: npm run test:pi
+
+      - name: Check whether npm needs publishing
+        id: npm-release
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          published="$(npm view "yarp-cli@$version" version 2>/dev/null || true)"
+          if [ "$published" = "$version" ]; then
+            echo "yarp-cli@$version is already published; skipping upload."
+            echo "publish=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        if: steps.npm-release.outputs.publish == 'true'
+        run: npm publish --access public --provenance
