@@ -129,6 +129,8 @@ YARP stores tool calls in one local SQLite database by default:
 
 Inputs and results are stored before and after YARP processing. Wrapped shell commands also store exact stdout and stderr before and after pruning. Identical snapshots share one compressed payload.
 
+One local YARP broker writes the archive. YARP starts it when the first client needs it and stops it after it is idle. All sessions and command wrappers use its bounded queue, so they do not compete as separate SQLite writers. The broker uses a private local Unix socket, opens no network port, and is not an installed system or user service. YARP core accepts generic archive operations; agent-specific event handling stays in each adapter.
+
 Typed summaries and globally capped results include an opaque reference when output is omitted. Search one archived call, then copy an exact range printed by the search result:
 
 ```sh
@@ -149,7 +151,7 @@ Delete finished calls older than a UTC timestamp only when you choose to:
 yarp archive prune --before 2026-01-01T00:00:00Z
 ```
 
-Run `yarp config set archive.enabled false` to opt out of capture. The archive may contain commands, source code, file contents, and secrets printed by tools. It stays local and uses private filesystem permissions. See the [archive specification](docs/tool-call-archive-spec.md) for the full format and failure rules.
+Run `yarp config set archive.enabled false` to opt out of capture. The archive may contain commands, source code, file contents, and secrets printed by tools. It stays local and uses private filesystem permissions. Initial capture is acknowledged only after commit, and a failed initial capture blocks execution. See the [archive specification](docs/tool-call-archive-spec.md) for the full broker, format, recovery, and failure rules.
 
 ## Analyze existing tool calls offline
 

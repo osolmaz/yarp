@@ -17,7 +17,9 @@ fn yarp(arguments: &[&str]) -> Output {
 
 fn yarp_with_archive(arguments: &[&str], path: &Path) -> Output {
     let (mut command, _config_home) = yarp_command_with_archive(path);
-    command.args(arguments).output().expect("run yarp")
+    let output = command.args(arguments).output().expect("run yarp");
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    output
 }
 
 fn yarp_with_config_home(arguments: &[&str], config_home: &Path) -> Output {
@@ -36,6 +38,14 @@ fn yarp_command_with_limits(path: &Path, limits: Option<(usize, usize)>) -> (Com
     let config_home = TempDir::new().expect("config home");
     let directory = config_home.path().join("yarp");
     fs::create_dir(&directory).expect("create config directory");
+    let runtime = config_home.path().join("runtime");
+    fs::create_dir(&runtime).expect("create runtime directory");
+    #[cfg(unix)]
+    fs::set_permissions(
+        &runtime,
+        <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )
+    .expect("private runtime directory");
     let path = path.to_str().expect("archive path UTF-8");
     let path = serde_json::to_string(path).expect("archive path string");
     let output = limits.map_or_else(String::new, |(bytes, lines)| {
@@ -47,7 +57,10 @@ fn yarp_command_with_limits(path: &Path, limits: Option<(usize, usize)>) -> (Com
     )
     .expect("write config");
     let mut command = Command::new(env!("CARGO_BIN_EXE_yarp"));
-    command.env("XDG_CONFIG_HOME", config_home.path());
+    command
+        .env("XDG_CONFIG_HOME", config_home.path())
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("YARP_BROKER_IDLE_MS", "500");
     (command, config_home)
 }
 
@@ -80,6 +93,7 @@ fn reports_help_and_version() {
     assert!(String::from_utf8_lossy(&help.stdout).contains("yarp rewrite"));
     assert!(String::from_utf8_lossy(&help.stdout).contains("yarp config"));
     assert!(String::from_utf8_lossy(&help.stdout).contains("yarp archive verify"));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("yarp archive broker"));
 
     let version = yarp(&["--version"]);
     assert!(version.status.success());
@@ -831,6 +845,7 @@ fn ingest_cli_commits_and_acknowledges_a_call() {
     assert!(ack.contains("\"requestId\":9"));
     drop(stdin);
     assert!(child.wait().expect("wait").success());
+    std::thread::sleep(std::time::Duration::from_millis(700));
 
     let archive = Archive::open_path(database).expect("reopen");
     assert_eq!(archive.stats().expect("stats").incomplete_calls, 1);
@@ -870,6 +885,7 @@ fn killed_ingest_process_leaves_an_integral_incomplete_call() {
     assert!(ack.contains("\"ok\":true"));
     child.kill().expect("kill");
     child.wait().expect("wait");
+    std::thread::sleep(std::time::Duration::from_millis(700));
 
     let archive = Archive::open_path(database).expect("reopen");
     let report = archive.verify().expect("verify");
@@ -924,6 +940,7 @@ fn killed_ingest_process_preserves_a_committed_pre_result() {
     }
     child.kill().expect("kill");
     child.wait().expect("wait");
+    std::thread::sleep(std::time::Duration::from_millis(700));
 
     let archive = Archive::open_path(database.clone()).expect("reopen");
     let report = archive.verify().expect("verify");
@@ -939,6 +956,110 @@ fn killed_ingest_process_preserves_a_committed_pre_result() {
         )
         .expect("pre-result count");
     assert_eq!(pre_results, 1);
+}
+
+#[test]
+fn broker_recovers_when_a_temporary_write_lock_is_released() {
+    let directory = TempDir::new().expect("temp directory");
+    let database = directory.path().join("yarp/tool-calls.sqlite3");
+    drop(Archive::open_path(database.clone()).expect("initialize archive"));
+    let lock = Connection::open(&database).expect("lock connection");
+    lock.execute_batch("BEGIN IMMEDIATE")
+        .expect("hold write lock");
+    let (mut command, _config_home) = yarp_command_with_archive(&database);
+    let mut child = command
+        .args(["archive", "ingest"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn ingest");
+    let request = json!({
+        "operation": "begin_call",
+        "requestId": 1,
+        "schemaVersion": 1,
+        "session": session(),
+        "call": call("locked-call", "read"),
+        "inputBefore": {},
+        "inputAfter": {},
+        "capturedAtMs": 20
+    });
+    let body = serde_json::to_vec(&request).expect("request");
+    let mut stdin = child.stdin.take().expect("stdin");
+    stdin
+        .write_all(&(body.len() as u64).to_be_bytes())
+        .expect("length");
+    stdin.write_all(&body).expect("body");
+    stdin.flush().expect("flush");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    lock.execute_batch("ROLLBACK").expect("release write lock");
+    drop(stdin);
+    let output = child.wait_with_output().expect("wait for ingest");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\"ok\":true"));
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    let archive = Archive::open_path(database).expect("archive");
+    assert_eq!(archive.stats().expect("stats").calls, 1);
+}
+
+#[test]
+fn concurrent_ingest_clients_share_one_broker_without_contention() {
+    let directory = TempDir::new().expect("temp directory");
+    let database = directory.path().join("yarp/tool-calls.sqlite3");
+    let (_template, config_home) = yarp_command_with_archive(&database);
+    let runtime = config_home.path().join("runtime");
+    let mut children = Vec::new();
+    for index in 0..32 {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_yarp"))
+            .args(["archive", "ingest"])
+            .env("XDG_CONFIG_HOME", config_home.path())
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .env("YARP_BROKER_IDLE_MS", "500")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn ingest");
+        let request = json!({
+            "operation": "begin_call",
+            "requestId": index + 1,
+            "schemaVersion": 1,
+            "session": session(),
+            "call": call(&format!("parallel-{index}"), "read"),
+            "inputBefore": {"index": index},
+            "inputAfter": {"index": index},
+            "capturedAtMs": 20
+        });
+        let body = serde_json::to_vec(&request).expect("request");
+        let mut stdin = child.stdin.take().expect("stdin");
+        stdin
+            .write_all(&(body.len() as u64).to_be_bytes())
+            .expect("length");
+        stdin.write_all(&body).expect("body");
+        drop(stdin);
+        children.push(child);
+    }
+    for child in children {
+        let output = child.wait_with_output().expect("wait for ingest");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("\"ok\":true"));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    let archive = Archive::open_path(database).expect("archive");
+    assert_eq!(archive.stats().expect("stats").calls, 32);
+    assert!(archive.verify().expect("verify").errors.is_empty());
+    let sockets = fs::read_dir(runtime.join("yarp"))
+        .expect("runtime entries")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".sock"))
+        .count();
+    assert_eq!(sockets, 0);
 }
 
 fn numbered_lines(prefix: &str, count: usize) -> String {

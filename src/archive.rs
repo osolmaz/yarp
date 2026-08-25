@@ -13,13 +13,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tempfile::{NamedTempFile, tempfile};
 
+#[cfg(test)]
+use crate::archive_protocol::ArchiveAck;
+use crate::archive_protocol::{ArchiveOperation, INGEST_SCHEMA_VERSION, MAX_FRAME_BYTES};
 use crate::config;
 
 const SCHEMA_VERSION: i64 = 1;
 const ZSTD_LEVEL: i32 = 3;
 const COMPRESSION_PERCENT: u64 = 95;
-const MAX_FRAME_BYTES: u64 = 256 * 1024 * 1024;
-const INGEST_SCHEMA_VERSION: u32 = 1;
 const ARCHIVE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const ARCHIVE_REF_PREFIX: &str = "yr_";
 const ARCHIVE_REF_LEN: usize = 35;
@@ -157,106 +158,6 @@ pub struct VerifiedSource {
     pub byte_length: u64,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(
-    tag = "operation",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-enum IngestOperation {
-    BeginCall {
-        request_id: u64,
-        schema_version: u32,
-        session: SessionIdentity,
-        call: CallIdentity,
-        input_before: Value,
-        input_after: Value,
-        captured_at_ms: i64,
-    },
-    ResultBefore {
-        request_id: u64,
-        schema_version: u32,
-        session: SessionIdentity,
-        source_call_id: String,
-        result: Value,
-        full_output_path: Option<PathBuf>,
-        captured_at_ms: i64,
-    },
-    ResultText {
-        request_id: u64,
-        schema_version: u32,
-        session: SessionIdentity,
-        source_call_id: String,
-        text: String,
-        source_completeness: SourceCompleteness,
-        captured_at_ms: i64,
-    },
-    StageResult {
-        request_id: u64,
-        schema_version: u32,
-        session: SessionIdentity,
-        source_call_id: String,
-        result: Value,
-        is_error: bool,
-        captured_at_ms: i64,
-    },
-    FinishCall {
-        request_id: u64,
-        schema_version: u32,
-        session: SessionIdentity,
-        source_call_id: String,
-        result: Value,
-        is_error: bool,
-        require_pre_result: bool,
-        finished_at_ms: i64,
-    },
-    UpdateFinalResult {
-        request_id: u64,
-        schema_version: u32,
-        session: SessionIdentity,
-        source_call_id: String,
-        result: Value,
-        is_error: bool,
-        finished_at_ms: i64,
-    },
-}
-
-impl IngestOperation {
-    const fn request_id(&self) -> u64 {
-        match self {
-            Self::BeginCall { request_id, .. }
-            | Self::ResultBefore { request_id, .. }
-            | Self::ResultText { request_id, .. }
-            | Self::StageResult { request_id, .. }
-            | Self::FinishCall { request_id, .. }
-            | Self::UpdateFinalResult { request_id, .. } => *request_id,
-        }
-    }
-
-    const fn schema_version(&self) -> u32 {
-        match self {
-            Self::BeginCall { schema_version, .. }
-            | Self::ResultBefore { schema_version, .. }
-            | Self::ResultText { schema_version, .. }
-            | Self::StageResult { schema_version, .. }
-            | Self::FinishCall { schema_version, .. }
-            | Self::UpdateFinalResult { schema_version, .. } => *schema_version,
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct IngestAck<'a> {
-    request_id: u64,
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    archive_ref: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<&'a str>,
-}
-
 #[derive(Debug, Eq, PartialEq)]
 pub struct ArchiveStats {
     pub sessions: i64,
@@ -280,13 +181,113 @@ pub struct Archive {
     path: PathBuf,
 }
 
+pub(crate) struct PreparedArchiveOperation {
+    estimated_bytes: u64,
+    kind: PreparedOperationKind,
+}
+
+enum PreparedOperationKind {
+    BeginCall {
+        session: SessionIdentity,
+        call: CallIdentity,
+        before: PreparedPayload,
+        after: PreparedPayload,
+        captured_at_ms: i64,
+    },
+    ResultBefore {
+        session: SessionIdentity,
+        source_call_id: String,
+        result: PreparedPayload,
+        source_output: Option<PreparedSnapshot>,
+        captured_at_ms: i64,
+    },
+    ResultText {
+        session: SessionIdentity,
+        source_call_id: String,
+        text: PreparedPayload,
+        completeness: SourceCompleteness,
+        captured_at_ms: i64,
+    },
+    StageResult {
+        session: SessionIdentity,
+        source_call_id: String,
+        result: PreparedPayload,
+        is_error: bool,
+        captured_at_ms: i64,
+    },
+    FinishCall {
+        session: SessionIdentity,
+        source_call_id: String,
+        result: PreparedPayload,
+        is_error: bool,
+        require_pre_result: bool,
+        finished_at_ms: i64,
+    },
+    UpdateFinalResult {
+        session: SessionIdentity,
+        source_call_id: String,
+        result: PreparedPayload,
+        is_error: bool,
+        finished_at_ms: i64,
+    },
+    CaptureStreams {
+        session: SessionIdentity,
+        source_call_id: String,
+        captured_at_ms: i64,
+        stdout_before: PreparedSnapshot,
+        stderr_before: PreparedSnapshot,
+        stdout_after: PreparedSnapshot,
+        stderr_after: PreparedSnapshot,
+    },
+    PruneBefore {
+        timestamp_ms: i64,
+    },
+}
+
+struct PreparedSnapshot {
+    media_type: &'static str,
+    payload: PreparedPayload,
+}
+
+struct PreparedPayload {
+    sha: Vec<u8>,
+    compression: &'static str,
+    uncompressed_length: u64,
+    stored_length: u64,
+    stored: NamedTempFile,
+}
+
+#[derive(Debug)]
+pub(crate) enum BatchWriteError {
+    Busy(String),
+    Permanent(String),
+}
+
+impl BatchWriteError {
+    pub(crate) fn message(&self) -> &str {
+        match self {
+            Self::Busy(message) | Self::Permanent(message) => message,
+        }
+    }
+
+    pub(crate) const fn is_busy(&self) -> bool {
+        matches!(self, Self::Busy(_))
+    }
+}
+
+impl PreparedArchiveOperation {
+    pub(crate) const fn estimated_bytes(&self) -> u64 {
+        self.estimated_bytes
+    }
+}
+
 impl Archive {
     /// Open the configured archive and initialize schema version 1 when needed.
     ///
     /// # Errors
     ///
     /// Returns an error when the path, permissions, `SQLite` database, or schema is invalid.
-    pub fn open() -> Result<Self, String> {
+    pub(crate) fn open() -> Result<Self, String> {
         let archive = config::load()?.archive;
         Self::open_path_with_policy(archive.path, archive.is_default_path)
     }
@@ -372,6 +373,222 @@ impl Archive {
         }
         set_file_mode(&path, 0o600)?;
         Ok(Self { connection, path })
+    }
+
+    pub(crate) fn configure_for_broker(&self) -> Result<(), String> {
+        self.connection
+            .busy_timeout(Duration::from_millis(250))
+            .map_err(|error| format!("could not set archive broker busy timeout: {error}"))?;
+        self.connection
+            .pragma_update(None, "wal_autocheckpoint", 1000)
+            .map_err(|error| format!("could not set archive WAL checkpoint limit: {error}"))
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the exhaustive protocol mapping keeps preparation rules in one place"
+    )]
+    pub(crate) fn prepare_operation(
+        &self,
+        operation: ArchiveOperation,
+    ) -> Result<PreparedArchiveOperation, String> {
+        if operation.schema_version() != INGEST_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported ingest schema version {}; expected {INGEST_SCHEMA_VERSION}",
+                operation.schema_version()
+            ));
+        }
+        let owner_uid = archive_owner_uid(&self.path)?;
+        let kind = match operation {
+            ArchiveOperation::BeginCall {
+                session,
+                call,
+                input_before,
+                input_after,
+                captured_at_ms,
+                ..
+            } => PreparedOperationKind::BeginCall {
+                session,
+                call,
+                before: prepare_payload(&mut Cursor::new(canonical_json(&input_before)?))?,
+                after: prepare_payload(&mut Cursor::new(canonical_json(&input_after)?))?,
+                captured_at_ms,
+            },
+            ArchiveOperation::ResultBefore {
+                session,
+                source_call_id,
+                result,
+                full_output_path,
+                captured_at_ms,
+                ..
+            } => PreparedOperationKind::ResultBefore {
+                session,
+                source_call_id,
+                result: prepare_payload(&mut Cursor::new(canonical_json(&result)?))?,
+                source_output: full_output_path
+                    .as_deref()
+                    .map(|path| prepare_path_snapshot(path, owner_uid))
+                    .transpose()?,
+                captured_at_ms,
+            },
+            ArchiveOperation::ResultText {
+                session,
+                source_call_id,
+                text,
+                source_completeness,
+                captured_at_ms,
+                ..
+            } => PreparedOperationKind::ResultText {
+                session,
+                source_call_id,
+                text: prepare_payload(&mut Cursor::new(text.into_bytes()))?,
+                completeness: source_completeness,
+                captured_at_ms,
+            },
+            ArchiveOperation::StageResult {
+                session,
+                source_call_id,
+                result,
+                is_error,
+                captured_at_ms,
+                ..
+            } => PreparedOperationKind::StageResult {
+                session,
+                source_call_id,
+                result: prepare_payload(&mut Cursor::new(canonical_json(&result)?))?,
+                is_error,
+                captured_at_ms,
+            },
+            ArchiveOperation::FinishCall {
+                session,
+                source_call_id,
+                result,
+                is_error,
+                require_pre_result,
+                finished_at_ms,
+                ..
+            } => PreparedOperationKind::FinishCall {
+                session,
+                source_call_id,
+                result: prepare_payload(&mut Cursor::new(canonical_json(&result)?))?,
+                is_error,
+                require_pre_result,
+                finished_at_ms,
+            },
+            ArchiveOperation::UpdateFinalResult {
+                session,
+                source_call_id,
+                result,
+                is_error,
+                finished_at_ms,
+                ..
+            } => PreparedOperationKind::UpdateFinalResult {
+                session,
+                source_call_id,
+                result: prepare_payload(&mut Cursor::new(canonical_json(&result)?))?,
+                is_error,
+                finished_at_ms,
+            },
+            ArchiveOperation::CaptureStreams {
+                session,
+                source_call_id,
+                captured_at_ms,
+                stdout_before_path,
+                stderr_before_path,
+                stdout_after_path,
+                stderr_after_path,
+                ..
+            } => PreparedOperationKind::CaptureStreams {
+                session,
+                source_call_id,
+                captured_at_ms,
+                stdout_before: prepare_path_snapshot(&stdout_before_path, owner_uid)?,
+                stderr_before: prepare_path_snapshot(&stderr_before_path, owner_uid)?,
+                stdout_after: prepare_path_snapshot(&stdout_after_path, owner_uid)?,
+                stderr_after: prepare_path_snapshot(&stderr_after_path, owner_uid)?,
+            },
+            ArchiveOperation::CapturePassthroughStreams {
+                session,
+                source_call_id,
+                captured_at_ms,
+                stdout_path,
+                stderr_path,
+                ..
+            } => {
+                let stdout_before = prepare_path_snapshot(&stdout_path, owner_uid)?;
+                let stdout_after = prepare_path_snapshot(&stdout_path, owner_uid)?;
+                let stderr_before = prepare_path_snapshot(&stderr_path, owner_uid)?;
+                let stderr_after = prepare_path_snapshot(&stderr_path, owner_uid)?;
+                PreparedOperationKind::CaptureStreams {
+                    session,
+                    source_call_id,
+                    captured_at_ms,
+                    stdout_before,
+                    stderr_before,
+                    stdout_after,
+                    stderr_after,
+                }
+            }
+            ArchiveOperation::PruneBefore { timestamp_ms, .. } => {
+                PreparedOperationKind::PruneBefore { timestamp_ms }
+            }
+        };
+        let estimated_bytes = prepared_kind_bytes(&kind);
+        Ok(PreparedArchiveOperation {
+            estimated_bytes,
+            kind,
+        })
+    }
+
+    pub(crate) fn apply_prepared_batch<'a>(
+        &mut self,
+        operations: impl IntoIterator<Item = &'a mut PreparedArchiveOperation>,
+    ) -> Result<Vec<Result<Option<String>, String>>, BatchWriteError> {
+        let mut operations = operations.into_iter().collect::<Vec<_>>();
+        let mut transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| batch_error("could not start archive batch", &error))?;
+        let mut results = Vec::with_capacity(operations.len());
+        let mut pruned = false;
+        for operation in &mut operations {
+            let mut savepoint = transaction.savepoint().map_err(|error| {
+                batch_error("could not start archive request savepoint", &error)
+            })?;
+            match apply_prepared_operation(&savepoint, &mut operation.kind) {
+                Ok(result) => {
+                    pruned |= matches!(&operation.kind, PreparedOperationKind::PruneBefore { .. });
+                    savepoint.commit().map_err(|error| {
+                        batch_error("could not release archive request savepoint", &error)
+                    })?;
+                    results.push(Ok(result));
+                }
+                Err(error) => {
+                    savepoint.rollback().map_err(|rollback_error| {
+                        batch_error(
+                            "could not roll back failed archive request savepoint",
+                            &rollback_error,
+                        )
+                    })?;
+                    results.push(Err(error));
+                }
+            }
+        }
+        if pruned {
+            transaction
+                .execute_batch("PRAGMA incremental_vacuum")
+                .map_err(|error| batch_error("could not vacuum archive", &error))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| batch_error("could not commit archive batch", &error))?;
+        Ok(results)
+    }
+
+    pub(crate) fn checkpoint(&self) -> Result<(), String> {
+        self.connection
+            .execute_batch("PRAGMA wal_checkpoint(PASSIVE)")
+            .map_err(|error| format!("could not checkpoint archive WAL: {error}"))
     }
 
     /// Store one call and its input snapshots before execution.
@@ -1378,9 +1595,10 @@ impl Archive {
 ///
 /// Returns an error when the archive, frame, operation, or acknowledgement is invalid.
 pub fn run_ingest(input: impl Read, output: impl Write) -> Result<(), String> {
-    run_ingest_with_archive(Archive::open()?, input, output)
+    crate::archive_client::run_ingest_bridge(input, output)
 }
 
+#[cfg(test)]
 fn run_ingest_with_archive(
     mut archive: Archive,
     mut input: impl Read,
@@ -1407,17 +1625,13 @@ fn run_ingest_with_archive(
         input
             .read_exact(&mut frame)
             .map_err(|error| format!("could not read ingest frame: {error}"))?;
-        let operation: IngestOperation = serde_json::from_slice(&frame)
+        let operation: ArchiveOperation = serde_json::from_slice(&frame)
             .map_err(|error| format!("invalid ingest frame: {error}"))?;
         let request_id = operation.request_id();
         let result = apply_operation(&mut archive, operation);
-        let archive_ref = result.as_ref().ok().and_then(|value| value.as_deref());
-        let error = result.as_ref().err().map(String::as_str);
-        let ack = IngestAck {
-            request_id,
-            ok: result.is_ok(),
-            archive_ref,
-            error,
+        let ack = match result {
+            Ok(archive_ref) => ArchiveAck::success(request_id, archive_ref),
+            Err(error) => ArchiveAck::failure(request_id, error),
         };
         serde_json::to_writer(&mut output, &ack)
             .map_err(|error| format!("could not write ingest acknowledgement: {error}"))?;
@@ -1428,9 +1642,10 @@ fn run_ingest_with_archive(
     }
 }
 
+#[cfg(test)]
 fn apply_operation(
     archive: &mut Archive,
-    operation: IngestOperation,
+    operation: ArchiveOperation,
 ) -> Result<Option<String>, String> {
     let schema_version = operation.schema_version();
     if schema_version != INGEST_SCHEMA_VERSION {
@@ -1439,7 +1654,7 @@ fn apply_operation(
         ));
     }
     match operation {
-        IngestOperation::BeginCall {
+        ArchiveOperation::BeginCall {
             session,
             call,
             input_before,
@@ -1449,7 +1664,7 @@ fn apply_operation(
         } => archive
             .begin_call(&session, &call, &input_before, &input_after, captured_at_ms)
             .map(Some),
-        IngestOperation::ResultBefore {
+        ArchiveOperation::ResultBefore {
             session,
             source_call_id,
             result,
@@ -1465,7 +1680,7 @@ fn apply_operation(
                 captured_at_ms,
             )
             .map(|()| None),
-        IngestOperation::ResultText {
+        ArchiveOperation::ResultText {
             session,
             source_call_id,
             text,
@@ -1481,7 +1696,7 @@ fn apply_operation(
                 captured_at_ms,
             )
             .map(Some),
-        IngestOperation::StageResult {
+        ArchiveOperation::StageResult {
             session,
             source_call_id,
             result,
@@ -1491,7 +1706,7 @@ fn apply_operation(
         } => archive
             .stage_result(&session, &source_call_id, &result, is_error, captured_at_ms)
             .map(|()| None),
-        IngestOperation::FinishCall {
+        ArchiveOperation::FinishCall {
             session,
             source_call_id,
             result,
@@ -1509,7 +1724,7 @@ fn apply_operation(
                 finished_at_ms,
             )
             .map(|()| None),
-        IngestOperation::UpdateFinalResult {
+        ArchiveOperation::UpdateFinalResult {
             session,
             source_call_id,
             result,
@@ -1519,6 +1734,11 @@ fn apply_operation(
         } => archive
             .update_final_result(&session, &source_call_id, &result, is_error, finished_at_ms)
             .map(|()| None),
+        ArchiveOperation::CaptureStreams { .. }
+        | ArchiveOperation::CapturePassthroughStreams { .. }
+        | ArchiveOperation::PruneBefore { .. } => {
+            Err("operation is available only through the archive broker".to_owned())
+        }
     }
 }
 
@@ -1841,7 +2061,637 @@ fn migrate_indexed_output_schema(connection: &mut Connection) -> Result<(), Stri
         .map_err(|error| format!("could not commit indexed-output migration: {error}"))
 }
 
-fn ensure_session(transaction: &Transaction<'_>, session: &SessionIdentity) -> Result<i64, String> {
+fn prepared_kind_bytes(kind: &PreparedOperationKind) -> u64 {
+    let payload = |value: &PreparedPayload| value.stored_length;
+    let snapshot = |value: &PreparedSnapshot| payload(&value.payload);
+    match kind {
+        PreparedOperationKind::BeginCall { before, after, .. } => payload(before) + payload(after),
+        PreparedOperationKind::ResultBefore {
+            result,
+            source_output,
+            ..
+        } => payload(result) + source_output.as_ref().map_or(0, snapshot),
+        PreparedOperationKind::ResultText { text, .. } => payload(text),
+        PreparedOperationKind::StageResult { result, .. }
+        | PreparedOperationKind::FinishCall { result, .. }
+        | PreparedOperationKind::UpdateFinalResult { result, .. } => payload(result),
+        PreparedOperationKind::CaptureStreams {
+            stdout_before,
+            stderr_before,
+            stdout_after,
+            stderr_after,
+            ..
+        } => {
+            snapshot(stdout_before)
+                + snapshot(stderr_before)
+                + snapshot(stdout_after)
+                + snapshot(stderr_after)
+        }
+        PreparedOperationKind::PruneBefore { .. } => 0,
+    }
+}
+
+fn prepare_payload(reader: &mut (impl Read + Seek)) -> Result<PreparedPayload, String> {
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| format!("could not rewind payload for preparation: {error}"))?;
+    let mut raw = NamedTempFile::new()
+        .map_err(|error| format!("could not create prepared payload spool: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut uncompressed_length = 0_u64;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|error| format!("could not read payload for preparation: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        raw.write_all(&buffer[..count])
+            .map_err(|error| format!("could not spool prepared payload: {error}"))?;
+        hasher.update(&buffer[..count]);
+        uncompressed_length = uncompressed_length.saturating_add(count as u64);
+        if uncompressed_length > MAX_FRAME_BYTES {
+            return Err(format!(
+                "prepared payload is {uncompressed_length} bytes; maximum is {MAX_FRAME_BYTES}"
+            ));
+        }
+    }
+    raw.flush()
+        .map_err(|error| format!("could not flush prepared payload: {error}"))?;
+    raw.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("could not rewind prepared payload: {error}"))?;
+    let mut compressed = NamedTempFile::new()
+        .map_err(|error| format!("could not create compressed payload spool: {error}"))?;
+    zstd::stream::copy_encode(&mut raw, &mut compressed, ZSTD_LEVEL)
+        .map_err(|error| format!("could not compress prepared payload: {error}"))?;
+    compressed
+        .flush()
+        .map_err(|error| format!("could not flush compressed prepared payload: {error}"))?;
+    let compressed_length = compressed
+        .as_file()
+        .metadata()
+        .map_err(|error| format!("could not stat compressed prepared payload: {error}"))?
+        .len();
+    let use_compressed = compressed_length.saturating_mul(100)
+        <= uncompressed_length.saturating_mul(COMPRESSION_PERCENT);
+    let (compression, stored_length, mut stored) = if use_compressed {
+        ("zstd", compressed_length, compressed)
+    } else {
+        ("none", uncompressed_length, raw)
+    };
+    stored
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| format!("could not rewind stored prepared payload: {error}"))?;
+    Ok(PreparedPayload {
+        sha: hasher.finalize().to_vec(),
+        compression,
+        uncompressed_length,
+        stored_length,
+        stored,
+    })
+}
+
+fn prepare_path_snapshot(path: &Path, expected_uid: u32) -> Result<PreparedSnapshot, String> {
+    let before = fs::symlink_metadata(path)
+        .map_err(|error| format!("could not inspect archive source file: {error}"))?;
+    require_private_source(path, &before, expected_uid)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|error| format!("could not open archive source file: {error}"))?;
+    let opened = file
+        .metadata()
+        .map_err(|error| format!("could not inspect open archive source file: {error}"))?;
+    require_same_source(path, &before, &opened)?;
+    let media_type = stream_media_type(&mut file)?;
+    let payload = prepare_payload(&mut file)?;
+    let after = fs::symlink_metadata(path)
+        .map_err(|error| format!("could not recheck archive source file: {error}"))?;
+    require_same_source(path, &opened, &after)?;
+    Ok(PreparedSnapshot {
+        media_type,
+        payload,
+    })
+}
+
+#[cfg(unix)]
+fn archive_owner_uid(path: &Path) -> Result<u32, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("archive path {} has no parent", path.display()))?;
+    parent
+        .metadata()
+        .map(|metadata| metadata.uid())
+        .map_err(|error| {
+            format!(
+                "could not inspect archive directory {}: {error}",
+                parent.display()
+            )
+        })
+}
+
+#[cfg(not(unix))]
+fn archive_owner_uid(_path: &Path) -> Result<u32, String> {
+    Ok(0)
+}
+
+#[cfg(unix)]
+fn require_private_source(
+    _path: &Path,
+    metadata: &fs::Metadata,
+    expected_uid: u32,
+) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("archive source is not a real regular file".to_owned());
+    }
+    if metadata.uid() != expected_uid {
+        return Err("archive source has the wrong owner".to_owned());
+    }
+    if metadata.permissions().mode() & 0o077 != 0 {
+        return Err("archive source is accessible by other users".to_owned());
+    }
+    if metadata.len() > MAX_FRAME_BYTES {
+        return Err(format!(
+            "archive source is {} bytes; maximum is {MAX_FRAME_BYTES}",
+            metadata.len()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn require_private_source(
+    _path: &Path,
+    metadata: &fs::Metadata,
+    _expected_uid: u32,
+) -> Result<(), String> {
+    if !metadata.is_file() {
+        return Err("archive source is not a regular file".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn require_same_source(
+    _path: &Path,
+    expected: &fs::Metadata,
+    actual: &fs::Metadata,
+) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt as _;
+    if (
+        expected.dev(),
+        expected.ino(),
+        expected.len(),
+        expected.mtime(),
+        expected.mtime_nsec(),
+    ) != (
+        actual.dev(),
+        actual.ino(),
+        actual.len(),
+        actual.mtime(),
+        actual.mtime_nsec(),
+    ) {
+        return Err("archive source changed while being read".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn require_same_source(
+    _path: &Path,
+    expected: &fs::Metadata,
+    actual: &fs::Metadata,
+) -> Result<(), String> {
+    if expected.len() != actual.len() {
+        return Err("archive source changed while being read".to_owned());
+    }
+    Ok(())
+}
+
+fn insert_prepared_payload(
+    connection: &Connection,
+    payload: &mut PreparedPayload,
+) -> Result<Vec<u8>, String> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM payloads WHERE sha256 = ?1",
+            [&payload.sha],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|error| format!("could not check prepared payload digest: {error}"))?
+        .is_some();
+    if exists {
+        return Ok(payload.sha.clone());
+    }
+    let stored_length = i64::try_from(payload.stored_length).map_err(|_| {
+        format!(
+            "payload is too large for SQLite: {} bytes",
+            payload.stored_length
+        )
+    })?;
+    let raw_length = i64::try_from(payload.uncompressed_length).map_err(|_| {
+        format!(
+            "payload is too large: {} bytes",
+            payload.uncompressed_length
+        )
+    })?;
+    connection
+        .execute(
+            "INSERT INTO payloads (sha256, compression, uncompressed_byte_length, body)
+             VALUES (?1, ?2, ?3, zeroblob(?4))",
+            params![payload.sha, payload.compression, raw_length, stored_length],
+        )
+        .map_err(|error| format!("could not insert prepared payload: {error}"))?;
+    let rowid: i64 = connection
+        .query_row(
+            "SELECT rowid FROM payloads WHERE sha256 = ?1",
+            [&payload.sha],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("could not locate prepared payload body: {error}"))?;
+    let mut blob = connection
+        .blob_open(MAIN_DB, "payloads", "body", rowid, false)
+        .map_err(|error| format!("could not open prepared payload body: {error}"))?;
+    payload
+        .stored
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| format!("could not rewind prepared payload body: {error}"))?;
+    copy_exact(&mut payload.stored, &mut blob, payload.stored_length)?;
+    Ok(payload.sha.clone())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "snapshot identity and source metadata are one strict database record"
+)]
+fn insert_prepared_snapshot(
+    connection: &Connection,
+    call_id: i64,
+    subject: &str,
+    stage: &str,
+    media_type: &str,
+    source_completeness: Option<&str>,
+    captured_at_ms: i64,
+    payload: &mut PreparedPayload,
+) -> Result<(), String> {
+    let sha = insert_prepared_payload(connection, payload)?;
+    let inserted = connection
+        .execute(
+            "INSERT INTO snapshots (
+                tool_call_id, subject, stage, media_type, source_completeness,
+                captured_at_ms, payload_sha256
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(tool_call_id, subject, stage) DO NOTHING",
+            params![
+                call_id,
+                subject,
+                stage,
+                media_type,
+                source_completeness,
+                captured_at_ms,
+                sha
+            ],
+        )
+        .map_err(|error| format!("could not store {subject}/{stage} snapshot: {error}"))?;
+    if inserted == 0 {
+        let existing: (Vec<u8>, Option<String>) = connection
+            .query_row(
+                "SELECT payload_sha256, source_completeness FROM snapshots
+                 WHERE tool_call_id = ?1 AND subject = ?2 AND stage = ?3",
+                params![call_id, subject, stage],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|error| format!("could not check existing snapshot: {error}"))?;
+        if existing != (sha, source_completeness.map(str::to_owned)) {
+            return Err(format!(
+                "snapshot {subject}/{stage} already exists with different content or completeness"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn replace_prepared_snapshot(
+    connection: &Connection,
+    call_id: i64,
+    subject: &str,
+    stage: &str,
+    media_type: &str,
+    captured_at_ms: i64,
+    payload: &mut PreparedPayload,
+) -> Result<Vec<u8>, String> {
+    let replaced_sha: Vec<u8> = connection
+        .query_row(
+            "SELECT payload_sha256 FROM snapshots
+             WHERE tool_call_id = ?1 AND subject = ?2 AND stage = ?3",
+            params![call_id, subject, stage],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("could not find {subject}/{stage} snapshot: {error}"))?;
+    let sha = insert_prepared_payload(connection, payload)?;
+    let updated = connection
+        .execute(
+            "UPDATE snapshots
+             SET media_type = ?1, captured_at_ms = ?2, payload_sha256 = ?3
+             WHERE tool_call_id = ?4 AND subject = ?5 AND stage = ?6",
+            params![media_type, captured_at_ms, sha, call_id, subject, stage],
+        )
+        .map_err(|error| format!("could not replace {subject}/{stage} snapshot: {error}"))?;
+    if updated != 1 {
+        return Err(format!("snapshot {subject}/{stage} does not exist"));
+    }
+    Ok(replaced_sha)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the exhaustive operation mapping keeps one transaction policy"
+)]
+fn apply_prepared_operation(
+    connection: &Connection,
+    operation: &mut PreparedOperationKind,
+) -> Result<Option<String>, String> {
+    match operation {
+        PreparedOperationKind::BeginCall {
+            session,
+            call,
+            before,
+            after,
+            captured_at_ms,
+        } => {
+            let session_id = ensure_session(connection, session)?;
+            let call_id = ensure_call(connection, session_id, call)?;
+            let archive_ref = call_archive_ref(connection, call_id)?;
+            insert_prepared_snapshot(
+                connection,
+                call_id,
+                "input",
+                "before",
+                "application/json",
+                None,
+                *captured_at_ms,
+                before,
+            )?;
+            insert_prepared_snapshot(
+                connection,
+                call_id,
+                "input",
+                "after",
+                "application/json",
+                None,
+                *captured_at_ms,
+                after,
+            )?;
+            Ok(Some(archive_ref))
+        }
+        PreparedOperationKind::ResultBefore {
+            session,
+            source_call_id,
+            result,
+            source_output,
+            captured_at_ms,
+        } => {
+            let call_id = find_call(connection, session, source_call_id)?;
+            insert_prepared_snapshot(
+                connection,
+                call_id,
+                "result",
+                "before",
+                "application/json",
+                None,
+                *captured_at_ms,
+                result,
+            )?;
+            if let Some(source) = source_output {
+                insert_prepared_snapshot(
+                    connection,
+                    call_id,
+                    "source_output",
+                    "before",
+                    source.media_type,
+                    None,
+                    *captured_at_ms,
+                    &mut source.payload,
+                )?;
+            }
+            Ok(None)
+        }
+        PreparedOperationKind::ResultText {
+            session,
+            source_call_id,
+            text,
+            completeness,
+            captured_at_ms,
+        } => {
+            let call_id = find_call(connection, session, source_call_id)?;
+            insert_prepared_snapshot(
+                connection,
+                call_id,
+                "result_text",
+                "before",
+                "text/plain; charset=utf-8",
+                Some(completeness.as_str()),
+                *captured_at_ms,
+                text,
+            )?;
+            call_archive_ref(connection, call_id).map(Some)
+        }
+        PreparedOperationKind::StageResult {
+            session,
+            source_call_id,
+            result,
+            is_error,
+            captured_at_ms,
+        } => {
+            let call_id = find_call(connection, session, source_call_id)?;
+            require_call_status(connection, call_id, source_call_id, "started")?;
+            validate_completion(connection, call_id, true)?;
+            insert_prepared_snapshot(
+                connection,
+                call_id,
+                "result",
+                "after",
+                "application/json",
+                None,
+                *captured_at_ms,
+                result,
+            )?;
+            connection
+                .execute(
+                    "UPDATE tool_calls SET is_error = ?1, executed = 1 WHERE id = ?2",
+                    params![i64::from(*is_error), call_id],
+                )
+                .map_err(|error| format!("could not stage tool result: {error}"))?;
+            Ok(None)
+        }
+        PreparedOperationKind::FinishCall {
+            session,
+            source_call_id,
+            result,
+            is_error,
+            require_pre_result,
+            finished_at_ms,
+        } => {
+            let call_id = find_call(connection, session, source_call_id)?;
+            validate_completion(connection, call_id, *require_pre_result)?;
+            insert_prepared_snapshot(
+                connection,
+                call_id,
+                "result",
+                "after",
+                "application/json",
+                None,
+                *finished_at_ms,
+                result,
+            )?;
+            connection
+                .execute(
+                    "UPDATE tool_calls
+                     SET finished_at_ms = ?1, status = 'finished', is_error = ?2, executed = ?3
+                     WHERE id = ?4",
+                    params![
+                        *finished_at_ms,
+                        i64::from(*is_error),
+                        i64::from(*require_pre_result),
+                        call_id
+                    ],
+                )
+                .map_err(|error| format!("could not finish tool call: {error}"))?;
+            Ok(None)
+        }
+        PreparedOperationKind::UpdateFinalResult {
+            session,
+            source_call_id,
+            result,
+            is_error,
+            finished_at_ms,
+        } => {
+            let call_id = find_call(connection, session, source_call_id)?;
+            let status: String = connection
+                .query_row(
+                    "SELECT status FROM tool_calls WHERE id = ?1",
+                    [call_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("could not read final tool call status: {error}"))?;
+            if status == "finished" {
+                let stored: (Vec<u8>, bool, i64, bool) = connection
+                    .query_row(
+                        "SELECT s.payload_sha256, c.is_error, c.finished_at_ms, c.executed
+                         FROM tool_calls c
+                         JOIN snapshots s ON s.tool_call_id = c.id
+                         WHERE c.id = ?1 AND s.subject = 'result' AND s.stage = 'after'",
+                        [call_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .map_err(|error| format!("could not check finalized tool result: {error}"))?;
+                if stored == (result.sha.clone(), *is_error, *finished_at_ms, true) {
+                    return Ok(None);
+                }
+                return Err(format!(
+                    "tool call {source_call_id} was already finalized with different content or metadata"
+                ));
+            }
+            if status != "started" {
+                return Err(format!(
+                    "tool call {source_call_id} has status {status}, expected started"
+                ));
+            }
+            validate_completion(connection, call_id, true)?;
+            let replaced_sha = replace_prepared_snapshot(
+                connection,
+                call_id,
+                "result",
+                "after",
+                "application/json",
+                *finished_at_ms,
+                result,
+            )?;
+            connection
+                .execute(
+                    "UPDATE tool_calls
+                     SET finished_at_ms = ?1, status = 'finished', is_error = ?2, executed = 1
+                     WHERE id = ?3",
+                    params![*finished_at_ms, i64::from(*is_error), call_id],
+                )
+                .map_err(|error| format!("could not finalize staged tool call: {error}"))?;
+            connection
+                .execute(
+                    "DELETE FROM payloads
+                     WHERE sha256 = ?1
+                       AND NOT EXISTS (
+                           SELECT 1 FROM snapshots WHERE snapshots.payload_sha256 = payloads.sha256
+                       )",
+                    [&replaced_sha],
+                )
+                .map_err(|error| format!("could not remove replaced final payload: {error}"))?;
+            Ok(None)
+        }
+        PreparedOperationKind::CaptureStreams {
+            session,
+            source_call_id,
+            captured_at_ms,
+            stdout_before,
+            stderr_before,
+            stdout_after,
+            stderr_after,
+        } => {
+            let call_id = find_call(connection, session, source_call_id)?;
+            for (subject, stage, snapshot) in [
+                ("stdout", "before", stdout_before),
+                ("stderr", "before", stderr_before),
+                ("stdout", "after", stdout_after),
+                ("stderr", "after", stderr_after),
+            ] {
+                insert_prepared_snapshot(
+                    connection,
+                    call_id,
+                    subject,
+                    stage,
+                    snapshot.media_type,
+                    None,
+                    *captured_at_ms,
+                    &mut snapshot.payload,
+                )?;
+            }
+            Ok(None)
+        }
+        PreparedOperationKind::PruneBefore { timestamp_ms } => {
+            let deleted = connection
+                .execute(
+                    "DELETE FROM tool_calls WHERE status = 'finished' AND finished_at_ms < ?1",
+                    [*timestamp_ms],
+                )
+                .map_err(|error| format!("could not prune tool calls: {error}"))?;
+            connection
+                .execute(
+                    "DELETE FROM payloads WHERE NOT EXISTS (
+                        SELECT 1 FROM snapshots WHERE snapshots.payload_sha256 = payloads.sha256
+                     )",
+                    [],
+                )
+                .map_err(|error| format!("could not prune unreferenced payloads: {error}"))?;
+            i64::try_from(deleted)
+                .map(|count| Some(count.to_string()))
+                .map_err(|_| "pruned call count does not fit in i64".to_owned())
+        }
+    }
+}
+
+fn batch_error(context: &str, error: &rusqlite::Error) -> BatchWriteError {
+    let message = format!("{context}: {error}");
+    if is_lock_error(error) {
+        BatchWriteError::Busy(message)
+    } else {
+        BatchWriteError::Permanent(message)
+    }
+}
+
+fn ensure_session(transaction: &Connection, session: &SessionIdentity) -> Result<i64, String> {
     transaction
         .execute(
             "INSERT INTO sessions (agent, account, source_session_id, started_at_ms)
@@ -1866,7 +2716,7 @@ fn ensure_session(transaction: &Transaction<'_>, session: &SessionIdentity) -> R
 }
 
 fn ensure_call(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     session_id: i64,
     call: &CallIdentity,
 ) -> Result<i64, String> {
@@ -1950,7 +2800,7 @@ fn ensure_call(
     Ok(stored.0)
 }
 
-fn random_archive_ref(transaction: &Transaction<'_>) -> Result<String, String> {
+fn random_archive_ref(transaction: &Connection) -> Result<String, String> {
     let archive_ref: String = transaction
         .query_row("SELECT 'yr_' || lower(hex(randomblob(16)))", [], |row| {
             row.get(0)
@@ -1974,7 +2824,7 @@ fn validate_archive_ref(archive_ref: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn call_archive_ref(transaction: &Transaction<'_>, call_id: i64) -> Result<String, String> {
+fn call_archive_ref(transaction: &Connection, call_id: i64) -> Result<String, String> {
     let archive_ref: String = transaction
         .query_row(
             "SELECT archive_ref FROM tool_calls WHERE id = ?1",
@@ -1996,7 +2846,7 @@ fn parse_completeness(value: &str) -> Result<SourceCompleteness, String> {
 }
 
 fn find_call(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     session: &SessionIdentity,
     source_call_id: &str,
 ) -> Result<i64, String> {
@@ -2019,7 +2869,7 @@ fn find_call(
 }
 
 fn require_call_status(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     call_id: i64,
     source_call_id: &str,
     expected: &str,
@@ -2040,7 +2890,7 @@ fn require_call_status(
 }
 
 fn validate_completion(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     call_id: i64,
     require_pre_result: bool,
 ) -> Result<(), String> {
@@ -2087,7 +2937,7 @@ fn validate_completion(
 }
 
 fn insert_snapshot_bytes(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     call_id: i64,
     subject: &str,
     stage: &str,
@@ -2107,7 +2957,7 @@ fn insert_snapshot_bytes(
 }
 
 fn replace_snapshot_bytes(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     call_id: i64,
     subject: &str,
     stage: &str,
@@ -2139,7 +2989,7 @@ fn replace_snapshot_bytes(
 }
 
 fn insert_snapshot_reader(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     call_id: i64,
     subject: &str,
     stage: &str,
@@ -2164,7 +3014,7 @@ fn insert_snapshot_reader(
     reason = "snapshot identity and source metadata are one strict database record"
 )]
 fn insert_snapshot_reader_with_completeness(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     call_id: i64,
     subject: &str,
     stage: &str,
@@ -2211,7 +3061,7 @@ fn insert_snapshot_reader_with_completeness(
 }
 
 fn insert_payload(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     reader: &mut (impl Read + Seek),
 ) -> Result<Vec<u8>, String> {
     reader
@@ -2565,6 +3415,310 @@ mod tests {
         frame.extend_from_slice(&(body.len() as u64).to_be_bytes());
         frame.extend_from_slice(&body);
         frame
+    }
+
+    fn begin_operation(request_id: u64, source_call_id: &str, value: Value) -> ArchiveOperation {
+        ArchiveOperation::BeginCall {
+            request_id,
+            schema_version: INGEST_SCHEMA_VERSION,
+            session: session(),
+            call: call_with_id(source_call_id),
+            input_before: value.clone(),
+            input_after: value,
+            captured_at_ms: 20,
+        }
+    }
+
+    #[test]
+    fn prepared_batch_commits_multiple_calls_once() {
+        let (_directory, mut archive) = archive();
+        archive.configure_for_broker().expect("broker policy");
+        let busy_timeout: i64 = archive
+            .connection
+            .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+            .expect("busy timeout");
+        let wal_autocheckpoint: i64 = archive
+            .connection
+            .pragma_query_value(None, "wal_autocheckpoint", |row| row.get(0))
+            .expect("WAL checkpoint limit");
+        assert_eq!(busy_timeout, 250);
+        assert_eq!(wal_autocheckpoint, 1000);
+        let mut first = archive
+            .prepare_operation(begin_operation(
+                1,
+                "call-1",
+                serde_json::json!({"value": 1}),
+            ))
+            .expect("prepare first");
+        let mut second = archive
+            .prepare_operation(begin_operation(
+                2,
+                "call-2",
+                serde_json::json!({"value": 2}),
+            ))
+            .expect("prepare second");
+        let results = archive
+            .apply_prepared_batch([&mut first, &mut second])
+            .expect("batch");
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(Result::is_ok));
+        assert_eq!(archive.stats().expect("stats").calls, 2);
+        assert!(archive.verify().expect("verify").errors.is_empty());
+    }
+
+    #[test]
+    fn failed_savepoint_does_not_poison_shared_payload_in_next_request() {
+        let (_directory, mut archive) = archive();
+        archive
+            .begin_call(
+                &session(),
+                &call_with_id("call-1"),
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                20,
+            )
+            .expect("existing call");
+        let shared = serde_json::json!({"shared": "payload"});
+        let conflicting = ArchiveOperation::BeginCall {
+            request_id: 1,
+            schema_version: INGEST_SCHEMA_VERSION,
+            session: session(),
+            call: call_with_id("call-1"),
+            input_before: serde_json::json!({}),
+            input_after: shared.clone(),
+            captured_at_ms: 20,
+        };
+        let mut first = archive
+            .prepare_operation(conflicting)
+            .expect("prepare conflict");
+        let mut second = archive
+            .prepare_operation(begin_operation(2, "call-2", shared))
+            .expect("prepare second");
+        let results = archive
+            .apply_prepared_batch([&mut first, &mut second])
+            .expect("batch commit");
+        assert!(results[0].is_err());
+        assert!(results[1].is_ok());
+        assert_eq!(archive.stats().expect("stats").calls, 2);
+        assert!(archive.verify().expect("verify").errors.is_empty());
+    }
+
+    #[test]
+    fn prepared_replay_is_idempotent_and_conflicts_on_changed_content() {
+        let (_directory, mut archive) = archive();
+        let mut first = archive
+            .prepare_operation(begin_operation(
+                1,
+                "call-1",
+                serde_json::json!({"value": 1}),
+            ))
+            .expect("prepare first");
+        archive
+            .apply_prepared_batch([&mut first])
+            .expect("first commit");
+        let mut replay = archive
+            .prepare_operation(begin_operation(
+                2,
+                "call-1",
+                serde_json::json!({"value": 1}),
+            ))
+            .expect("prepare replay");
+        assert!(
+            archive
+                .apply_prepared_batch([&mut replay])
+                .expect("replay commit")[0]
+                .is_ok()
+        );
+        let mut conflict = archive
+            .prepare_operation(begin_operation(
+                3,
+                "call-1",
+                serde_json::json!({"value": 2}),
+            ))
+            .expect("prepare conflict");
+        assert!(
+            archive
+                .apply_prepared_batch([&mut conflict])
+                .expect("conflict batch")[0]
+                .is_err()
+        );
+        assert_eq!(archive.stats().expect("stats").calls, 1);
+    }
+
+    #[test]
+    fn prepared_batch_covers_the_complete_shell_call_lifecycle() {
+        let (directory, mut archive) = archive();
+        let mut shell_call = call();
+        shell_call.requires_streams = true;
+        let source = directory.path().join("data/source-output");
+        let stdout_before = directory.path().join("data/stdout-before");
+        let stderr_before = directory.path().join("data/stderr-before");
+        let stdout_after = directory.path().join("data/stdout-after");
+        let stderr_after = directory.path().join("data/stderr-after");
+        for (path, body) in [
+            (&source, b"source output".as_slice()),
+            (&stdout_before, b"stdout raw".as_slice()),
+            (&stderr_before, b"stderr raw".as_slice()),
+            (&stdout_after, b"stdout short".as_slice()),
+            (&stderr_after, b"stderr short".as_slice()),
+        ] {
+            fs::write(path, body).expect("stream file");
+            #[cfg(unix)]
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("private stream");
+        }
+        let operations = [
+            ArchiveOperation::BeginCall {
+                request_id: 1,
+                schema_version: INGEST_SCHEMA_VERSION,
+                session: session(),
+                call: shell_call,
+                input_before: serde_json::json!({"cmd": "test"}),
+                input_after: serde_json::json!({"cmd": "test"}),
+                captured_at_ms: 20,
+            },
+            ArchiveOperation::CaptureStreams {
+                request_id: 2,
+                schema_version: INGEST_SCHEMA_VERSION,
+                session: session(),
+                source_call_id: "call-1".to_owned(),
+                captured_at_ms: 30,
+                stdout_before_path: stdout_before,
+                stderr_before_path: stderr_before,
+                stdout_after_path: stdout_after,
+                stderr_after_path: stderr_after,
+            },
+            ArchiveOperation::ResultBefore {
+                request_id: 3,
+                schema_version: INGEST_SCHEMA_VERSION,
+                session: session(),
+                source_call_id: "call-1".to_owned(),
+                result: serde_json::json!({"content": "raw"}),
+                full_output_path: Some(source),
+                captured_at_ms: 40,
+            },
+            ArchiveOperation::ResultText {
+                request_id: 4,
+                schema_version: INGEST_SCHEMA_VERSION,
+                session: session(),
+                source_call_id: "call-1".to_owned(),
+                text: "exact visible text".to_owned(),
+                source_completeness: SourceCompleteness::Complete,
+                captured_at_ms: 41,
+            },
+            ArchiveOperation::StageResult {
+                request_id: 5,
+                schema_version: INGEST_SCHEMA_VERSION,
+                session: session(),
+                source_call_id: "call-1".to_owned(),
+                result: serde_json::json!({"content": "staged"}),
+                is_error: false,
+                captured_at_ms: 50,
+            },
+            ArchiveOperation::UpdateFinalResult {
+                request_id: 6,
+                schema_version: INGEST_SCHEMA_VERSION,
+                session: session(),
+                source_call_id: "call-1".to_owned(),
+                result: serde_json::json!({"content": "final"}),
+                is_error: false,
+                finished_at_ms: 60,
+            },
+        ];
+        let mut prepared = operations
+            .into_iter()
+            .map(|operation| archive.prepare_operation(operation).expect("prepare"))
+            .collect::<Vec<_>>();
+        let results = archive
+            .apply_prepared_batch(prepared.iter_mut())
+            .expect("complete batch");
+        assert!(results.iter().all(Result::is_ok));
+        assert_eq!(archive.stats().expect("stats").incomplete_calls, 0);
+        assert!(archive.verify().expect("verify").errors.is_empty());
+    }
+
+    #[test]
+    fn prepared_prune_uses_the_broker_transaction_path() {
+        let (_directory, mut archive) = archive();
+        archive
+            .begin_call(
+                &session(),
+                &call(),
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                20,
+            )
+            .expect("begin");
+        archive
+            .finish_call(
+                &session(),
+                "call-1",
+                &serde_json::json!({"error": "blocked"}),
+                true,
+                false,
+                30,
+            )
+            .expect("finish");
+        let mut prune = archive
+            .prepare_operation(ArchiveOperation::PruneBefore {
+                request_id: 7,
+                schema_version: INGEST_SCHEMA_VERSION,
+                timestamp_ms: 31,
+            })
+            .expect("prepare prune");
+        let result = archive
+            .apply_prepared_batch([&mut prune])
+            .expect("prune batch");
+        assert_eq!(
+            result[0].as_ref().expect("prune result").as_deref(),
+            Some("1")
+        );
+        assert_eq!(archive.stats().expect("stats").calls, 0);
+    }
+
+    #[test]
+    fn result_before_replay_rejects_changed_full_output_path() {
+        let (directory, mut archive) = archive();
+        archive
+            .begin_call(
+                &session(),
+                &call(),
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+                20,
+            )
+            .expect("begin");
+        let source = directory.path().join("data/full-output");
+        fs::write(&source, b"first").expect("source output");
+        #[cfg(unix)]
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).expect("private source");
+        let operation = |request_id| ArchiveOperation::ResultBefore {
+            request_id,
+            schema_version: INGEST_SCHEMA_VERSION,
+            session: session(),
+            source_call_id: "call-1".to_owned(),
+            result: serde_json::json!({"content": "visible"}),
+            full_output_path: Some(source.clone()),
+            captured_at_ms: 30,
+        };
+        let mut first = archive
+            .prepare_operation(operation(1))
+            .expect("prepare first");
+        assert!(
+            archive
+                .apply_prepared_batch([&mut first])
+                .expect("first batch")[0]
+                .is_ok()
+        );
+        fs::write(&source, b"second").expect("changed source output");
+        let mut replay = archive
+            .prepare_operation(operation(2))
+            .expect("prepare replay");
+        assert!(
+            archive
+                .apply_prepared_batch([&mut replay])
+                .expect("replay batch")[0]
+                .is_err()
+        );
     }
 
     #[test]

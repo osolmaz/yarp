@@ -40,6 +40,9 @@ tree-sitter = "=0.25.10"
 tree-sitter-bash = "=0.25.1"
 zstd = "0.13"
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "=1.1.4", features = ["net", "process"] }
+
 [build-dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_jcs = "0.2"
