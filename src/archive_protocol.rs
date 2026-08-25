@@ -260,6 +260,13 @@ impl ArchiveOperation {
         }
     }
 
+    pub(crate) const fn ends_source_sequence(&self) -> bool {
+        matches!(
+            self,
+            Self::FinishCall { .. } | Self::UpdateFinalResult { .. }
+        )
+    }
+
     pub(crate) const fn sequence(&self) -> u8 {
         match self {
             Self::BeginCall { .. } | Self::PruneBefore { .. } => 0,
@@ -315,7 +322,7 @@ impl BrokerEnvelope {
 
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.schema != BROKER_SCHEMA {
-            return Err(format!("unsupported broker schema {}", self.schema));
+            return Err("unsupported broker schema".to_owned());
         }
         if self.operation.schema_version() != INGEST_SCHEMA_VERSION {
             return Err(format!(
@@ -411,6 +418,12 @@ mod tests {
         envelope.sequence = 9;
         assert!(envelope.validate().unwrap_err().contains("sequence"));
         envelope.sequence = 0;
+        envelope.schema = "x".repeat(4096);
+        assert_eq!(
+            envelope.validate().unwrap_err(),
+            "unsupported broker schema"
+        );
+        envelope.schema = BROKER_SCHEMA.to_owned();
         envelope.source_key = "wrong".to_owned();
         assert!(envelope.validate().unwrap_err().contains("source key"));
         envelope.source_key = envelope.operation.source_key();
@@ -493,6 +506,14 @@ mod tests {
         ];
         for capture in captures {
             assert_eq!(capture.replay_policy(), ReplayPolicy::SafeReplay);
+            assert_eq!(
+                capture.ends_source_sequence(),
+                matches!(
+                    capture,
+                    ArchiveOperation::FinishCall { .. }
+                        | ArchiveOperation::UpdateFinalResult { .. }
+                )
+            );
         }
 
         let prune = ArchiveOperation::PruneBefore {
@@ -501,6 +522,7 @@ mod tests {
             timestamp_ms: 10,
         };
         assert_eq!(prune.replay_policy(), ReplayPolicy::UnknownOnDisconnect);
+        assert!(!prune.ends_source_sequence());
         assert!(prune.redactions().is_empty());
         assert_eq!(prune.sequence(), 0);
         assert_eq!(prune.source_key().len(), 64);

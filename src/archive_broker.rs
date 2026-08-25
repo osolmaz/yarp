@@ -18,6 +18,7 @@ mod unix {
     use crate::archive_runtime::RuntimePaths;
 
     const GLOBAL_REQUEST_LIMIT: usize = 256;
+    const SOURCE_SEQUENCE_LIMIT: usize = 4096;
     const HANDSHAKE_MAX_BYTES: u64 = 4096;
     const BATCH_REQUEST_LIMIT: usize = 32;
     const BATCH_BYTE_LIMIT: u64 = 8 * 1024 * 1024;
@@ -120,6 +121,7 @@ mod unix {
         source_key: String,
         redactions: Vec<String>,
         sequence: u8,
+        ends_source_sequence: bool,
         deadline: Instant,
         request_id: u64,
         operation: Option<crate::archive_protocol::ArchiveOperation>,
@@ -217,11 +219,13 @@ mod unix {
             }
             let deadline = request_started + Duration::from_millis(envelope.deadline_ms);
             let redactions = envelope.operation.redactions();
+            let ends_source_sequence = envelope.operation.ends_source_sequence();
             let (response_sender, response_receiver) = mpsc::sync_channel(1);
             let work = Work {
                 source_key: envelope.source_key,
                 redactions,
                 sequence: envelope.sequence,
+                ends_source_sequence,
                 deadline,
                 request_id,
                 operation: Some(envelope.operation),
@@ -287,14 +291,10 @@ mod unix {
 
     fn validate_hello(hello: &BrokerHello, archive_id: &str) -> Result<(), String> {
         if hello.schema != BROKER_SCHEMA {
-            return Err(format!("unsupported broker schema {}", hello.schema));
+            return Err("unsupported broker schema".to_owned());
         }
         if hello.binary_version != env!("CARGO_PKG_VERSION") {
-            return Err(format!(
-                "archive broker version {} does not match client version {}",
-                env!("CARGO_PKG_VERSION"),
-                hello.binary_version
-            ));
+            return Err("archive broker and client versions do not match".to_owned());
         }
         if hello.archive_id != archive_id {
             return Err("archive broker identity does not match requested archive".to_owned());
@@ -360,6 +360,41 @@ mod unix {
         }
     }
 
+    #[derive(Default)]
+    struct SourceSequences {
+        values: HashMap<String, u8>,
+        order: VecDeque<String>,
+    }
+
+    impl SourceSequences {
+        fn is_regression(&self, source_key: &str, sequence: u8) -> bool {
+            self.values
+                .get(source_key)
+                .is_some_and(|previous| sequence < *previous)
+        }
+
+        fn record(&mut self, source_key: &str, sequence: u8) {
+            if self.values.contains_key(source_key) {
+                self.order.retain(|key| key != source_key);
+            } else {
+                while self.values.len() >= SOURCE_SEQUENCE_LIMIT {
+                    let Some(oldest) = self.order.pop_front() else {
+                        self.values.clear();
+                        break;
+                    };
+                    self.values.remove(&oldest);
+                }
+            }
+            self.values.insert(source_key.to_owned(), sequence);
+            self.order.push_back(source_key.to_owned());
+        }
+
+        fn finish(&mut self, source_key: &str) {
+            self.values.remove(source_key);
+            self.order.retain(|key| key != source_key);
+        }
+    }
+
     fn writer_loop(
         archive: &mut Archive,
         receiver: &Receiver<Work>,
@@ -369,7 +404,7 @@ mod unix {
         batch_wait: Duration,
     ) -> Result<(), String> {
         let mut deferred = VecDeque::new();
-        let mut source_sequences = HashMap::<String, u8>::new();
+        let mut source_sequences = SourceSequences::default();
         let mut idle_since = Instant::now();
         loop {
             let first = if let Some(work) = deferred.pop_front() {
@@ -412,10 +447,7 @@ mod unix {
                     ));
                     continue;
                 }
-                if source_sequences
-                    .get(&work.source_key)
-                    .is_some_and(|sequence| work.sequence < *sequence)
-                {
+                if source_sequences.is_regression(&work.source_key, work.sequence) {
                     let _ = work.response.send(ArchiveAck::failure(
                         work.request_id,
                         "archive operation arrived after a later operation for the same source",
@@ -472,7 +504,7 @@ mod unix {
     fn apply_ready_batch(
         archive: &mut Archive,
         ready: &mut [Work],
-        source_sequences: &mut HashMap<String, u8>,
+        source_sequences: &mut SourceSequences,
     ) {
         let Some(deadline) = ready.iter().map(|value| value.deadline).min() else {
             return;
@@ -484,9 +516,14 @@ mod unix {
             match result {
                 Ok(results) => {
                     for (ready, result) in ready.iter().zip(results) {
+                        if ready.ends_source_sequence {
+                            source_sequences.finish(&ready.source_key);
+                        }
                         let ack = match result {
                             Ok(archive_ref) => {
-                                source_sequences.insert(ready.source_key.clone(), ready.sequence);
+                                if !ready.ends_source_sequence {
+                                    source_sequences.record(&ready.source_key, ready.sequence);
+                                }
                                 ArchiveAck::success(ready.request_id, archive_ref)
                             }
                             Err(error) => ArchiveAck::failure(
@@ -604,6 +641,50 @@ mod unix {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn source_sequence_state_is_bounded_and_terminal_operations_release_it() {
+            let mut sequences = SourceSequences::default();
+            for index in 0..SOURCE_SEQUENCE_LIMIT + 10 {
+                sequences.record(&format!("source-{index}"), 1);
+            }
+            assert_eq!(sequences.values.len(), SOURCE_SEQUENCE_LIMIT);
+            assert_eq!(sequences.order.len(), SOURCE_SEQUENCE_LIMIT);
+            assert!(!sequences.values.contains_key("source-0"));
+
+            sequences.record("active", 4);
+            assert!(sequences.is_regression("active", 3));
+            sequences.finish("active");
+            assert!(!sequences.is_regression("active", 3));
+        }
+
+        #[test]
+        fn handshake_errors_do_not_echo_untrusted_values() {
+            let hello = BrokerHello {
+                schema: "secret-schema".repeat(100),
+                binary_version: "secret-version".repeat(100),
+                archive_id: "archive".to_owned(),
+            };
+            assert_eq!(
+                validate_hello(&hello, "archive").unwrap_err(),
+                "unsupported broker schema"
+            );
+            assert!(
+                !validate_hello(&hello, "archive")
+                    .unwrap_err()
+                    .contains("secret")
+            );
+
+            let version = BrokerHello {
+                schema: BROKER_SCHEMA.to_owned(),
+                binary_version: "secret-version".repeat(100),
+                archive_id: "archive".to_owned(),
+            };
+            assert_eq!(
+                validate_hello(&version, "archive").unwrap_err(),
+                "archive broker and client versions do not match"
+            );
+        }
 
         #[test]
         fn request_errors_are_bounded_and_hide_source_identity() {

@@ -193,7 +193,7 @@ Each client may have one admitted request. The broker admits at most 256 request
 
 A full queue stops reading from affected sockets. The broker does not drop or acknowledge the request. The original request deadline remains in force.
 
-The scheduler serves one head request from each client in round-robin order. It preserves each generic source's sequence and rejects a sequence regression or incompatible concurrent use.
+The scheduler serves one head request from each client in round-robin order. It preserves each generic source's sequence and rejects a sequence regression or incompatible concurrent use. Its recent sequence cache holds at most 4,096 source keys and removes a key when the call finishes. Durable lifecycle and content checks remain authoritative after an old cache entry expires.
 
 ### Prepared data and stream files
 
