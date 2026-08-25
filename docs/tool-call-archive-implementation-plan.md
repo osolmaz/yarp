@@ -224,11 +224,11 @@ Allow one admitted request per client, 256 admitted requests globally, and at mo
 
 Stop reading from a client while its request is admitted. Apply socket backpressure when the queue is full. Keep the original request deadline.
 
-Serve one head request from each client in round-robin order. Preserve each generic source's sequence. Reject sequence regression and incompatible concurrent use.
+Serve one head request from each client in round-robin order. Preserve each generic source's sequence. Reject sequence regression and incompatible concurrent use. Bound the recent source-sequence cache at 4,096 keys, remove terminal call keys, and rely on durable lifecycle and content checks after eviction.
 
 Verification:
 
-- Tests prove request and byte bounds, stable memory use, backpressure release, deadline expiry, disconnect cleanup, round-robin service, no starvation, and per-source order.
+- Tests prove request and byte bounds, source-sequence cache bounds and terminal cleanup, stable memory use, backpressure release, deadline expiry, disconnect cleanup, round-robin service, no starvation, and per-source order.
 
 ### 9. Prepare data before writing
 
