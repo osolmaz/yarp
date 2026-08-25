@@ -17,8 +17,10 @@ class FakeProcess extends EventEmitter implements ArchiveWriterProcess {
   readonly stderr = new PassThrough()
   readonly stdin: Writable
   exitCode: number | null = null
+  signalCode: NodeJS.Signals | null = null
   requests: Request[] = []
   private buffer = Buffer.alloc(0)
+  private exited = false
 
   constructor(private readonly handleRequest: RequestHandler) {
     super()
@@ -61,8 +63,10 @@ class FakeProcess extends EventEmitter implements ArchiveWriterProcess {
   }
 
   exit(code: number | null, signal: NodeJS.Signals | null): void {
-    if (this.exitCode !== null) return
-    this.exitCode = code ?? 1
+    if (this.exited) return
+    this.exited = true
+    this.exitCode = code
+    this.signalCode = signal
     queueMicrotask(() => this.emit("exit", code, signal))
   }
 
@@ -165,6 +169,31 @@ test("fails once when acknowledgements time out", async () => {
     /acknowledgement timed out/,
   )
   assert.equal(starts, 1)
+  await client.close()
+})
+
+test("starts a new writer after an acknowledgement timeout", async () => {
+  const processes: FakeProcess[] = []
+  const client = new ArchiveClient(() => {
+    const process = new FakeProcess((request, writer) => {
+      if (processes.length > 1) writer.acknowledge(request)
+    })
+    processes.push(process)
+    return process
+  }, 1024, 10)
+
+  await assert.rejects(client.beginCall(session, call, {}, {}, 2), /acknowledgement timed out/)
+  const archiveRef = await client.beginCall(
+    session,
+    { ...call, sourceCallId: "call-2" },
+    {},
+    {},
+    3,
+  )
+
+  assert.equal(archiveRef, "yr_0123456789abcdef0123456789abcdef")
+  assert.equal(processes.length, 2)
+  assert.equal(processes[0]?.signalCode, "SIGTERM")
   await client.close()
 })
 

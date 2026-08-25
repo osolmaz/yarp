@@ -278,7 +278,10 @@ export class ArchiveClient implements ArchiveSink {
         if (pending === undefined) return
         this.pending.delete(requestId)
         pending.reject(new Error(`archive acknowledgement timed out after ${reportedTimeoutMs} ms`))
-        if (this.child === child) child.kill("SIGTERM")
+        if (this.child === child) {
+          this.child = null
+          child.kill("SIGTERM")
+        }
       }, timeoutMs)
       this.pending.set(requestId, {
         resolve: (archiveRef) => {
@@ -312,7 +315,10 @@ export class ArchiveClient implements ArchiveSink {
     child.stdout.setEncoding("utf8")
     child.stderr.setEncoding("utf8")
     child.stdin.on("error", (error: Error) => {
-      if (this.child === child) this.rejectPending(error)
+      if (this.child === child) {
+        this.child = null
+        this.rejectPending(error)
+      }
     })
     child.stdout.on("data", (chunk: string) => {
       if (this.child === child) this.receiveAcks(chunk)
@@ -323,12 +329,16 @@ export class ArchiveClient implements ArchiveSink {
       }
     })
     child.on("error", (error: Error) => {
-      if (this.child === child) this.rejectPending(error)
+      if (this.child === child) {
+        this.child = null
+        this.rejectPending(error)
+      }
     })
     child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
       if (this.child !== child) return
       const suffix = this.stderr.trim()
       const detail = suffix === "" ? "" : `: ${suffix}`
+      this.child = null
       this.rejectPending(
         new Error(
           `archive writer exited with ${signal === null ? `code ${String(code)}` : signal}${detail}`,
@@ -341,8 +351,10 @@ export class ArchiveClient implements ArchiveSink {
   private receiveAcks(chunk: string): void {
     this.ackBuffer += chunk
     if (this.ackBuffer.length > MAX_ACK_BUFFER_BYTES) {
+      const child = this.child
+      this.child = null
       this.rejectPending(new Error("archive writer acknowledgement exceeded 64 KiB"))
-      this.child?.kill("SIGTERM")
+      child?.kill("SIGTERM")
       return
     }
     for (;;) {
@@ -352,8 +364,10 @@ export class ArchiveClient implements ArchiveSink {
       this.ackBuffer = this.ackBuffer.slice(newline + 1)
       const ack = parseAck(line)
       if (ack === null) {
+        const child = this.child
+        this.child = null
         this.rejectPending(new Error("archive writer returned an invalid acknowledgement"))
-        this.child?.kill("SIGTERM")
+        child?.kill("SIGTERM")
         return
       }
       const pending = this.pending.get(ack.requestId)
