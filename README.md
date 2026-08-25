@@ -151,7 +151,7 @@ Delete finished calls older than a UTC timestamp only when you choose to:
 yarp archive prune --before 2026-01-01T00:00:00Z
 ```
 
-Run `yarp config set archive.enabled false` to opt out of capture. The archive may contain commands, source code, file contents, and secrets printed by tools. It stays local and uses private filesystem permissions. Initial capture is acknowledged only after commit, and a failed initial capture blocks execution. See the [archive specification](docs/tool-call-archive-spec.md) for the full broker, format, recovery, and failure rules.
+Run `yarp config set archive.enabled false` to opt out of capture. The archive may contain commands, source code, file contents, and secrets printed by tools. It stays local and uses private filesystem permissions. Initial capture is acknowledged only after commit. If that acknowledgement fails or takes more than two seconds, the Pi adapter runs the original tool without capture or rewriting and reports one warning. See the [archive specification](docs/tool-call-archive-spec.md) for the full broker, format, recovery, and failure rules.
 
 ## Analyze existing tool calls offline
 

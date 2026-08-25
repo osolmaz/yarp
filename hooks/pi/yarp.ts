@@ -163,6 +163,7 @@ export async function installYarpExtension(
   const activeCalls = new Map<string, ActiveCall>()
   const pendingCalls = new Map<string, PendingCall>()
   const restoredFinalResults = new Map<string, ResultPatch>()
+  let archiveWarningReported = false
 
   pi.on("session_start", async (_event, context) => {
     projectRulePack = await trustedProjectRulePack(context)
@@ -172,6 +173,7 @@ export async function installYarpExtension(
     activeCalls.clear()
     pendingCalls.clear()
     restoredFinalResults.clear()
+    archiveWarningReported = false
   })
 
   pi.on("session_shutdown", async () => {
@@ -243,22 +245,34 @@ export async function installYarpExtension(
         rewritten !== null && binding !== null && rewritten !== binding.command
       const pending = pendingCalls.get(event.toolCallId)
       const capturedAtMs = pending?.capturedAtMs ?? Date.now()
-      const archiveRef = await archive.sink.beginCall(
-        archive.session,
-        callIdentity(event, context, requiresStreams, capturedAtMs),
-        inputBefore,
-        inputAfter,
-        capturedAtMs,
-      )
-      pendingCalls.delete(event.toolCallId)
-      activeCalls.set(event.toolCallId, {
-        requiresStreams,
-        staged: false,
-        archiveRef,
-        sourceCommand,
-        executedCommand,
-        resultPolicy,
-      })
+      try {
+        const archiveRef = await archive.sink.beginCall(
+          archive.session,
+          callIdentity(event, context, requiresStreams, capturedAtMs),
+          inputBefore,
+          inputAfter,
+          capturedAtMs,
+        )
+        activeCalls.set(event.toolCallId, {
+          requiresStreams,
+          staged: false,
+          archiveRef,
+          sourceCommand,
+          executedCommand,
+          resultPolicy,
+        })
+      } catch (error) {
+        rewritten = null
+        resultPolicy = "pass_through"
+        if (!archiveWarningReported) {
+          archiveWarningReported = true
+          console.warn(
+            `[yarp] initial archive capture failed; running tools without archive capture: ${errorMessage(error)}`,
+          )
+        }
+      } finally {
+        pendingCalls.delete(event.toolCallId)
+      }
     }
 
     if (rewritten !== null && binding !== null && rewritten !== binding.command) {
