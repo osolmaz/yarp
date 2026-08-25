@@ -3,6 +3,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::archive::{CallIdentity, SessionIdentity, SourceCompleteness};
 
@@ -27,6 +28,7 @@ pub(crate) enum ArchiveOperation {
         input_before: Value,
         input_after: Value,
         captured_at_ms: i64,
+        deadline_at_ms: i64,
     },
     ResultBefore {
         request_id: u64,
@@ -134,6 +136,33 @@ impl ArchiveOperation {
             | Self::CapturePassthroughStreams { schema_version, .. }
             | Self::PruneBefore { schema_version, .. } => *schema_version,
         }
+    }
+
+    pub(crate) fn acknowledgement_deadline_ms(&self) -> Result<u64, String> {
+        let Self::BeginCall { deadline_at_ms, .. } = self else {
+            return Ok(ACK_DEADLINE_MS);
+        };
+        let now_ms = i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| "system clock is before the Unix epoch".to_owned())?
+                .as_millis(),
+        )
+        .map_err(|_| "system clock timestamp does not fit in i64".to_owned())?;
+        let remaining_ms = deadline_at_ms
+            .checked_sub(now_ms)
+            .ok_or_else(|| "initial archive acknowledgement deadline is invalid".to_owned())?;
+        if remaining_ms <= 0 {
+            return Err("initial archive acknowledgement deadline expired".to_owned());
+        }
+        let remaining_ms = u64::try_from(remaining_ms)
+            .map_err(|_| "initial archive acknowledgement deadline is invalid".to_owned())?;
+        if remaining_ms > ACK_DEADLINE_MS {
+            return Err(format!(
+                "initial archive acknowledgement deadline exceeds {ACK_DEADLINE_MS} ms"
+            ));
+        }
+        Ok(remaining_ms)
     }
 
     pub(crate) fn source_key(&self) -> String {
@@ -378,6 +407,17 @@ impl ArchiveAck {
 mod tests {
     use super::*;
 
+    fn deadline_at_ms() -> i64 {
+        i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("current Unix time")
+                .as_millis(),
+        )
+        .expect("timestamp fits in i64")
+            + i64::try_from(ACK_DEADLINE_MS).expect("deadline fits in i64")
+    }
+
     fn session() -> SessionIdentity {
         SessionIdentity {
             agent: "agent-secret".to_owned(),
@@ -404,6 +444,7 @@ mod tests {
             input_before: serde_json::json!({}),
             input_after: serde_json::json!({}),
             captured_at_ms: 3,
+            deadline_at_ms: deadline_at_ms(),
         }
     }
 
@@ -429,6 +470,22 @@ mod tests {
         envelope.source_key = envelope.operation.source_key();
         envelope.deadline_ms = 0;
         assert!(envelope.validate().unwrap_err().contains("deadline"));
+    }
+
+    #[test]
+    fn begin_call_rejects_an_expired_adapter_deadline() {
+        let mut operation = begin();
+        let ArchiveOperation::BeginCall { deadline_at_ms, .. } = &mut operation else {
+            unreachable!("begin fixture changed")
+        };
+        *deadline_at_ms = 0;
+
+        assert!(
+            operation
+                .acknowledgement_deadline_ms()
+                .unwrap_err()
+                .contains("deadline expired")
+        );
     }
 
     #[test]

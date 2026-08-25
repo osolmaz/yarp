@@ -155,6 +155,8 @@ The broker opens the archive, applies any supported in-place migration, and veri
 
 The socket protocol uses the schema identifier `yarp.archive-broker.v1`. The adapter-facing ingest protocol keeps `schemaVersion: 1`. The two version fields have separate meanings.
 
+The `begin_call` ingest operation includes the absolute `deadlineAtMs` set by the adapter. The Rust bridge rejects an expired value and converts the remaining time to the broker deadline. The broker checks that deadline again before it commits the batch.
+
 A broker handshake includes the protocol schema, YARP binary version, canonical archive identity, and a connection correlation ID. A request envelope contains:
 
 - a bounded correlation ID for the connection;

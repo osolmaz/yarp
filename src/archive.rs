@@ -543,12 +543,15 @@ impl Archive {
     pub(crate) fn apply_prepared_batch<'a>(
         &mut self,
         operations: impl IntoIterator<Item = &'a mut PreparedArchiveOperation>,
+        deadline: Instant,
     ) -> Result<Vec<Result<Option<String>, String>>, BatchWriteError> {
+        require_batch_deadline(deadline)?;
         let mut operations = operations.into_iter().collect::<Vec<_>>();
         let mut transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| batch_error("could not start archive batch", &error))?;
+        require_batch_deadline(deadline)?;
         let mut results = Vec::with_capacity(operations.len());
         let mut pruned = false;
         for operation in &mut operations {
@@ -575,10 +578,12 @@ impl Archive {
             }
         }
         if pruned {
+            require_batch_deadline(deadline)?;
             transaction
                 .execute_batch("PRAGMA incremental_vacuum")
                 .map_err(|error| batch_error("could not vacuum archive", &error))?;
         }
+        require_batch_deadline(deadline)?;
         transaction
             .commit()
             .map_err(|error| batch_error("could not commit archive batch", &error))?;
@@ -2691,6 +2696,16 @@ fn batch_error(context: &str, error: &rusqlite::Error) -> BatchWriteError {
     }
 }
 
+fn require_batch_deadline(deadline: Instant) -> Result<(), BatchWriteError> {
+    if Instant::now() < deadline {
+        Ok(())
+    } else {
+        Err(BatchWriteError::Permanent(
+            "archive broker request deadline expired before commit".to_owned(),
+        ))
+    }
+}
+
 fn ensure_session(transaction: &Connection, session: &SessionIdentity) -> Result<i64, String> {
     transaction
         .execute(
@@ -3384,6 +3399,21 @@ mod tests {
         (directory, archive)
     }
 
+    fn batch_deadline() -> Instant {
+        Instant::now() + Duration::from_secs(30)
+    }
+
+    fn ingest_deadline_at_ms() -> i64 {
+        i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("current Unix time")
+                .as_millis(),
+        )
+        .expect("timestamp fits in i64")
+            + 30_000
+    }
+
     fn session() -> SessionIdentity {
         SessionIdentity {
             agent: "pi".to_owned(),
@@ -3426,6 +3456,7 @@ mod tests {
             input_before: value.clone(),
             input_after: value,
             captured_at_ms: 20,
+            deadline_at_ms: ingest_deadline_at_ms(),
         }
     }
 
@@ -3458,12 +3489,28 @@ mod tests {
             ))
             .expect("prepare second");
         let results = archive
-            .apply_prepared_batch([&mut first, &mut second])
+            .apply_prepared_batch([&mut first, &mut second], batch_deadline())
             .expect("batch");
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(Result::is_ok));
         assert_eq!(archive.stats().expect("stats").calls, 2);
         assert!(archive.verify().expect("verify").errors.is_empty());
+    }
+
+    #[test]
+    fn expired_batch_deadline_does_not_commit() {
+        let (_directory, mut archive) = archive();
+        archive.configure_for_broker().expect("broker policy");
+        let mut operation = archive
+            .prepare_operation(begin_operation(1, "expired-call", serde_json::json!({})))
+            .expect("prepare call");
+
+        let error = archive
+            .apply_prepared_batch([&mut operation], Instant::now())
+            .expect_err("expired batch");
+
+        assert!(error.message().contains("deadline expired"));
+        assert_eq!(archive.stats().expect("stats").calls, 0);
     }
 
     #[test]
@@ -3487,6 +3534,7 @@ mod tests {
             input_before: serde_json::json!({}),
             input_after: shared.clone(),
             captured_at_ms: 20,
+            deadline_at_ms: ingest_deadline_at_ms(),
         };
         let mut first = archive
             .prepare_operation(conflicting)
@@ -3495,7 +3543,7 @@ mod tests {
             .prepare_operation(begin_operation(2, "call-2", shared))
             .expect("prepare second");
         let results = archive
-            .apply_prepared_batch([&mut first, &mut second])
+            .apply_prepared_batch([&mut first, &mut second], batch_deadline())
             .expect("batch commit");
         assert!(results[0].is_err());
         assert!(results[1].is_ok());
@@ -3514,7 +3562,7 @@ mod tests {
             ))
             .expect("prepare first");
         archive
-            .apply_prepared_batch([&mut first])
+            .apply_prepared_batch([&mut first], batch_deadline())
             .expect("first commit");
         let mut replay = archive
             .prepare_operation(begin_operation(
@@ -3525,7 +3573,7 @@ mod tests {
             .expect("prepare replay");
         assert!(
             archive
-                .apply_prepared_batch([&mut replay])
+                .apply_prepared_batch([&mut replay], batch_deadline())
                 .expect("replay commit")[0]
                 .is_ok()
         );
@@ -3538,7 +3586,7 @@ mod tests {
             .expect("prepare conflict");
         assert!(
             archive
-                .apply_prepared_batch([&mut conflict])
+                .apply_prepared_batch([&mut conflict], batch_deadline())
                 .expect("conflict batch")[0]
                 .is_err()
         );
@@ -3575,6 +3623,7 @@ mod tests {
                 input_before: serde_json::json!({"cmd": "test"}),
                 input_after: serde_json::json!({"cmd": "test"}),
                 captured_at_ms: 20,
+                deadline_at_ms: ingest_deadline_at_ms(),
             },
             ArchiveOperation::CaptureStreams {
                 request_id: 2,
@@ -3629,7 +3678,7 @@ mod tests {
             .map(|operation| archive.prepare_operation(operation).expect("prepare"))
             .collect::<Vec<_>>();
         let results = archive
-            .apply_prepared_batch(prepared.iter_mut())
+            .apply_prepared_batch(prepared.iter_mut(), batch_deadline())
             .expect("complete batch");
         assert!(results.iter().all(Result::is_ok));
         assert_eq!(archive.stats().expect("stats").incomplete_calls, 0);
@@ -3666,7 +3715,7 @@ mod tests {
             })
             .expect("prepare prune");
         let result = archive
-            .apply_prepared_batch([&mut prune])
+            .apply_prepared_batch([&mut prune], batch_deadline())
             .expect("prune batch");
         assert_eq!(
             result[0].as_ref().expect("prune result").as_deref(),
@@ -3705,7 +3754,7 @@ mod tests {
             .expect("prepare first");
         assert!(
             archive
-                .apply_prepared_batch([&mut first])
+                .apply_prepared_batch([&mut first], batch_deadline())
                 .expect("first batch")[0]
                 .is_ok()
         );
@@ -3715,7 +3764,7 @@ mod tests {
             .expect("prepare replay");
         assert!(
             archive
-                .apply_prepared_batch([&mut replay])
+                .apply_prepared_batch([&mut replay], batch_deadline())
                 .expect("replay batch")[0]
                 .is_err()
         );
@@ -4562,7 +4611,8 @@ mod tests {
             "call": call(),
             "inputBefore": {},
             "inputAfter": {},
-            "capturedAtMs": 20
+            "capturedAtMs": 20,
+            "deadlineAtMs": ingest_deadline_at_ms()
         });
         let mut output = Vec::new();
         run_ingest_with_archive(archive, Cursor::new(framed(&operation)), &mut output)
@@ -4590,7 +4640,8 @@ mod tests {
                 "call": call(),
                 "inputBefore": {"path": "a"},
                 "inputAfter": {"path": "a"},
-                "capturedAtMs": 20
+                "capturedAtMs": 20,
+                "deadlineAtMs": ingest_deadline_at_ms()
             }),
             serde_json::json!({
                 "operation": "result_before",
@@ -4685,7 +4736,8 @@ mod tests {
             "call": call(),
             "inputBefore": {"path": "a"},
             "inputAfter": {"path": "a"},
-            "capturedAtMs": 20
+            "capturedAtMs": 20,
+            "deadlineAtMs": ingest_deadline_at_ms()
         });
         let body = serde_json::to_vec(&operation).expect("json");
         let mut input = Vec::new();

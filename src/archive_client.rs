@@ -154,8 +154,9 @@ mod unix {
         fn send(&mut self, operation: ArchiveOperation) -> Result<ArchiveAck, String> {
             let request_id = operation.request_id();
             let replay_policy = operation.replay_policy();
-            let deadline = Instant::now() + Duration::from_millis(ACK_DEADLINE_MS);
-            let mut envelope = BrokerEnvelope::new(operation, ACK_DEADLINE_MS);
+            let deadline_ms = operation.acknowledgement_deadline_ms()?;
+            let deadline = Instant::now() + Duration::from_millis(deadline_ms);
+            let mut envelope = BrokerEnvelope::new(operation, deadline_ms);
             match send_once(&mut self.stream, &mut envelope, request_id, deadline) {
                 Ok(ack) => Ok(ack),
                 Err(first_error) => match replay_policy {
@@ -323,6 +324,7 @@ mod unix {
         use std::fs;
         use std::os::unix::fs::PermissionsExt as _;
         use std::os::unix::net::UnixListener;
+        use std::time::{SystemTime, UNIX_EPOCH};
 
         use crate::archive::{CallIdentity, SessionIdentity};
         use tempfile::tempdir;
@@ -349,6 +351,14 @@ mod unix {
                 input_before: serde_json::json!({}),
                 input_after: serde_json::json!({}),
                 captured_at_ms: 3,
+                deadline_at_ms: i64::try_from(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("current Unix time")
+                        .as_millis(),
+                )
+                .expect("timestamp fits in i64")
+                    + i64::try_from(ACK_DEADLINE_MS).expect("deadline fits in i64"),
             }
         }
 
