@@ -111,6 +111,7 @@ export class ArchiveClient implements ArchiveSink {
     private readonly spawnWriter: SpawnWriter = defaultSpawnWriter,
     private readonly maxFrameBytes: number = MAX_FRAME_BYTES,
     private readonly ackTimeoutMs: number = ACK_TIMEOUT_MS,
+    private readonly beginAckTimeoutMs: number = BEGIN_ACK_TIMEOUT_MS,
   ) {}
 
   beginCall(
@@ -120,7 +121,7 @@ export class ArchiveClient implements ArchiveSink {
     inputAfter: unknown,
     capturedAtMs: number,
   ): Promise<string> {
-    const timeoutMs = Math.min(this.ackTimeoutMs, BEGIN_ACK_TIMEOUT_MS)
+    const timeoutMs = Math.min(this.ackTimeoutMs, this.beginAckTimeoutMs)
     return this.send(
       {
         operation: "begin_call",
@@ -245,15 +246,35 @@ export class ArchiveClient implements ArchiveSink {
     if (this.closing) return Promise.reject(new Error("YARP archive client is closing"))
     const requestId = this.nextRequestId++
     const request = { ...operation, requestId, schemaVersion: INGEST_SCHEMA_VERSION }
-    const task = this.queue.then(() => {
+    const queuedTask = this.queue.then(() => {
       const remainingMs = deadlineAtMs === undefined ? timeoutMs : deadlineAtMs - Date.now()
       if (remainingMs <= 0) {
         throw new Error(`archive acknowledgement timed out after ${timeoutMs} ms`)
       }
       return this.sendOnce(requestId, request, remainingMs, timeoutMs)
     })
-    this.queue = task.then(ignoreAck, () => undefined)
-    return task
+    this.queue = queuedTask.then(ignoreAck, () => undefined)
+    if (deadlineAtMs === undefined) return queuedTask
+    const remainingMs = deadlineAtMs - Date.now()
+    if (remainingMs <= 0) {
+      return Promise.reject(new Error(`archive acknowledgement timed out after ${timeoutMs} ms`))
+    }
+    return new Promise<string | undefined>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`archive acknowledgement timed out after ${timeoutMs} ms`)),
+        remainingMs,
+      )
+      void queuedTask.then(
+        (archiveRef) => {
+          clearTimeout(timer)
+          resolve(archiveRef)
+        },
+        (error: unknown) => {
+          clearTimeout(timer)
+          reject(error instanceof Error ? error : new Error(String(error)))
+        },
+      )
+    })
   }
 
   private async sendOnce(
