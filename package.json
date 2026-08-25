@@ -1,6 +1,6 @@
 {
   "name": "yarp-cli",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Prune Pi command output and archive tool calls locally",
   "type": "module",
