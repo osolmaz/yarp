@@ -2,7 +2,11 @@
 
 pub mod agent_skill;
 pub mod archive;
+mod archive_broker;
+mod archive_client;
+mod archive_protocol;
 pub mod archive_query;
+mod archive_runtime;
 pub mod config;
 mod config_cli;
 pub mod reducers;
@@ -20,7 +24,7 @@ use std::io::Write as _;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-const HELP: &str = "YARP prunes developer command output and archives Pi tool calls.\n\nUsage:\n  yarp plan --json [--rule-pack <path>]... <shell-command>\n  yarp rewrite [--rule-pack <path>]... <shell-command>\n  yarp run [--rule-pack <path>]... -- <command> [arguments...]\n  yarp config <path|init|show|get|set|unset|check>\n  yarp rules check <source-pack>\n  yarp rules compile <source-pack> --output <compiled-pack>\n  yarp rules verify <compiled-pack>\n  yarp rules list [--rule-pack <path>]... [--json]\n  yarp rules explain [--rule-pack <path>]... [--json] -- <command> [arguments...]\n  yarp search REF PATTERN [options]\n  yarp read REF [SOURCE] START:END\n  yarp read REF SOURCE --bytes START:END\n  yarp archive stats\n  yarp archive verify\n  yarp archive prune --before <UTC timestamp>\n  yarp archive ingest\n  yarp --skill list\n  yarp --skill show yarp\n  yarp --skill export yarp\n  yarp --help\n  yarp --version\n";
+const HELP: &str = "YARP prunes developer command output and archives Pi tool calls.\n\nUsage:\n  yarp plan --json [--rule-pack <path>]... <shell-command>\n  yarp rewrite [--rule-pack <path>]... <shell-command>\n  yarp run [--rule-pack <path>]... -- <command> [arguments...]\n  yarp config <path|init|show|get|set|unset|check>\n  yarp rules check <source-pack>\n  yarp rules compile <source-pack> --output <compiled-pack>\n  yarp rules verify <compiled-pack>\n  yarp rules list [--rule-pack <path>]... [--json]\n  yarp rules explain [--rule-pack <path>]... [--json] -- <command> [arguments...]\n  yarp search REF PATTERN [options]\n  yarp read REF [SOURCE] START:END\n  yarp read REF SOURCE --bytes START:END\n  yarp archive stats\n  yarp archive verify\n  yarp archive prune --before <UTC timestamp>\n  yarp archive ingest\n  yarp archive broker\n  yarp --skill list\n  yarp --skill show yarp\n  yarp --skill export yarp\n  yarp --help\n  yarp --version\n";
 
 /// Run the command-line interface and return the process exit code.
 #[must_use]
@@ -74,6 +78,15 @@ pub fn run_cli(arguments: &[String]) -> i32 {
         [command, subcommand] if command == "archive" && subcommand == "verify" => archive_verify(),
         [command, subcommand] if command == "archive" && subcommand == "ingest" => {
             match archive::run_ingest(io::stdin().lock(), io::stdout().lock()) {
+                Ok(()) => 0,
+                Err(error) => {
+                    eprintln!("yarp: {error}");
+                    74
+                }
+            }
+        }
+        [command, subcommand] if command == "archive" && subcommand == "broker" => {
+            match archive_broker::run() {
                 Ok(()) => 0,
                 Err(error) => {
                     eprintln!("yarp: {error}");
@@ -202,7 +215,7 @@ fn write_recovery_error(error: &str) {
 }
 
 fn archive_stats() -> i32 {
-    match archive::Archive::open().and_then(|archive| archive.stats()) {
+    match archive::Archive::open_read_only().and_then(|archive| archive.stats()) {
         Ok(stats) => {
             println!("sessions: {}", stats.sessions);
             println!("calls: {}", stats.calls);
@@ -273,10 +286,19 @@ fn archive_prune(timestamp: &str) -> i32 {
     let Ok(milliseconds) = i64::try_from(parsed.unix_timestamp_nanos() / 1_000_000) else {
         return usage_error("prune timestamp is outside the supported range");
     };
-    match archive::Archive::open().and_then(|mut archive| archive.prune_before(milliseconds)) {
-        Ok(deleted) => {
+    let operation = archive_protocol::ArchiveOperation::PruneBefore {
+        request_id: 1,
+        schema_version: archive_protocol::INGEST_SCHEMA_VERSION,
+        timestamp_ms: milliseconds,
+    };
+    match archive_client::execute(operation) {
+        Ok(Some(deleted)) => {
             println!("pruned_calls: {deleted}");
             0
+        }
+        Ok(None) => {
+            eprintln!("yarp: archive broker returned no prune count");
+            74
         }
         Err(error) => {
             eprintln!("yarp: {error}");

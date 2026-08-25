@@ -14,4 +14,4 @@ The extension loads one resolved snapshot from `yarp config show --json` before 
 
 When Pi reports the project as trusted, the extension also checks the single conventional path `.yarp/rules.yrp` and passes that compiled pack to the Rust binary. It rejects symlinked paths and never scans for source rules. Untrusted projects use embedded rules only.
 
-The extension starts a session-scoped `yarp archive ingest` process and closes it during `session_shutdown`. It does not install a system or user service.
+The extension starts one session-scoped `yarp archive ingest` bridge and closes it during `session_shutdown`. The bridge sends generic requests to one agent-neutral local YARP broker shared by all sessions and command wrappers. The broker is the only normal SQLite writer. YARP starts it on demand over a private Unix socket and stops it after a bounded idle period. Neither process installs a system or user service or opens a network port. The Rust bridge owns broker reconnect and safe request replay; the TypeScript adapter does not run a second replay loop.

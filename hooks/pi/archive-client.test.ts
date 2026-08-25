@@ -109,40 +109,32 @@ test("sends framed requests and waits for acknowledgements", async () => {
   await client.close()
 })
 
-test("restarts once and reuses the request id after transport failure", async () => {
+test("leaves transport recovery to the Rust bridge", async () => {
   const processes: FakeProcess[] = []
   const client = new ArchiveClient(() => {
-    const index = processes.length
-    const process = new FakeProcess((request, writer) => {
-      if (index === 0) writer.exit(1, null)
-      else writer.acknowledge(request)
-    })
+    const process = new FakeProcess((_request, writer) => writer.exit(1, null))
     processes.push(process)
     return process
   })
 
-  await client.beginCall(session, call, {}, {}, 2)
-  assert.equal(processes.length, 2)
+  await assert.rejects(client.beginCall(session, call, {}, {}, 2), /exited with code 1/)
+  assert.equal(processes.length, 1)
   assert.equal(processes[0]?.requests[0]?.requestId, 1)
-  assert.equal(processes[1]?.requests[0]?.requestId, 1)
   await client.close()
 })
 
-test("restarts after an asynchronous writer pipe error", async () => {
+test("does not restart after an asynchronous writer pipe error", async () => {
   const processes: FakeProcess[] = []
   const client = new ArchiveClient(() => {
-    const index = processes.length
-    const process = new FakeProcess((request, writer) => {
-      if (index === 0) {
-        queueMicrotask(() => writer.stdin.emit("error", new Error("broken pipe")))
-      } else writer.acknowledge(request)
+    const process = new FakeProcess((_request, writer) => {
+      queueMicrotask(() => writer.stdin.emit("error", new Error("broken pipe")))
     })
     processes.push(process)
     return process
   })
 
-  await client.beginCall(session, call, {}, {}, 2)
-  assert.equal(processes.length, 2)
+  await assert.rejects(client.beginCall(session, call, {}, {}, 2), /broken pipe/)
+  assert.equal(processes.length, 1)
   await client.close()
 })
 
@@ -161,7 +153,7 @@ test("rejects oversized requests before starting the writer", async () => {
   await client.close()
 })
 
-test("restarts once and fails when acknowledgements time out", async () => {
+test("fails once when acknowledgements time out", async () => {
   let starts = 0
   const client = new ArchiveClient(() => {
     starts += 1
@@ -172,7 +164,7 @@ test("restarts once and fails when acknowledgements time out", async () => {
     client.beginCall(session, call, {}, {}, 2),
     /acknowledgement timed out/,
   )
-  assert.equal(starts, 2)
+  assert.equal(starts, 1)
   await client.close()
 })
 

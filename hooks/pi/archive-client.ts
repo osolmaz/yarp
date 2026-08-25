@@ -235,28 +235,9 @@ export class ArchiveClient implements ArchiveSink {
     if (this.closing) return Promise.reject(new Error("YARP archive client is closing"))
     const requestId = this.nextRequestId++
     const request = { ...operation, requestId, schemaVersion: INGEST_SCHEMA_VERSION }
-    const task = this.queue.then(() => this.sendWithRetry(requestId, request))
+    const task = this.queue.then(() => this.sendOnce(requestId, request))
     this.queue = task.then(ignoreAck, () => undefined)
     return task
-  }
-
-  private async sendWithRetry(
-    requestId: number,
-    request: Record<string, unknown>,
-  ): Promise<string | undefined> {
-    try {
-      return await this.sendOnce(requestId, request)
-    } catch (firstError) {
-      if (firstError instanceof ArchiveRejectedError) throw firstError
-      await this.stopBrokenChild()
-      try {
-        return await this.sendOnce(requestId, request)
-      } catch (secondError) {
-        const first = errorMessage(firstError)
-        const second = errorMessage(secondError)
-        throw new Error(`archive writer failed after restart: ${first}; ${second}`)
-      }
-    }
   }
 
   private async sendOnce(
@@ -369,17 +350,6 @@ export class ArchiveClient implements ArchiveSink {
     for (const pending of this.pending.values()) pending.reject(error)
     this.pending.clear()
   }
-
-  private async stopBrokenChild(): Promise<void> {
-    const child = this.child
-    this.child = null
-    if (child === null || child.exitCode !== null) return
-    child.kill("SIGTERM")
-    await Promise.race([
-      once(child, "exit"),
-      new Promise<void>((resolve) => setTimeout(resolve, CLOSE_TIMEOUT_MS)),
-    ])
-  }
 }
 
 function defaultSpawnWriter(): ArchiveWriterProcess {
@@ -425,8 +395,4 @@ function isArchiveRef(value: unknown): value is string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }

@@ -99,6 +99,13 @@ impl RawSpool {
     fn as_file_mut(&mut self) -> &mut std::fs::File {
         self.file.as_file_mut()
     }
+
+    fn prepared_path(&mut self) -> Result<std::path::PathBuf, String> {
+        self.file
+            .flush()
+            .map_err(|error| format!("could not flush archive spool: {error}"))?;
+        Ok(self.file.path().to_path_buf())
+    }
 }
 
 /// Run one command selected by the built-in rule registry.
@@ -226,7 +233,7 @@ fn finish_run(
         {
             Ok(value) => Some(value),
             Err(error) => {
-                restore_after_capture_error(&mut stdout, &mut stderr, passthrough)?;
+                restore_after_capture_error(&mut stdout, &mut stderr)?;
                 eprintln!("yarp: archive failed after command execution: {error}");
                 return Ok(exit_code(status));
             }
@@ -254,7 +261,7 @@ fn finish_run(
     );
     let capture_errors = capture_errors(&stdout, &stderr);
     if !capture_errors.is_empty() {
-        restore_after_capture_error(&mut stdout, &mut stderr, passthrough)?;
+        restore_after_capture_error(&mut stdout, &mut stderr)?;
         eprintln!(
             "yarp: archive failed after command execution: {}",
             capture_errors.join("; ")
@@ -271,12 +278,12 @@ fn finish_run(
             passthrough,
         )
     {
-        if !passthrough {
-            emit_raw(&mut stdout, &mut io::stdout(), "stdout")?;
-            emit_raw(&mut stderr, &mut io::stderr(), "stderr")?;
-        }
+        restore_after_capture_error(&mut stdout, &mut stderr)?;
         eprintln!("yarp: archive failed after command execution: {error}");
         return Ok(exit_code(status));
+    }
+    if passthrough {
+        restore_after_capture_error(&mut stdout, &mut stderr)?;
     }
     if let Some(stdout_after) = stdout_after {
         io::stdout()
@@ -310,13 +317,14 @@ fn capture_errors(stdout: &CapturedStream, stderr: &CapturedStream) -> Vec<Strin
 fn restore_after_capture_error(
     stdout: &mut CapturedStream,
     stderr: &mut CapturedStream,
-    passthrough: bool,
 ) -> Result<(), String> {
-    if !passthrough && !stdout.raw_emitted {
+    if !stdout.raw_emitted {
         emit_raw(stdout, &mut io::stdout(), "stdout")?;
+        stdout.raw_emitted = true;
     }
-    if !passthrough && !stderr.raw_emitted {
+    if !stderr.raw_emitted {
         emit_raw(stderr, &mut io::stderr(), "stderr")?;
+        stderr.raw_emitted = true;
     }
     Ok(())
 }
@@ -329,32 +337,53 @@ fn archive_captures(
     stderr_after: Option<&[u8]>,
     passthrough: bool,
 ) -> Result<(), String> {
-    let stdout_raw = stdout
+    let stdout_path = stdout
         .raw
         .as_mut()
-        .ok_or_else(|| "stdout archive spool is missing".to_owned())?;
-    let stderr_raw = stderr
+        .ok_or_else(|| "stdout archive spool is missing".to_owned())?
+        .prepared_path()?;
+    let stderr_path = stderr
         .raw
         .as_mut()
-        .ok_or_else(|| "stderr archive spool is missing".to_owned())?;
-    let mut archive = crate::archive::Archive::open()?;
-    if passthrough {
-        archive.capture_passthrough_streams(
-            key,
-            unix_time_ms(),
-            stdout_raw.as_file_mut(),
-            stderr_raw.as_file_mut(),
-        )
+        .ok_or_else(|| "stderr archive spool is missing".to_owned())?
+        .prepared_path()?;
+    let captured_at_ms = unix_time_ms();
+    let operation = if passthrough {
+        crate::archive_protocol::ArchiveOperation::CapturePassthroughStreams {
+            request_id: 1,
+            schema_version: crate::archive_protocol::INGEST_SCHEMA_VERSION,
+            session: key.session.clone(),
+            source_call_id: key.source_call_id.clone(),
+            captured_at_ms,
+            stdout_path,
+            stderr_path,
+        }
     } else {
-        archive.capture_streams(
-            key,
-            unix_time_ms(),
-            stdout_raw.as_file_mut(),
-            stderr_raw.as_file_mut(),
-            stdout_after.unwrap_or_default(),
-            stderr_after.unwrap_or_default(),
-        )
-    }
+        let stdout_after = spool_bytes(stdout_after.unwrap_or_default(), "stdout")?;
+        let stderr_after = spool_bytes(stderr_after.unwrap_or_default(), "stderr")?;
+        let operation = crate::archive_protocol::ArchiveOperation::CaptureStreams {
+            request_id: 1,
+            schema_version: crate::archive_protocol::INGEST_SCHEMA_VERSION,
+            session: key.session.clone(),
+            source_call_id: key.source_call_id.clone(),
+            captured_at_ms,
+            stdout_before_path: stdout_path,
+            stderr_before_path: stderr_path,
+            stdout_after_path: stdout_after.path().to_path_buf(),
+            stderr_after_path: stderr_after.path().to_path_buf(),
+        };
+        return crate::archive_client::execute(operation).map(|_| ());
+    };
+    crate::archive_client::execute(operation).map(|_| ())
+}
+
+fn spool_bytes(body: &[u8], label: &str) -> Result<NamedTempFile, String> {
+    let mut file = NamedTempFile::new()
+        .map_err(|error| format!("could not create {label} archive spool: {error}"))?;
+    file.write_all(body)
+        .and_then(|()| file.flush())
+        .map_err(|error| format!("could not write {label} archive spool: {error}"))?;
+    Ok(file)
 }
 
 fn select_rule(
@@ -404,7 +433,7 @@ fn capture(
 ) -> io::Result<CapturedStream> {
     let passthrough = matches!(output, CapturedOutput::Passthrough);
     let mut archive_error = None;
-    let mut raw_emitted = passthrough;
+    let mut raw_emitted = passthrough && raw.is_none();
     let mut buffer = [0_u8; 8 * 1024];
 
     loop {
@@ -413,7 +442,7 @@ fn capture(
             break;
         }
         let chunk = &buffer[..count];
-        if passthrough {
+        if passthrough && raw_emitted {
             fallback.write_all(chunk)?;
         }
         if !passthrough && raw_emitted {
@@ -421,7 +450,7 @@ fn capture(
         } else if let Some(spool) = &mut raw
             && let Err(error) = spool.write_chunk(chunk)
         {
-            if !passthrough {
+            if !raw_emitted {
                 rewind_and_copy(spool.as_file_mut(), &mut fallback)?;
                 fallback.write_all(&chunk[error.bytes_written..])?;
             }
@@ -437,7 +466,7 @@ fn capture(
     if let Some(spool) = &mut raw
         && let Err(error) = spool.file.flush()
     {
-        if !passthrough {
+        if !raw_emitted {
             rewind_and_copy(spool.as_file_mut(), &mut fallback)?;
         }
         archive_error = Some(format!("could not flush archive spool: {error}"));
@@ -496,7 +525,10 @@ fn emit_raw(
         .raw
         .as_mut()
         .ok_or_else(|| format!("raw {stream} archive spool is missing"))?;
-    copy_raw(spool.as_file_mut(), output, stream)
+    copy_raw(spool.as_file_mut(), output, stream)?;
+    output
+        .flush()
+        .map_err(|error| format!("could not flush raw {stream}: {error}"))
 }
 
 fn unix_time_ms() -> i64 {
@@ -570,6 +602,24 @@ mod tests {
         .expect("capture");
         assert_eq!(output, input);
         assert!(finish_output(captured.output, true, None).is_none());
+    }
+
+    #[test]
+    fn archived_passthrough_waits_for_capture_acknowledgement() {
+        let input = b"deferred passthrough\n";
+        let spool = RawSpool::new().expect("spool");
+        let mut output = Vec::new();
+        let mut captured = capture(
+            Cursor::new(input),
+            Some(spool),
+            &mut output,
+            CapturedOutput::Passthrough,
+        )
+        .expect("capture");
+        assert!(output.is_empty());
+        assert!(!captured.raw_emitted);
+        emit_raw(&mut captured, &mut output, "stdout").expect("emit after acknowledgement");
+        assert_eq!(output, input);
     }
 
     #[test]
