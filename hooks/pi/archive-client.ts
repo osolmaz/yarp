@@ -8,6 +8,7 @@ const CLOSE_TIMEOUT_MS = 2_000
 const INGEST_SCHEMA_VERSION = 1
 const MAX_FRAME_BYTES = 256 * 1024 * 1024
 const ACK_TIMEOUT_MS = 30_000
+const BEGIN_ACK_TIMEOUT_MS = 2_000
 
 export type ArchiveSession = {
   agent: string
@@ -126,7 +127,7 @@ export class ArchiveClient implements ArchiveSink {
       inputBefore,
       inputAfter,
       capturedAtMs,
-    }).then(requireArchiveRef)
+    }, Math.min(this.ackTimeoutMs, BEGIN_ACK_TIMEOUT_MS)).then(requireArchiveRef)
   }
 
   resultBefore(
@@ -231,11 +232,14 @@ export class ArchiveClient implements ArchiveSink {
     }
   }
 
-  private send(operation: Record<string, unknown>): Promise<string | undefined> {
+  private send(
+    operation: Record<string, unknown>,
+    timeoutMs = this.ackTimeoutMs,
+  ): Promise<string | undefined> {
     if (this.closing) return Promise.reject(new Error("YARP archive client is closing"))
     const requestId = this.nextRequestId++
     const request = { ...operation, requestId, schemaVersion: INGEST_SCHEMA_VERSION }
-    const task = this.queue.then(() => this.sendOnce(requestId, request))
+    const task = this.queue.then(() => this.sendOnce(requestId, request, timeoutMs))
     this.queue = task.then(ignoreAck, () => undefined)
     return task
   }
@@ -243,6 +247,7 @@ export class ArchiveClient implements ArchiveSink {
   private async sendOnce(
     requestId: number,
     request: Record<string, unknown>,
+    timeoutMs: number,
   ): Promise<string | undefined> {
     const body = Buffer.from(JSON.stringify(request), "utf8")
     if (body.length === 0 || body.length > this.maxFrameBytes) {
@@ -259,9 +264,9 @@ export class ArchiveClient implements ArchiveSink {
         const pending = this.pending.get(requestId)
         if (pending === undefined) return
         this.pending.delete(requestId)
-        pending.reject(new Error(`archive acknowledgement timed out after ${this.ackTimeoutMs} ms`))
+        pending.reject(new Error(`archive acknowledgement timed out after ${timeoutMs} ms`))
         if (this.child === child) child.kill("SIGTERM")
-      }, this.ackTimeoutMs)
+      }, timeoutMs)
       this.pending.set(requestId, {
         resolve: (archiveRef) => {
           clearTimeout(timer)

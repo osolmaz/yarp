@@ -129,7 +129,7 @@ Wrapped `stdout/before` and `stderr/before` are the first recovery sources. Othe
 
 An adapter sends generic archive operations. Agent-specific event translation stays in the adapter. The broker does not know Pi event names, commands, sessions, or user-interface behavior.
 
-Initial capture commits `input/before`, `input/after`, and the call record before tool execution. A tool does not execute until the adapter receives the durable acknowledgement.
+Initial capture tries to commit `input/before`, `input/after`, and the call record before tool execution. The Pi adapter waits at most two seconds for this acknowledgement. A successful acknowledgement means the records are durable.
 
 The shell runner captures exact stdout and stderr before it returns output. It sends a generic stream-capture operation and waits for the durable acknowledgement before it emits output and exits. This ordering prevents call finalization from passing stream capture.
 
@@ -255,9 +255,9 @@ The archive can contain commands, source code, file contents, environment-derive
 
 ## Failure behavior
 
-YARP never hides an archive failure.
+YARP reports archive failure without making tool execution depend on the archive.
 
-If initial capture cannot commit after bounded startup, reconnect, and retry, YARP blocks the call. This preserves the rule that an executed call has archived input.
+If initial capture cannot commit before the short deadline, the Pi adapter runs the original tool input without archive capture, command rewriting, pruning, or result caps. It writes one warning for the session. It does not create another database or fallback store. A later call can try the canonical archive again.
 
 If a result operation fails after execution, YARP leaves the call incomplete and reports the archive failure. Non-shell tools keep the unchanged result already exposed by the agent. Wrapped shell tools restore the committed raw streams and return them instead of the pruned result.
 

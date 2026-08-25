@@ -1013,15 +1013,16 @@ test("archives calls rejected before the tool_call hook", async () => {
   assert.deepEqual(sink.finishRequiresPreResult, [false])
 })
 
-test("archive start failure blocks tool mutation", async () => {
+test("archive start failure runs the original tool without archive capture", async () => {
   const pi = new MockPi()
   const sink = new MemorySink()
   sink.failBegin = true
   pi.plan = shellPlan("rewrite", "ordinary", "yarp run -- git status")
   await start(pi, sink)
   const input = { command: "git status" }
-  await assert.rejects(call(pi, "call-4", "bash", input), /archive unavailable/)
+  await call(pi, "call-4", "bash", input)
   assert.equal(input.command, "git status")
+  assert.equal(sink.begins.length, 0)
 })
 
 test("shell planning failures preserve the command and cap the archived result", async () => {
