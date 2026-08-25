@@ -104,12 +104,17 @@ const call = {
 test("sends framed requests and waits for acknowledgements", async () => {
   const process = new FakeProcess((request, writer) => writer.acknowledge(request))
   const client = new ArchiveClient(() => process)
+  const startedAtMs = Date.now()
   const archiveRef = await client.beginCall(session, call, { path: "a" }, { path: "a" }, 2)
   assert.equal(archiveRef, "yr_0123456789abcdef0123456789abcdef")
   assert.equal(process.requests.length, 1)
   assert.equal(process.requests[0]?.operation, "begin_call")
   assert.equal(process.requests[0]?.requestId, 1)
   assert.equal(process.requests[0]?.schemaVersion, 1)
+  const deadlineAtMs = process.requests[0]?.deadlineAtMs
+  assert.equal(typeof deadlineAtMs, "number")
+  assert.ok(typeof deadlineAtMs === "number" && deadlineAtMs >= startedAtMs)
+  assert.ok(typeof deadlineAtMs === "number" && deadlineAtMs <= startedAtMs + 2_100)
   await client.close()
 })
 

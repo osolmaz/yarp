@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write as _};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 use yarp_cli::archive::{Archive, CallIdentity, SessionIdentity};
 
@@ -13,6 +14,17 @@ fn yarp(arguments: &[&str]) -> Output {
         .args(arguments)
         .output()
         .expect("run yarp")
+}
+
+fn ingest_deadline_at_ms() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current Unix time")
+            .as_millis(),
+    )
+    .expect("timestamp fits in i64")
+        + 30_000
 }
 
 fn yarp_with_archive(arguments: &[&str], path: &Path) -> Output {
@@ -830,7 +842,8 @@ fn ingest_cli_commits_and_acknowledges_a_call() {
         "call": call("call-ingest", "read"),
         "inputBefore": {},
         "inputAfter": {},
-        "capturedAtMs": 20
+        "capturedAtMs": 20,
+        "deadlineAtMs": ingest_deadline_at_ms()
     });
     let body = serde_json::to_vec(&request).expect("request");
     let mut stdin = child.stdin.take().expect("stdin");
@@ -870,7 +883,8 @@ fn killed_ingest_process_leaves_an_integral_incomplete_call() {
         "call": call("call-crash", "read"),
         "inputBefore": {},
         "inputAfter": {},
-        "capturedAtMs": 20
+        "capturedAtMs": 20,
+        "deadlineAtMs": ingest_deadline_at_ms()
     });
     let body = serde_json::to_vec(&request).expect("request");
     let mut stdin = child.stdin.take().expect("stdin");
@@ -913,7 +927,8 @@ fn killed_ingest_process_preserves_a_committed_pre_result() {
             "call": call("call-result-crash", "read"),
             "inputBefore": {},
             "inputAfter": {},
-            "capturedAtMs": 20
+            "capturedAtMs": 20,
+            "deadlineAtMs": ingest_deadline_at_ms()
         }),
         json!({
             "operation": "result_before",
@@ -981,7 +996,8 @@ fn broker_recovers_when_a_temporary_write_lock_is_released() {
         "call": call("locked-call", "read"),
         "inputBefore": {},
         "inputAfter": {},
-        "capturedAtMs": 20
+        "capturedAtMs": 20,
+        "deadlineAtMs": ingest_deadline_at_ms()
     });
     let body = serde_json::to_vec(&request).expect("request");
     let mut stdin = child.stdin.take().expect("stdin");
@@ -1001,6 +1017,72 @@ fn broker_recovers_when_a_temporary_write_lock_is_released() {
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("\"ok\":true"));
     std::thread::sleep(std::time::Duration::from_millis(700));
+    let archive = Archive::open_path(database).expect("archive");
+    assert_eq!(archive.stats().expect("stats").calls, 1);
+}
+
+#[test]
+fn expired_initial_capture_does_not_commit_after_the_client_returns() {
+    let directory = TempDir::new().expect("temp directory");
+    let database = directory.path().join("yarp/tool-calls.sqlite3");
+    let (mut command, _config_home) = yarp_command_with_archive(&database);
+    let mut child = command
+        .args(["archive", "ingest"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn ingest");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+    let warmup = json!({
+        "operation": "begin_call",
+        "requestId": 1,
+        "schemaVersion": 1,
+        "session": session(),
+        "call": call("warmup-call", "read"),
+        "inputBefore": {},
+        "inputAfter": {},
+        "capturedAtMs": 20,
+        "deadlineAtMs": ingest_deadline_at_ms()
+    });
+    let body = serde_json::to_vec(&warmup).expect("warmup request");
+    stdin
+        .write_all(&(body.len() as u64).to_be_bytes())
+        .expect("warmup length");
+    stdin.write_all(&body).expect("warmup body");
+    stdin.flush().expect("flush warmup");
+    let mut ack = String::new();
+    stdout.read_line(&mut ack).expect("warmup acknowledgement");
+    assert!(ack.contains("\"ok\":true"));
+
+    let lock = Connection::open(&database).expect("lock connection");
+    lock.execute_batch("BEGIN IMMEDIATE")
+        .expect("hold write lock");
+    let expired = json!({
+        "operation": "begin_call",
+        "requestId": 2,
+        "schemaVersion": 1,
+        "session": session(),
+        "call": call("expired-call", "read"),
+        "inputBefore": {},
+        "inputAfter": {},
+        "capturedAtMs": 20,
+        "deadlineAtMs": ingest_deadline_at_ms() - 29_500
+    });
+    let body = serde_json::to_vec(&expired).expect("expired request");
+    stdin
+        .write_all(&(body.len() as u64).to_be_bytes())
+        .expect("expired length");
+    stdin.write_all(&body).expect("expired body");
+    stdin.flush().expect("flush expired request");
+    ack.clear();
+    let _ = stdout.read_line(&mut ack);
+
+    lock.execute_batch("ROLLBACK").expect("release write lock");
+    drop(stdin);
+    let _ = child.wait();
+    std::thread::sleep(std::time::Duration::from_millis(700));
+
     let archive = Archive::open_path(database).expect("archive");
     assert_eq!(archive.stats().expect("stats").calls, 1);
 }
@@ -1030,7 +1112,8 @@ fn concurrent_ingest_clients_share_one_broker_without_contention() {
             "call": call(&format!("parallel-{index}"), "read"),
             "inputBefore": {"index": index},
             "inputAfter": {"index": index},
-            "capturedAtMs": 20
+            "capturedAtMs": 20,
+            "deadlineAtMs": ingest_deadline_at_ms()
         });
         let body = serde_json::to_vec(&request).expect("request");
         let mut stdin = child.stdin.take().expect("stdin");

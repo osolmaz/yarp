@@ -511,8 +511,10 @@ mod unix {
         };
         let mut delay = BUSY_RETRY_MIN;
         loop {
-            let result = archive
-                .apply_prepared_batch(ready.iter_mut().filter_map(|value| value.prepared.as_mut()));
+            let result = archive.apply_prepared_batch(
+                ready.iter_mut().filter_map(|value| value.prepared.as_mut()),
+                deadline,
+            );
             match result {
                 Ok(results) => {
                     for (ready, result) in ready.iter().zip(results) {

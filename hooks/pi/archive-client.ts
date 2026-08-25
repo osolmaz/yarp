@@ -122,6 +122,7 @@ export class ArchiveClient implements ArchiveSink {
     capturedAtMs: number,
   ): Promise<string> {
     const timeoutMs = Math.min(this.ackTimeoutMs, this.beginAckTimeoutMs)
+    const deadlineAtMs = Date.now() + timeoutMs
     return this.send(
       {
         operation: "begin_call",
@@ -130,9 +131,10 @@ export class ArchiveClient implements ArchiveSink {
         inputBefore,
         inputAfter,
         capturedAtMs,
+        deadlineAtMs,
       },
       timeoutMs,
-      Date.now() + timeoutMs,
+      deadlineAtMs,
     ).then(requireArchiveRef)
   }
 
