@@ -225,6 +225,26 @@ test("counts serialized queue time against the initial capture deadline", async 
   await client.close()
 })
 
+test("returns at the initial deadline while an earlier archive request remains queued", async () => {
+  const process = new FakeProcess(() => undefined)
+  const client = new ArchiveClient(() => process, 1024, 200, 20)
+
+  const earlier = client.resultBefore(session, "earlier-call", {}, 2)
+  const startedAt = Date.now()
+  await assert.rejects(
+    client.beginCall(session, call, {}, {}, 2),
+    /acknowledgement timed out after 20 ms/,
+  )
+  const elapsedMs = Date.now() - startedAt
+
+  assert.ok(elapsedMs >= 10, `initial deadline fired too early after ${elapsedMs} ms`)
+  assert.ok(elapsedMs < 100, `caller waited ${elapsedMs} ms for the earlier queue item`)
+  assert.equal(process.requests.length, 1)
+  await assert.rejects(earlier, /acknowledgement timed out after 200 ms/)
+  assert.equal(process.requests.length, 1)
+  await client.close()
+})
+
 test("does not retry a rejected archive operation", async () => {
   let starts = 0
   const client = new ArchiveClient(() => {
