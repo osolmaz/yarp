@@ -86,7 +86,7 @@ class HandlerRegistry {
 
 class MockPi implements ExtensionAPI {
   readonly registry = new HandlerRegistry()
-  version: ExecResult = result(0, "yarp 0.2.1\n")
+  version: ExecResult = result(0, "yarp 0.3.0\n")
   configuration: ExecResult = configurationResult()
   plan: ExecResult = shellPlan("original", "ordinary")
   restore: ExecResult = result(0, "raw output\n")
