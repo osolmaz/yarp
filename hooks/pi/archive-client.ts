@@ -120,14 +120,19 @@ export class ArchiveClient implements ArchiveSink {
     inputAfter: unknown,
     capturedAtMs: number,
   ): Promise<string> {
-    return this.send({
-      operation: "begin_call",
-      session,
-      call,
-      inputBefore,
-      inputAfter,
-      capturedAtMs,
-    }, Math.min(this.ackTimeoutMs, BEGIN_ACK_TIMEOUT_MS)).then(requireArchiveRef)
+    const timeoutMs = Math.min(this.ackTimeoutMs, BEGIN_ACK_TIMEOUT_MS)
+    return this.send(
+      {
+        operation: "begin_call",
+        session,
+        call,
+        inputBefore,
+        inputAfter,
+        capturedAtMs,
+      },
+      timeoutMs,
+      Date.now() + timeoutMs,
+    ).then(requireArchiveRef)
   }
 
   resultBefore(
@@ -235,11 +240,18 @@ export class ArchiveClient implements ArchiveSink {
   private send(
     operation: Record<string, unknown>,
     timeoutMs = this.ackTimeoutMs,
+    deadlineAtMs?: number,
   ): Promise<string | undefined> {
     if (this.closing) return Promise.reject(new Error("YARP archive client is closing"))
     const requestId = this.nextRequestId++
     const request = { ...operation, requestId, schemaVersion: INGEST_SCHEMA_VERSION }
-    const task = this.queue.then(() => this.sendOnce(requestId, request, timeoutMs))
+    const task = this.queue.then(() => {
+      const remainingMs = deadlineAtMs === undefined ? timeoutMs : deadlineAtMs - Date.now()
+      if (remainingMs <= 0) {
+        throw new Error(`archive acknowledgement timed out after ${timeoutMs} ms`)
+      }
+      return this.sendOnce(requestId, request, remainingMs, timeoutMs)
+    })
     this.queue = task.then(ignoreAck, () => undefined)
     return task
   }
@@ -248,6 +260,7 @@ export class ArchiveClient implements ArchiveSink {
     requestId: number,
     request: Record<string, unknown>,
     timeoutMs: number,
+    reportedTimeoutMs = timeoutMs,
   ): Promise<string | undefined> {
     const body = Buffer.from(JSON.stringify(request), "utf8")
     if (body.length === 0 || body.length > this.maxFrameBytes) {
@@ -264,7 +277,7 @@ export class ArchiveClient implements ArchiveSink {
         const pending = this.pending.get(requestId)
         if (pending === undefined) return
         this.pending.delete(requestId)
-        pending.reject(new Error(`archive acknowledgement timed out after ${timeoutMs} ms`))
+        pending.reject(new Error(`archive acknowledgement timed out after ${reportedTimeoutMs} ms`))
         if (this.child === child) child.kill("SIGTERM")
       }, timeoutMs)
       this.pending.set(requestId, {
